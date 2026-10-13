@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type JSX } from 'react'
 import { Editor, type Camera, type ToolId } from '../editor/Editor'
 import { Renderer } from '../render/Renderer'
 import { react } from '../state/signals'
-import { connect } from '../sync/client'
+import { connect, deleteSession } from '../sync/client'
 import { useValue } from './useValue'
 
 const CAMERA_KEY = 'canvas.camera'
@@ -24,7 +24,9 @@ export function App() {
 		const saved = readCamera()
 		if (saved) editor.setCamera(saved)
 
-		Renderer.create(canvasRef.current!, overlayRef.current!, editor)
+		Renderer.create(canvasRef.current!, overlayRef.current!, editor, {
+			onCloseSection: (id) => deleteSession(id).catch((e) => console.error(e)),
+		})
 			.then((r) => {
 				if (disposed) return r.destroy()
 				renderer = r

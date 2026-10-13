@@ -22,6 +22,11 @@ const SECTION_STROKE: RGBA = [1, 1, 1, 0.06]
 const PLACEHOLDER: RGBA = [1, 1, 1, 0.06]
 const NONE: RGBA = [0, 0, 0, 0]
 
+export interface RendererOptions {
+	/** Called when the user removes a section with its close button. */
+	onCloseSection?: (sectionId: string) => void
+}
+
 interface Displayed {
 	x: number
 	y: number
@@ -62,12 +67,12 @@ export class Renderer {
 	private disposers: (() => void)[] = []
 	frameTimes: number[] = []
 
-	static async create(canvas: HTMLCanvasElement, overlay: HTMLElement, editor: Editor) {
+	static async create(canvas: HTMLCanvasElement, overlay: HTMLElement, editor: Editor, options: RendererOptions = {}) {
 		if (!navigator.gpu) throw new Error('WebGPU is not available in this browser.')
 		const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
 		if (!adapter) throw new Error('No WebGPU adapter found.')
 		const device = await adapter.requestDevice()
-		return new Renderer(device, canvas, overlay, editor)
+		return new Renderer(device, canvas, overlay, editor, options)
 	}
 
 	private constructor(
@@ -75,6 +80,7 @@ export class Renderer {
 		private canvas: HTMLCanvasElement,
 		overlay: HTMLElement,
 		private editor: Editor,
+		options: RendererOptions,
 	) {
 		this.context = canvas.getContext('webgpu')!
 		this.format = navigator.gpu.getPreferredCanvasFormat()
@@ -132,7 +138,7 @@ export class Renderer {
 
 		this.textures = new TextureCache(device, imageLayout)
 		this.videos = new VideoPool(overlay)
-		this.labels = new SectionLabels(overlay)
+		this.labels = new SectionLabels(overlay, (id) => options.onCloseSection?.(id))
 
 		const ro = new ResizeObserver(([entry]) => {
 			const size = entry.devicePixelContentBoxSize?.[0]
@@ -392,10 +398,42 @@ class SectionLabels {
 	private els = new Map<string, HTMLDivElement>()
 	private host: HTMLDivElement
 
-	constructor(parent: HTMLElement) {
+	constructor(
+		parent: HTMLElement,
+		private onClose: (sectionId: string) => void,
+	) {
 		this.host = document.createElement('div')
 		this.host.className = 'section-labels'
 		parent.appendChild(this.host)
+	}
+
+	private createLabel(id: string) {
+		const el = document.createElement('div')
+		el.className = 'section-label'
+		el.innerHTML = '<span class="title"></span><span class="count"></span><button class="close" title="Remove this session">×</button>'
+		const button = el.querySelector('button')!
+		let armTimer = 0
+		const disarm = () => {
+			clearTimeout(armTimer)
+			button.classList.remove('armed')
+			button.textContent = '×'
+		}
+		// Removal is permanent, so it takes two clicks: the first arms the button, the second removes.
+		button.addEventListener('pointerdown', (e) => e.stopPropagation())
+		button.addEventListener('dblclick', (e) => e.stopPropagation())
+		button.addEventListener('click', (e) => {
+			e.stopPropagation()
+			if (!button.classList.contains('armed')) {
+				button.classList.add('armed')
+				button.textContent = 'Remove'
+				armTimer = window.setTimeout(disarm, 3000)
+				return
+			}
+			disarm()
+			this.onClose(id)
+		})
+		button.addEventListener('pointerleave', disarm)
+		return el
 	}
 
 	update(sections: { id: string; title: string; itemIds: string[] }[], displayed: Map<string, Displayed>, editor: Editor) {
@@ -407,14 +445,12 @@ class SectionLabels {
 			seen.add(s.id)
 			let el = this.els.get(s.id)
 			if (!el) {
-				el = document.createElement('div')
-				el.className = 'section-label'
-				el.innerHTML = '<span class="title"></span><span class="count"></span>'
+				el = this.createLabel(s.id)
 				this.host.appendChild(el)
 				this.els.set(s.id, el)
 			}
-			const title = el.firstChild as HTMLElement
-			const count = el.lastChild as HTMLElement
+			const title = el.children[0] as HTMLElement
+			const count = el.children[1] as HTMLElement
 			if (title.textContent !== s.title) title.textContent = s.title
 			const countText = `${s.itemIds.length}`
 			if (count.textContent !== countText) count.textContent = countText

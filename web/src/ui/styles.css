@@ -38,7 +38,8 @@ body,
 	position: absolute;
 	inset: 0;
 	pointer-events: none;
-	overflow: hidden;
+	/* clip, not hidden: a hidden-overflow box can still be scrolled programmatically (focus, scrollIntoView) */
+	overflow: clip;
 }
 
 .section-label {
@@ -66,6 +67,37 @@ body,
 .section-label .count {
 	color: #71717a;
 	font-variant-numeric: tabular-nums;
+}
+
+.section-label .close {
+	flex: none;
+	height: 20px;
+	min-width: 20px;
+	padding: 0 5px;
+	border: 0;
+	border-radius: 5px;
+	background: transparent;
+	color: #a1a1aa;
+	font: inherit;
+	font-size: 15px;
+	line-height: 20px;
+	opacity: 0.3;
+	cursor: pointer;
+	pointer-events: auto;
+	transition: opacity 120ms, background 120ms, color 120ms;
+}
+
+.section-label .close:hover {
+	opacity: 1;
+	background: rgba(255, 255, 255, 0.08);
+	color: #e4e4e7;
+}
+
+.section-label .close.armed {
+	opacity: 1;
+	font-size: 12px;
+	background: rgba(239, 68, 68, 0.18);
+	color: #fca5a5;
 }
 
 .toolbar,

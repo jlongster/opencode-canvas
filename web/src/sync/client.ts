@@ -1,6 +1,12 @@
 import type { ServerEvent, Snapshot } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 
+/** Permanently deletes a session and its media. The canvas updates from the server's event. */
+export async function deleteSession(id: string) {
+	const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+	if (!res.ok) throw new Error(`delete failed: ${res.status}`)
+}
+
 /** Loads a snapshot, then applies live events. Re-syncs from a fresh snapshot after reconnects. */
 export function connect(editor: Editor, onFirstLoad: () => void): () => void {
 	let source: EventSource | null = null

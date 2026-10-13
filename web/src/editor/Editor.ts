@@ -66,6 +66,8 @@ export class Editor {
 	readonly hoveredId = atom<string | null>('hoveredId', null)
 	readonly brush = atom<Box | null>('brush', null)
 	readonly cursor = atom<string>('cursor', 'default')
+	/** Reactive copy of inputs.shiftKey, for UI that changes while shift is held. */
+	readonly isShiftDown = atom<boolean>('isShiftDown', false)
 	readonly toolPath = atom<string>('toolPath', '')
 	readonly connection = atom<'connecting' | 'open' | 'closed'>('connection', 'connecting')
 
@@ -377,6 +379,7 @@ export class Editor {
 
 	private updateModifiers(e: Modifiers) {
 		this.inputs.shiftKey = e.shiftKey
+		this.isShiftDown.set(e.shiftKey)
 		this.inputs.altKey = e.altKey
 		this.inputs.ctrlKey = e.ctrlKey
 		this.inputs.metaKey = e.metaKey

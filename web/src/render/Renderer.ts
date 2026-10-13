@@ -324,7 +324,8 @@ export class Renderer {
 		this.device.queue.submit([encoder.finish()])
 
 		this.labels.update(layout.sections, this.displayedSections, editor)
-		this.actions.update(hovered ? items[hovered] : undefined, hovered ? this.displayedItems.get(hovered) : undefined, editor)
+		const showDownload = hovered && editor.isShiftDown.get()
+		this.actions.update(showDownload ? items[hovered] : undefined, showDownload ? this.displayedItems.get(hovered) : undefined, editor)
 
 		this.frameTimes.push(performance.now() - t0)
 		if (this.frameTimes.length > 120) this.frameTimes.shift()
@@ -397,7 +398,7 @@ export class Renderer {
 	}
 }
 
-/** A download button over the top-right corner of the hovered item. */
+/** A download button over the top-right corner of the hovered item, shown while shift is held. */
 class ItemActions {
 	private el: HTMLAnchorElement
 	private itemId: string | null = null

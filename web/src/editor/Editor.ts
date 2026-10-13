@@ -20,6 +20,8 @@ const DRAG_DISTANCE = 4
 const ANIMATION_MS = 320
 const PAN_FRICTION = 0.0045 // per ms
 const ZOOM_TO_PADDING = 48
+/** The widest (in screen px) an item gets when focused by double-click */
+const FOCUS_MAX_WIDTH = 1200
 
 class Root extends StateNode {
 	static override id = 'root'
@@ -352,9 +354,10 @@ export class Editor {
 		this.centerOn(this.getItemBoundsWithTitle(next)!, { animate: false })
 	}
 
+	/** Fit the item to the screen, but never wider than FOCUS_MAX_WIDTH screen pixels. */
 	zoomToItem(id: string) {
 		const box = this.getItemBoundsWithTitle(id)
-		if (box) this.zoomToBounds(box)
+		if (box) this.zoomToBounds(box, { maxZoom: FOCUS_MAX_WIDTH / box.w })
 	}
 
 	/** The item's box plus the title strip above it, if it has a title. */

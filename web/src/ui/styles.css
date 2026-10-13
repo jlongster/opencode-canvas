@@ -1,0 +1,212 @@
+* {
+	box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+	margin: 0;
+	height: 100%;
+	overflow: hidden;
+	background: #111113;
+	color: #e6e6e8;
+	font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+	overscroll-behavior: none;
+}
+
+.app,
+.canvas-container {
+	position: absolute;
+	inset: 0;
+}
+
+.canvas-container {
+	touch-action: none;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.canvas {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	display: block;
+}
+
+.overlay {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	overflow: hidden;
+}
+
+.section-label {
+	position: absolute;
+	left: 0;
+	top: 0;
+	height: 22px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 0 4px;
+	white-space: nowrap;
+	overflow: hidden;
+	will-change: transform;
+	transition: opacity 120ms;
+}
+
+.section-label .title {
+	font-weight: 600;
+	color: #d4d4d8;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.section-label .count {
+	color: #71717a;
+	font-variant-numeric: tabular-nums;
+}
+
+.toolbar,
+.status {
+	position: absolute;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	padding: 4px;
+	background: rgba(28, 28, 32, 0.88);
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	border-radius: 10px;
+	backdrop-filter: blur(12px);
+	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+}
+
+.toolbar {
+	right: 12px;
+	top: 12px;
+}
+
+.toolbar button {
+	height: 28px;
+	min-width: 28px;
+	padding: 0 8px;
+	border: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+}
+
+.toolbar button:hover:not(:disabled) {
+	background: rgba(255, 255, 255, 0.08);
+}
+
+.toolbar button:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+
+.toolbar.tools {
+	left: 50%;
+	right: auto;
+	transform: translateX(-50%);
+}
+
+.toolbar.tools button {
+	width: 32px;
+	height: 32px;
+	padding: 0;
+	display: grid;
+	place-items: center;
+}
+
+.toolbar.tools button.active,
+.toolbar.tools button.active:hover {
+	background: rgb(87, 143, 255);
+	color: white;
+}
+
+.toolbar .zoom {
+	min-width: 56px;
+	font-variant-numeric: tabular-nums;
+}
+
+.toolbar .sep {
+	width: 1px;
+	height: 16px;
+	margin: 0 4px;
+	background: rgba(255, 255, 255, 0.1);
+}
+
+.status {
+	left: 12px;
+	bottom: 12px;
+	gap: 10px;
+	padding: 6px 12px;
+	color: #a1a1aa;
+	pointer-events: none;
+	max-width: calc(100% - 24px);
+}
+
+.status .hovered {
+	color: #e4e4e7;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: #a1a1aa;
+	flex: none;
+}
+
+.dot.open {
+	background: #22c55e;
+}
+
+.dot.connecting {
+	background: #eab308;
+}
+
+.dot.closed {
+	background: #ef4444;
+}
+
+.empty,
+.error {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	transform: translate(-50%, -50%);
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	text-align: center;
+	pointer-events: none;
+	color: #a1a1aa;
+}
+
+.empty h2 {
+	margin: 0;
+	color: #e4e4e7;
+	font-size: 16px;
+}
+
+.empty pre {
+	text-align: left;
+	padding: 12px 16px;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.05);
+	color: #d4d4d8;
+	pointer-events: auto;
+	user-select: text;
+}
+
+.error {
+	color: #fca5a5;
+}

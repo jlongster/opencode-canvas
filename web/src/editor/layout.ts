@@ -17,21 +17,23 @@ export interface Layout {
 }
 
 export const LAYOUT = {
-	columnWidth: 720,
+	contentWidth: 2400,
+	rowHeight: 320,
 	gap: 16,
-	sectionPadding: 24,
-	sectionGap: 96,
+	sectionPadding: 32,
+	sectionGap: 120,
 	emptySectionHeight: 160,
-	/** Space reserved above an item that has a title (page units; the text scales with zoom) */
+	/** Space reserved above a row that has a titled item (page units; the text scales with zoom) */
 	titleHeight: 40,
 }
 
 /**
- * Positions are a pure function of the data: each session is a column, columns run left to
- * right (newest first), and a session's items stack top to bottom at the column's width.
+ * Positions are a pure function of the data: sessions are stacked vertically (newest first),
+ * and each session's items flow left to right into justified rows that keep every item's
+ * aspect ratio.
  */
 export function computeLayout(sessions: Record<string, Session>, items: Record<string, Item>): Layout {
-	const { columnWidth: W, gap, sectionPadding: pad, sectionGap } = LAYOUT
+	const { contentWidth: W, rowHeight: H, gap, sectionPadding: pad, sectionGap, titleHeight } = LAYOUT
 	const bySession = new Map<string, Item[]>()
 	for (const item of Object.values(items)) {
 		let list = bySession.get(item.sessionId)
@@ -41,27 +43,46 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 
 	const ordered = Object.values(sessions).sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id))
 	const layout: Layout = { sections: [], items: new Map(), sectionOf: new Map(), bounds: null }
-	let x = 0
-	let maxHeight = 0
+	let y = 0
 
 	for (const session of ordered) {
 		const list = (bySession.get(session.id) ?? []).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
-		let y = pad
-		for (const item of list) {
-			if (item.title) y += LAYOUT.titleHeight
-			const h = (item.height / item.width) * W
-			layout.items.set(item.id, { x: x + pad, y, w: W, h })
-			layout.sectionOf.set(item.id, session.id)
-			y += h + gap
+		const top = y
+		let rowY = y + pad
+		let row: Item[] = []
+		let rowAspect = 0
+
+		const placeRow = (height: number) => {
+			if (row.some((item) => item.title)) rowY += titleHeight
+			let x = pad
+			for (const item of row) {
+				const w = (item.width / item.height) * height
+				layout.items.set(item.id, { x, y: rowY, w, h: height })
+				layout.sectionOf.set(item.id, session.id)
+				x += w + gap
+			}
+			rowY += height + gap
+			row = []
+			rowAspect = 0
 		}
 
-		const contentHeight = list.length ? y - gap - pad : LAYOUT.emptySectionHeight
-		const box = { x, y: 0, w: W + pad * 2, h: contentHeight + pad * 2 }
+		for (const item of list) {
+			row.push(item)
+			rowAspect += item.width / item.height
+			const naturalWidth = rowAspect * H + gap * (row.length - 1)
+			if (naturalWidth >= W) placeRow((W - gap * (row.length - 1)) / rowAspect)
+		}
+		if (row.length) placeRow(H)
+
+		const contentHeight = list.length ? rowY - gap - (y + pad) : LAYOUT.emptySectionHeight
+		const box = { x: 0, y: top, w: W + pad * 2, h: contentHeight + pad * 2 }
 		layout.sections.push({ id: session.id, title: session.title, box, itemIds: list.map((i) => i.id) })
-		maxHeight = Math.max(maxHeight, box.h)
-		x += box.w + sectionGap
+		y = top + box.h + sectionGap
 	}
 
-	if (layout.sections.length) layout.bounds = { x: 0, y: 0, w: x - sectionGap, h: maxHeight }
+	if (layout.sections.length) {
+		const last = layout.sections[layout.sections.length - 1].box
+		layout.bounds = { x: 0, y: 0, w: W + pad * 2, h: last.y + last.h }
+	}
 	return layout
 }

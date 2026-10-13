@@ -296,9 +296,10 @@ export class Editor {
 	}
 
 	/**
-	 * Select the neighbouring item and bring it into view: up/down within the column, left/right
-	 * to the item at about the same height in the next column. With nothing selected, starts
-	 * from the item nearest the middle of the screen.
+	 * Select the neighbouring item and bring it into view: left/right steps through the
+	 * section in order, up/down moves to the nearest item in the row above/below (crossing
+	 * into other sections). With nothing selected, starts from the item nearest the middle of
+	 * the screen.
 	 */
 	selectAdjacent(direction: 'up' | 'down' | 'left' | 'right') {
 		const layout = this.layout.get()
@@ -307,27 +308,26 @@ export class Editor {
 		const sectionId = anchor && layout.sectionOf.get(anchor)
 		let next: string | undefined
 
-		if (sectionId && (direction === 'up' || direction === 'down')) {
+		if (sectionId && (direction === 'left' || direction === 'right')) {
 			const ids = layout.sections.find((s) => s.id === sectionId)!.itemIds
-			next = ids[ids.indexOf(anchor) + (direction === 'down' ? 1 : -1)]
+			next = ids[ids.indexOf(anchor) + (direction === 'right' ? 1 : -1)]
 			if (!next) return
 		} else if (sectionId) {
+			// The nearest row above/below (possibly in another section), then the item in it
+			// closest horizontally.
 			const from = layout.items.get(anchor)!
-			const cy = from.y + from.h / 2
-			const step = direction === 'right' ? 1 : -1
-			const sections = layout.sections
-			// Skip over empty columns.
-			for (let i = sections.findIndex((s) => s.id === sectionId) + step; i >= 0 && i < sections.length; i += step) {
-				let best = Infinity
-				for (const id of sections[i].itemIds) {
-					const b = layout.items.get(id)!
-					const d = Math.max(b.y - cy, 0, cy - (b.y + b.h))
-					if (d < best) {
-						best = d
-						next = id
-					}
+			const cx = from.x + from.w / 2
+			let rowGap = Infinity
+			let best = Infinity
+			for (const [id, b] of layout.items) {
+				const gap = direction === 'down' ? b.y - (from.y + from.h) : from.y - (b.y + b.h)
+				if (gap < 0) continue
+				const dx = Math.max(b.x - cx, 0, cx - (b.x + b.w))
+				if (gap < rowGap - 1 || (Math.abs(gap - rowGap) <= 1 && dx < best)) {
+					rowGap = Math.min(rowGap, gap)
+					best = dx
+					next = id
 				}
-				if (next) break
 			}
 			if (!next) return
 		} else {

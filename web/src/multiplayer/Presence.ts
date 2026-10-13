@@ -1,0 +1,232 @@
+import { WebsocketProvider } from 'y-websocket'
+import * as Y from 'yjs'
+import type { Camera, Editor } from '../editor/Editor'
+import { clamp, type Box, type Vec } from '../editor/geometry'
+import { atom, react } from '../state/signals'
+
+export interface PeerUser {
+	name: string
+	color: string
+}
+
+/** What each person broadcasts through Yjs awareness. */
+interface PresenceState {
+	user: PeerUser
+	/** page coordinates, or null when their pointer is off the canvas */
+	cursor: Vec | null
+	selection: string[]
+	/** the part of the page they're looking at */
+	view: Box | null
+}
+
+export interface Peer extends PresenceState {
+	clientId: number
+}
+
+const USER_KEY = 'canvas.user'
+const PUBLISH_MS = 40
+const FOLLOW_EASE_MS = 70
+
+export const COLORS = ['#f87171', '#fb923c', '#facc15', '#4ade80', '#2dd4bf', '#38bdf8', '#818cf8', '#c084fc', '#f472b6', '#a3e635']
+const ADJECTIVES = ['Curious', 'Brave', 'Quiet', 'Swift', 'Clever', 'Gentle', 'Lucky', 'Sunny', 'Bold', 'Calm', 'Witty', 'Cosmic']
+const ANIMALS = ['Otter', 'Fox', 'Panda', 'Falcon', 'Badger', 'Heron', 'Lynx', 'Walrus', 'Koala', 'Raven', 'Tiger', 'Moth']
+
+/**
+ * Live presence for a room: who's here, their cursors, what they've selected and what they're
+ * looking at. Built on Yjs awareness over the server's y-websocket endpoint.
+ */
+export class Presence {
+	readonly peers = atom<Peer[]>('peers', [])
+	readonly me = atom<PeerUser>('me', loadUser())
+	readonly followingId = atom<number | null>('followingId', null)
+	readonly status = atom<'connecting' | 'connected' | 'disconnected'>('presenceStatus', 'connecting')
+
+	private doc = new Y.Doc()
+	private provider: WebsocketProvider
+	private disposers: (() => void)[] = []
+	private publishTimer = 0
+	private applyingFollow = false
+
+	constructor(
+		private editor: Editor,
+		room: string,
+	) {
+		const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/rooms`
+		this.provider = new WebsocketProvider(url, room, this.doc, { disableBc: true })
+		const awareness = this.provider.awareness
+
+		this.provider.on('status', ({ status }: { status: string }) => {
+			this.status.set(status === 'connected' ? 'connected' : status === 'connecting' ? 'connecting' : 'disconnected')
+		})
+		const onChange = () => this.readPeers()
+		awareness.on('change', onChange)
+		this.disposers.push(() => awareness.off('change', onChange))
+
+		// Publish our own state whenever any part of it changes (throttled).
+		this.disposers.push(
+			react(() => {
+				this.me.get()
+				editor.pointerPage.get()
+				editor.selectedIds.get()
+				editor.viewportPageBounds.get()
+				this.schedulePublish()
+			}),
+		)
+
+		// If we move the camera ourselves while following, stop following.
+		this.disposers.push(
+			react(() => {
+				editor.camera.get()
+				if (!this.applyingFollow && this.followingId.peek() !== null) this.followingId.set(null)
+			}),
+		)
+
+		// Stop following someone who left.
+		this.disposers.push(
+			react(() => {
+				const id = this.followingId.get()
+				if (id !== null && !this.peers.get().some((p) => p.clientId === id)) this.followingId.set(null)
+			}),
+		)
+
+		this.disposers.push(editor.onFrame((_now, elapsed) => this.stepFollow(elapsed)))
+
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === 'Escape' && this.followingId.peek() !== null) this.followingId.set(null)
+		}
+		window.addEventListener('keydown', onKey)
+		this.disposers.push(() => window.removeEventListener('keydown', onKey))
+
+		this.publish()
+		if (!localStorage.getItem(USER_KEY)) this.adoptExeIdentity()
+	}
+
+	setName(name: string) {
+		const trimmed = name.trim().slice(0, 40)
+		if (!trimmed) return
+		this.setUser({ ...this.me.peek(), name: trimmed })
+	}
+
+	setColor(color: string) {
+		this.setUser({ ...this.me.peek(), color })
+	}
+
+	toggleFollow(clientId: number) {
+		this.followingId.set(this.followingId.peek() === clientId ? null : clientId)
+	}
+
+	get clientId() {
+		return this.provider.awareness.clientID
+	}
+
+	destroy() {
+		clearTimeout(this.publishTimer)
+		for (const d of this.disposers.splice(0)) d()
+		this.provider.awareness.setLocalState(null)
+		this.provider.destroy()
+		this.doc.destroy()
+	}
+
+	private setUser(user: PeerUser) {
+		this.me.set(user)
+		localStorage.setItem(USER_KEY, JSON.stringify(user))
+	}
+
+	/** Visitors logged in to exe.dev get their email's name instead of a random one. */
+	private async adoptExeIdentity() {
+		let name = ''
+		try {
+			const { email } = (await (await fetch('/api/me')).json()) as { email: string | null }
+			name = (email ?? '')
+				.split('@')[0]
+				.split(/[._-]+/)
+				.filter(Boolean)
+				.map((part) => part[0].toUpperCase() + part.slice(1))
+				.join(' ')
+		} catch {
+			// keep the random name
+		}
+		if (localStorage.getItem(USER_KEY)) return
+		// Save either way, so a random identity stays the same across visits.
+		this.setUser(name ? { ...this.me.peek(), name } : this.me.peek())
+	}
+
+	private schedulePublish() {
+		if (this.publishTimer) return
+		this.publishTimer = window.setTimeout(() => {
+			this.publishTimer = 0
+			this.publish()
+		}, PUBLISH_MS)
+	}
+
+	private publish() {
+		const { editor } = this
+		const state: PresenceState = {
+			user: this.me.peek(),
+			cursor: editor.pointerPage.peek(),
+			selection: editor.selectedIds.peek(),
+			view: editor.viewportPageBounds.get(),
+		}
+		this.provider.awareness.setLocalState(state)
+	}
+
+	private readPeers() {
+		const own = this.provider.awareness.clientID
+		const peers: Peer[] = []
+		for (const [clientId, state] of this.provider.awareness.getStates()) {
+			if (clientId === own || !state?.user) continue
+			peers.push({ clientId, ...(state as PresenceState) })
+		}
+		peers.sort((a, b) => a.clientId - b.clientId)
+		this.peers.set(peers)
+	}
+
+	/** Ease our camera toward the followed person's view, so following looks smooth. */
+	private stepFollow(elapsed: number) {
+		const id = this.followingId.peek()
+		if (id === null) return
+		const peer = this.peers.peek().find((p) => p.clientId === id)
+		if (!peer?.view) return
+		const target = this.editor.getCameraForBounds(peer.view, { padding: 0 })
+		const current = this.editor.camera.peek()
+		const k = 1 - Math.exp(-elapsed / FOLLOW_EASE_MS)
+		const next = easeCamera(current, target, k, this.editor.viewport.peek())
+		if (next.x === current.x && next.y === current.y && next.z === current.z) return
+		this.applyingFollow = true
+		try {
+			this.editor.stopCameraMotion()
+			this.editor.setCamera(next)
+		} finally {
+			this.applyingFollow = false
+		}
+	}
+}
+
+/** Moves the camera a fraction k toward the target, interpolating the view's centre and zoom. */
+function easeCamera(from: Camera, to: Camera, k: number, viewport: { w: number; h: number }): Camera {
+	const center = (c: Camera) => ({ x: viewport.w / 2 / c.z - c.x, y: viewport.h / 2 / c.z - c.y })
+	const a = center(from)
+	const b = center(to)
+	const z = from.z * Math.pow(to.z / from.z, k)
+	const cx = a.x + (b.x - a.x) * k
+	const cy = a.y + (b.y - a.y) * k
+	const done = Math.abs(z - to.z) / to.z < 0.0005 && Math.hypot(b.x - cx, b.y - cy) * z < 0.25
+	if (done) return to
+	return { x: viewport.w / 2 / z - cx, y: viewport.h / 2 / z - cy, z: clamp(z, 0.001, 1000) }
+}
+
+function loadUser(): PeerUser {
+	try {
+		const saved = JSON.parse(localStorage.getItem(USER_KEY) ?? 'null')
+		if (saved?.name && saved?.color) return saved
+	} catch {
+		// fall through to a random identity
+	}
+	const pick = <T,>(list: T[]) => list[Math.floor(Math.random() * list.length)]
+	return { name: `${pick(ADJECTIVES)} ${pick(ANIMALS)}`, color: pick(COLORS) }
+}
+
+export function initials(name: string) {
+	const parts = name.trim().split(/\s+/)
+	return ((parts[0]?.[0] ?? '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase() || '?'
+}

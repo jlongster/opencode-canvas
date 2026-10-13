@@ -68,6 +68,8 @@ export class Editor {
 	readonly hoveredId = atom<string | null>('hoveredId', null)
 	readonly brush = atom<Box | null>('brush', null)
 	readonly cursor = atom<string>('cursor', 'default')
+	/** Where the pointer is on the page, or null when it's outside the canvas (used for presence). */
+	readonly pointerPage = atom<Vec | null>('pointerPage', null, (a, b) => a === b || (!!a && !!b && a.x === b.x && a.y === b.y))
 	/** Reactive copy of inputs.shiftKey, for UI that changes while shift is held. */
 	readonly isShiftDown = atom<boolean>('isShiftDown', false)
 	readonly toolPath = atom<string>('toolPath', '')
@@ -225,6 +227,15 @@ export class Editor {
 		}
 		this.camera.set(next)
 		this.inputs.currentPagePoint = this.screenToPage(this.inputs.currentScreenPoint)
+		if (this.inputs.isPointerInside) this.pointerPage.set(this.inputs.currentPagePoint)
+	}
+
+	/** The camera that fits `bounds` in the viewport with `padding` screen px around it. */
+	getCameraForBounds(bounds: Box, opts: { padding?: number; maxZoom?: number } = {}): Camera {
+		const { w, h } = this.viewport.peek()
+		const pad = Math.min(opts.padding ?? ZOOM_TO_PADDING, w / 8, h / 8)
+		const z = clamp(Math.min((w - pad * 2) / bounds.w, (h - pad * 2) / bounds.h), MIN_ZOOM, opts.maxZoom ?? MAX_ZOOM)
+		return { x: w / 2 / z - (bounds.x + bounds.w / 2), y: h / 2 / z - (bounds.y + bounds.h / 2), z }
 	}
 
 	stopCameraMotion() {
@@ -266,17 +277,7 @@ export class Editor {
 	}
 
 	zoomToBounds(bounds: Box, opts: { animate?: boolean; maxZoom?: number } = {}) {
-		const { w, h } = this.viewport.peek()
-		const pad = Math.min(ZOOM_TO_PADDING, w / 8, h / 8)
-		const z = clamp(
-			Math.min((w - pad * 2) / bounds.w, (h - pad * 2) / bounds.h),
-			MIN_ZOOM,
-			opts.maxZoom ?? MAX_ZOOM,
-		)
-		this.setCamera(
-			{ x: w / 2 / z - (bounds.x + bounds.w / 2), y: h / 2 / z - (bounds.y + bounds.h / 2), z },
-			{ animate: opts.animate ?? true },
-		)
+		this.setCamera(this.getCameraForBounds(bounds, { maxZoom: opts.maxZoom }), { animate: opts.animate ?? true })
 	}
 
 	zoomToFit(opts: { animate?: boolean } = {}) {
@@ -447,6 +448,7 @@ export class Editor {
 			return
 		}
 		inputs.currentPagePoint = this.screenToPage(point)
+		this.pointerPage.set(inputs.currentPagePoint)
 		if (inputs.isPointing && !inputs.isDragging && Vec.dist(point, inputs.originScreenPoint) > DRAG_DISTANCE) {
 			inputs.isDragging = true
 		}
@@ -475,6 +477,7 @@ export class Editor {
 		if (!this.inputs.isPointing) {
 			this.inputs.isPointerInside = false
 			this.setHovered(null)
+			this.pointerPage.set(null)
 		}
 	}
 

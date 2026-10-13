@@ -153,9 +153,213 @@ body,
 	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
 }
 
-.toolbar {
+.top-right {
+	position: absolute;
 	right: 12px;
 	top: 12px;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.top-right .toolbar {
+	position: relative;
+}
+
+/* ---------- presence ---------- */
+
+.presence {
+	position: relative;
+}
+
+.avatars {
+	display: flex;
+	align-items: center;
+	padding-left: 8px;
+}
+
+.avatar {
+	position: relative;
+	width: 30px;
+	height: 30px;
+	margin-left: -8px;
+	padding: 0;
+	display: grid;
+	place-items: center;
+	border: 2px solid #111113;
+	border-radius: 50%;
+	color: rgba(0, 0, 0, 0.75);
+	font: 600 11px/1 ui-sans-serif, system-ui, sans-serif;
+	letter-spacing: 0.02em;
+	cursor: pointer;
+	transition: transform 120ms;
+}
+
+.avatar:hover {
+	transform: translateY(-2px);
+	z-index: 1;
+}
+
+.avatar.following {
+	box-shadow: 0 0 0 2px #111113, 0 0 0 4px var(--ring);
+	z-index: 2;
+}
+
+.avatar.me {
+	margin-left: 6px;
+}
+
+.avatar.more {
+	background: #3f3f46;
+	color: #e4e4e7;
+	cursor: default;
+}
+
+.presence-dot {
+	position: absolute;
+	right: -2px;
+	bottom: -2px;
+	width: 9px;
+	height: 9px;
+	border: 2px solid #111113;
+	border-radius: 50%;
+	background: #a1a1aa;
+}
+
+.presence-dot.connected {
+	background: #22c55e;
+}
+
+.presence-dot.connecting {
+	background: #eab308;
+}
+
+.presence-dot.disconnected {
+	background: #ef4444;
+}
+
+.name-editor {
+	position: absolute;
+	top: calc(100% + 10px);
+	right: 0;
+	width: 240px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 12px;
+	background: rgba(28, 28, 32, 0.97);
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	border-radius: 10px;
+	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+	z-index: 5;
+}
+
+.name-editor label {
+	color: #a1a1aa;
+	font-size: 12px;
+}
+
+.name-editor input {
+	height: 30px;
+	padding: 0 8px;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 6px;
+	background: rgba(0, 0, 0, 0.3);
+	color: inherit;
+	font: inherit;
+}
+
+.name-editor .swatches {
+	display: flex;
+	justify-content: space-between;
+}
+
+.name-editor .swatch {
+	width: 17px;
+	height: 17px;
+	padding: 0;
+	border: 2px solid transparent;
+	border-radius: 50%;
+	cursor: pointer;
+}
+
+.name-editor .swatch.active {
+	border-color: white;
+}
+
+.name-editor .save {
+	height: 28px;
+	border: 0;
+	border-radius: 6px;
+	background: rgb(87, 143, 255);
+	color: white;
+	font: inherit;
+	cursor: pointer;
+}
+
+.peer-cursors {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+}
+
+.peer-cursor {
+	position: absolute;
+	left: 0;
+	top: 0;
+	will-change: transform;
+}
+
+.peer-cursor svg {
+	display: block;
+	filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+}
+
+.peer-cursor-label {
+	position: absolute;
+	left: 14px;
+	top: 16px;
+	padding: 2px 7px;
+	border-radius: 6px;
+	color: rgba(0, 0, 0, 0.8);
+	font-size: 12px;
+	font-weight: 500;
+	white-space: nowrap;
+}
+
+.follow-frame {
+	position: absolute;
+	inset: 0;
+	border: 3px solid var(--ring);
+	pointer-events: none;
+	z-index: 3;
+}
+
+.follow-tag {
+	position: absolute;
+	left: 50%;
+	bottom: 12px;
+	transform: translateX(-50%);
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 5px 6px 5px 12px;
+	border-radius: 8px;
+	background: var(--ring);
+	color: rgba(0, 0, 0, 0.85);
+	font-weight: 500;
+	pointer-events: auto;
+}
+
+.follow-tag button {
+	height: 24px;
+	padding: 0 10px;
+	border: 0;
+	border-radius: 6px;
+	background: rgba(0, 0, 0, 0.18);
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
 }
 
 .toolbar button {

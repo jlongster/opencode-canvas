@@ -2,6 +2,7 @@ import { copyFile, link, mkdir, rename, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { extname, join, resolve } from 'node:path'
 import type { Item, MediaKind, ServerEvent, Session, Share, Snapshot } from '../shared/types'
+import { ROOM_NAME, roomSockets, type RoomSocketData } from './rooms'
 
 const PORT = Number(process.env.PORT ?? 4410)
 const DATA_DIR = resolve(process.env.CANVAS_DATA ?? join(import.meta.dir, '../data'))
@@ -325,6 +326,8 @@ async function handle(req: Request): Promise<Response> {
 	const method = req.method
 
 	if (p === '/api/state' && method === 'GET') return json(snapshot())
+	// The exe.dev proxy adds this header for visitors who are logged in to exe.dev.
+	if (p === '/api/me' && method === 'GET') return json({ email: req.headers.get('x-exedev-email') || null })
 	if (p === '/api/events' && method === 'GET') return events(req)
 
 	if (p === '/api/sessions' && method === 'POST') {
@@ -422,11 +425,18 @@ async function handle(req: Request): Promise<Response> {
 	throw new HttpError(404, 'not found')
 }
 
-Bun.serve({
+Bun.serve<RoomSocketData, never>({
 	port: PORT,
 	idleTimeout: 0,
 	maxRequestBodySize: 1024 * 1024 * 1024,
-	async fetch(req) {
+	websocket: roomSockets,
+	async fetch(req, server) {
+		const room = /^\/api\/rooms\/([^/]+)$/.exec(new URL(req.url).pathname)?.[1]
+		if (room !== undefined) {
+			if (!ROOM_NAME.test(room)) return json({ error: 'bad room name' }, 400)
+			if (server.upgrade(req, { data: { room } })) return
+			return json({ error: 'expected a websocket upgrade' }, 426)
+		}
 		try {
 			return await handle(req)
 		} catch (e) {

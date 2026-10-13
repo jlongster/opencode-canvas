@@ -10,7 +10,7 @@ export default defineConfig({
 		port: 5173,
 		host: true,
 		allowedHosts: ['jamesbox.exe.xyz', '.exe.xyz'],
-		proxy: { '/api': api, '/media': api, '/shares': api },
+		proxy: { '/api/rooms': { target: api, ws: true }, '/api': api, '/media': api, '/shares': api },
 	},
 	build: { outDir: 'dist', emptyOutDir: true },
 })

@@ -26,6 +26,8 @@ const NONE: RGBA = [0, 0, 0, 0]
 export interface RendererOptions {
 	/** Hide editing controls, e.g. when viewing a share */
 	readOnly?: boolean
+	/** Other people's selections, outlined in their colour (multiplayer). */
+	getRemoteSelections?: () => { ids: string[]; color: string }[]
 	/** Called when the user removes a section with its close button. */
 	onCloseSection?: (sectionId: string) => void
 }
@@ -85,7 +87,7 @@ export class Renderer {
 		private canvas: HTMLCanvasElement,
 		overlay: HTMLElement,
 		private editor: Editor,
-		options: RendererOptions,
+		private options: RendererOptions,
 	) {
 		this.context = canvas.getContext('webgpu')!
 		this.format = navigator.gpu.getPreferredCanvasFormat()
@@ -237,6 +239,11 @@ export class Renderer {
 
 		const overlays: (() => void)[] = []
 		const pxRatio = camera.z * this.dpr
+		const remoteSelected = new Map<string, RGBA>()
+		for (const { ids, color } of this.options.getRemoteSelections?.() ?? []) {
+			const rgba = hexToRgba(color)
+			for (const id of ids) if (!remoteSelected.has(id)) remoteSelected.set(id, rgba)
+		}
 
 		for (const [id, d] of this.displayedItems) {
 			if (!Box.intersects(d, cull)) continue
@@ -259,6 +266,9 @@ export class Renderer {
 			}
 			if (texAlpha < 1) pushRect(d, withAlpha(PLACEHOLDER, d.opacity * (1 - texAlpha)), NONE, 0, ITEM_RADIUS, false)
 
+			// Someone else's selection sits outside ours, so both stay visible.
+			const remote = remoteSelected.get(id)
+			if (remote) overlays.push(() => pushRect(Box.expand(d, 3 / camera.z), NONE, remote, 2.5, ITEM_RADIUS + 3 / camera.z, false))
 			if (selected.has(id)) overlays.push(() => pushRect(d, NONE, ACCENT, 2, ITEM_RADIUS, false))
 			else if (hovered === id) overlays.push(() => pushRect(d, NONE, withAlpha(ACCENT, 0.7), 1.5, ITEM_RADIUS, false))
 		}
@@ -605,6 +615,11 @@ function premul(out: Float32Array, o: number, [r, g, b, a]: RGBA) {
 	out[o + 1] = g * a
 	out[o + 2] = b * a
 	out[o + 3] = a
+}
+
+function hexToRgba(hex: string): RGBA {
+	const n = parseInt(hex.replace('#', ''), 16)
+	return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, 1]
 }
 
 function withAlpha([r, g, b, a]: RGBA, k: number): RGBA {

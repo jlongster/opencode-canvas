@@ -100,6 +100,29 @@ body,
 	color: #fca5a5;
 }
 
+.item-download {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 28px;
+	height: 28px;
+	display: none;
+	place-items: center;
+	border-radius: 7px;
+	background: rgba(20, 20, 24, 0.6);
+	color: rgba(255, 255, 255, 0.85);
+	backdrop-filter: blur(8px);
+	pointer-events: auto;
+	cursor: pointer;
+	will-change: transform;
+	transition: background 120ms, color 120ms;
+}
+
+.item-download:hover {
+	background: rgba(20, 20, 24, 0.85);
+	color: white;
+}
+
 .toolbar,
 .status {
 	position: absolute;

@@ -57,6 +57,7 @@ export class Renderer {
 	private textures: TextureCache
 	private videos: VideoPool
 	private labels: SectionLabels
+	private actions: ItemActions
 
 	private displayedItems = new Map<string, Displayed>()
 	private displayedSections = new Map<string, Displayed>()
@@ -139,6 +140,7 @@ export class Renderer {
 		this.textures = new TextureCache(device, imageLayout)
 		this.videos = new VideoPool(overlay)
 		this.labels = new SectionLabels(overlay, (id) => options.onCloseSection?.(id))
+		this.actions = new ItemActions(overlay)
 
 		const ro = new ResizeObserver(([entry]) => {
 			const size = entry.devicePixelContentBoxSize?.[0]
@@ -322,6 +324,7 @@ export class Renderer {
 		this.device.queue.submit([encoder.finish()])
 
 		this.labels.update(layout.sections, this.displayedSections, editor)
+		this.actions.update(hovered ? items[hovered] : undefined, hovered ? this.displayedItems.get(hovered) : undefined, editor)
 
 		this.frameTimes.push(performance.now() - t0)
 		if (this.frameTimes.length > 120) this.frameTimes.shift()
@@ -389,8 +392,54 @@ export class Renderer {
 		this.textures.destroy()
 		this.videos.destroy()
 		this.labels.destroy()
+		this.actions.destroy()
 		this.device.destroy()
 	}
+}
+
+/** A download button over the top-right corner of the hovered item. */
+class ItemActions {
+	private el: HTMLAnchorElement
+	private itemId: string | null = null
+
+	constructor(parent: HTMLElement) {
+		this.el = document.createElement('a')
+		this.el.className = 'item-download'
+		this.el.title = 'Download'
+		this.el.innerHTML =
+			'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>'
+		// Keep the click from reaching the canvas (which would select or start a brush).
+		this.el.addEventListener('pointerdown', (e) => e.stopPropagation())
+		this.el.addEventListener('dblclick', (e) => e.stopPropagation())
+		parent.appendChild(this.el)
+	}
+
+	update(item: Item | undefined, box: Displayed | undefined, editor: Editor) {
+		const z = editor.camera.peek().z
+		if (!item || !box || box.w * z < 64 || box.h * z < 48) {
+			this.el.style.display = 'none'
+			this.itemId = null
+			return
+		}
+		if (this.itemId !== item.id) {
+			this.itemId = item.id
+			this.el.href = item.src
+			this.el.download = downloadName(item)
+		}
+		const p = editor.pageToScreen({ x: box.x + box.w, y: box.y })
+		this.el.style.display = 'grid'
+		this.el.style.transform = `translate(${p.x - 8 - 28}px, ${p.y + 8}px)`
+	}
+
+	destroy() {
+		this.el.remove()
+	}
+}
+
+function downloadName(item: Item) {
+	const ext = item.src.slice(item.src.lastIndexOf('.'))
+	const base = (item.caption ?? item.id).replace(/\.[a-z0-9]{2,4}$/i, '').replace(/[^\w.-]+/g, '-').slice(0, 80) || item.id
+	return base + ext
 }
 
 /** Section titles as DOM text, positioned in screen space so they stay crisp and readable at any zoom. */

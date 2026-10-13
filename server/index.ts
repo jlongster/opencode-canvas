@@ -2,7 +2,7 @@ import { copyFile, link, mkdir, rename, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { extname, join, resolve } from 'node:path'
 import type { Item, MediaKind, ServerEvent, Session, Share, Snapshot } from '../shared/types'
-import { ROOM_NAME, roomSockets, type RoomSocketData } from './rooms'
+import { roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
 
 const PORT = Number(process.env.PORT ?? 4410)
 const DATA_DIR = resolve(process.env.CANVAS_DATA ?? join(import.meta.dir, '../data'))
@@ -20,6 +20,11 @@ const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.mkv'])
 
 await mkdir(MEDIA_DIR, { recursive: true })
 await mkdir(SHARES_DIR, { recursive: true })
+// Each share's room document (sticky notes etc.) is saved next to the share.
+setRoomPersistence((room) => {
+	const id = /^share-([A-Za-z0-9]{10})$/.exec(room)?.[1]
+	return id ? join(SHARES_DIR, `${id}.ydoc`) : null
+})
 
 // ---------- persistence ----------
 
@@ -406,6 +411,7 @@ async function handle(req: Request): Promise<Response> {
 		if (method === 'GET') return serveFile(req, file, 'public, max-age=31536000, immutable')
 		if (method === 'DELETE') {
 			await rm(file, { force: true })
+			await rm(join(SHARES_DIR, `${m[1]}.ydoc`), { force: true })
 			await rm(join(SHARES_DIR, m[1]), { recursive: true, force: true })
 			return json({ ok: true })
 		}
@@ -444,7 +450,9 @@ Bun.serve<RoomSocketData, never>({
 	async fetch(req, server) {
 		const room = /^\/api\/rooms\/([^/]+)$/.exec(stripBase(new URL(req.url).pathname))?.[1]
 		if (room !== undefined) {
-			if (!ROOM_NAME.test(room)) return json({ error: 'bad room name' }, 400)
+			// Rooms exist for shares only: "share-<shareId>".
+			const shareId = /^share-([A-Za-z0-9]{10})$/.exec(room)?.[1]
+			if (!shareId || !existsSync(join(SHARES_DIR, `${shareId}.json`))) return json({ error: 'no such room' }, 404)
 			if (server.upgrade(req, { data: { room } })) return
 			return json({ error: 'expected a websocket upgrade' }, 426)
 		}

@@ -4,6 +4,7 @@ import { Box, clamp, easeInOutCubic, lerp, Vec } from './geometry'
 import { computeLayout, LAYOUT, type Layout } from './layout'
 import { StateNode } from './StateNode'
 import { HandTool } from './tools/HandTool'
+import { NoteTool } from './tools/NoteTool'
 import { SelectTool } from './tools/SelectTool'
 import type { EditorEvent, Modifiers, Target } from './types'
 
@@ -26,10 +27,10 @@ const FOCUS_MAX_WIDTH = 1350
 class Root extends StateNode {
 	static override id = 'root'
 	static override initial = 'select'
-	static override children = () => [SelectTool, HandTool]
+	static override children = () => [SelectTool, HandTool, NoteTool]
 }
 
-export type ToolId = 'select' | 'hand'
+export type ToolId = 'select' | 'hand' | 'note'
 
 /** Pointer and keyboard state, kept up to date before events reach the state chart. */
 export class Inputs {
@@ -86,6 +87,8 @@ export class Editor {
 	})
 
 	readonly inputs = new Inputs()
+	/** Set when sticky notes are available (shared pages); the note tool calls it to drop a note. */
+	createNote: ((point: Vec) => void) | null = null
 	readonly root: Root
 
 	private cameraAnimation: { from: Camera; to: Camera; start: number; duration: number } | null = null
@@ -174,7 +177,8 @@ export class Editor {
 
 	/** The cursor the current tool shows at rest (used after a space-pan ends). */
 	private restingCursor() {
-		return this.currentToolId.get() === 'hand' ? 'grab' : 'default'
+		const tool = this.currentToolId.get()
+		return tool === 'hand' ? 'grab' : tool === 'note' ? 'crosshair' : 'default'
 	}
 
 	// ---------- hit testing ----------
@@ -540,6 +544,7 @@ export class Editor {
 		}
 		if (!mod && !e.altKey && (e.key === 'v' || e.key === 'V')) return this.setCurrentTool('select')
 		if (!mod && !e.altKey && (e.key === 'h' || e.key === 'H')) return this.setCurrentTool('hand')
+		if (!mod && !e.altKey && (e.key === 'n' || e.key === 'N') && this.createNote) return this.setCurrentTool('note')
 
 		this.dispatch({ name: 'key_down', key: e.key, code: e.code, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey })
 	}

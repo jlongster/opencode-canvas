@@ -52,7 +52,7 @@ export class Presence {
 	readonly chatOpen = atom<boolean>('chatOpen', false)
 	private chatTimer = 0
 
-	private doc = new Y.Doc()
+	readonly doc = new Y.Doc()
 	private provider: WebsocketProvider
 	private disposers: (() => void)[] = []
 	private publishTimer = 0

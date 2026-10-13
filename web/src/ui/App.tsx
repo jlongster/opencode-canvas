@@ -6,6 +6,7 @@ import type { Share } from '../../../shared/types'
 import { connect, createShare, deleteSession, loadShare } from '../sync/client'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
+import { SharedNotes } from '../multiplayer/SharedNotes'
 import { CursorChat } from './CursorChat'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
@@ -35,8 +36,9 @@ export function App() {
 		// Shared pages are multiplayer: everyone viewing the same share is in one room.
 		const live = SHARE_ID ? new Presence(editor, `share-${SHARE_ID}`) : null
 		if (live) {
+			const notes = new SharedNotes(overlayRef.current!, editor, live.doc, live)
 			const cursors = new PeerCursors(overlayRef.current!, editor, live)
-			disposers.push(() => cursors.destroy(), () => live.destroy())
+			disposers.push(() => cursors.destroy(), () => notes.destroy(), () => live.destroy())
 			setPresence(live)
 			;(window as any).presence = live
 		}
@@ -99,7 +101,7 @@ export function App() {
 				<canvas ref={canvasRef} className="canvas" />
 				<div ref={overlayRef} className="overlay" />
 			</div>
-			<ToolPicker editor={editor} />
+			<ToolPicker editor={editor} withNotes={!!presence} />
 			{presence && <FollowIndicator presence={presence} />}
 			{presence && <CursorChat editor={editor} presence={presence} />}
 			<div className="top-right">
@@ -130,6 +132,17 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 		),
 	},
 	{
+		id: 'note',
+		label: 'Sticky note',
+		key: 'N',
+		icon: (
+			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
+				<path d="M4 4h16v10l-6 6H4z" />
+				<path d="M14 20v-6h6" />
+			</svg>
+		),
+	},
+	{
 		id: 'hand',
 		label: 'Hand',
 		key: 'H',
@@ -142,11 +155,11 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 	},
 ]
 
-function ToolPicker({ editor }: { editor: Editor }) {
+function ToolPicker({ editor, withNotes }: { editor: Editor; withNotes: boolean }) {
 	const current = useValue(() => editor.currentToolId.get())
 	return (
 		<div className="toolbar tools" onPointerDown={(e) => e.stopPropagation()}>
-			{TOOLS.map((tool) => (
+			{TOOLS.filter((tool) => withNotes || tool.id !== 'note').map((tool) => (
 				<button
 					key={tool.id}
 					title={`${tool.label} (${tool.key})`}

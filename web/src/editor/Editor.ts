@@ -21,7 +21,7 @@ const ANIMATION_MS = 320
 const PAN_FRICTION = 0.0045 // per ms
 const ZOOM_TO_PADDING = 48
 /** The widest (in screen px) an item gets when focused by double-click */
-const FOCUS_MAX_WIDTH = 1200
+const FOCUS_MAX_WIDTH = 1350
 
 class Root extends StateNode {
 	static override id = 'root'

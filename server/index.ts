@@ -11,6 +11,9 @@ const INDEX_FILE = join(DATA_DIR, 'index.json')
 const SHARES_DIR = join(DATA_DIR, 'shares')
 const WEB_DIST = resolve(import.meta.dir, '../web/dist')
 const THUMB_SIZE = 512
+const BASE_PATH = '/canvas'
+/** Where share links point: the public, port-less address that proxies to this server */
+const PUBLIC_URL = (process.env.CANVAS_PUBLIC_URL ?? 'https://jamesbox.exe.xyz/canvas').replace(/\/$/, '')
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.bmp'])
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.mkv'])
@@ -286,6 +289,14 @@ class HttpError extends Error {
 	}
 }
 
+/**
+ * The website proxies https://jamesbox.exe.xyz/canvas/* here unchanged, and the web build
+ * references /canvas/assets/*, so every route also answers with a /canvas prefix.
+ */
+function stripBase(pathname: string) {
+	return pathname === BASE_PATH ? '/' : pathname.startsWith(BASE_PATH + '/') ? pathname.slice(BASE_PATH.length) : pathname
+}
+
 const json = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 
@@ -322,7 +333,7 @@ function serveFile(req: Request, path: string, cache: string) {
 
 async function handle(req: Request): Promise<Response> {
 	const url = new URL(req.url)
-	const p = url.pathname
+	const p = stripBase(url.pathname)
 	const method = req.method
 
 	if (p === '/api/state' && method === 'GET') return json(snapshot())
@@ -385,7 +396,7 @@ async function handle(req: Request): Promise<Response> {
 	if (p === '/api/shares' && method === 'POST') {
 		const body = (await req.json().catch(() => ({}))) as { sessionIds?: string[]; view?: Share['view'] }
 		const share = await createShare(body)
-		return json({ id: share.id, url: `/s/${share.id}` }, 201)
+		return json({ id: share.id, url: `${PUBLIC_URL}/s/${share.id}` }, 201)
 	}
 
 	m = /^\/api\/shares\/([^/]+)$/.exec(p)
@@ -431,7 +442,7 @@ Bun.serve<RoomSocketData, never>({
 	maxRequestBodySize: 1024 * 1024 * 1024,
 	websocket: roomSockets,
 	async fetch(req, server) {
-		const room = /^\/api\/rooms\/([^/]+)$/.exec(new URL(req.url).pathname)?.[1]
+		const room = /^\/api\/rooms\/([^/]+)$/.exec(stripBase(new URL(req.url).pathname))?.[1]
 		if (room !== undefined) {
 			if (!ROOM_NAME.test(room)) return json({ error: 'bad room name' }, 400)
 			if (server.upgrade(req, { data: { room } })) return

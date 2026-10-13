@@ -1,4 +1,5 @@
 import { mipShader } from './shaders'
+import { url as withBase } from '../base'
 
 export interface TextureEntry {
 	url: string
@@ -101,7 +102,7 @@ export class TextureCache {
 		entry.state = 'loading'
 		this.loading++
 		try {
-			const res = await fetch(entry.url)
+			const res = await fetch(withBase(entry.url))
 			if (!res.ok) throw new Error(`${res.status}`)
 			const blob = await res.blob()
 			let bitmap = await createImageBitmap(blob, { premultiplyAlpha: 'premultiply', colorSpaceConversion: 'default' })

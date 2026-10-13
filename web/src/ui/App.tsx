@@ -9,10 +9,11 @@ import { Presence } from '../multiplayer/Presence'
 import { CursorChat } from './CursorChat'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
+import { APP_PATH } from '../base'
 
 const CAMERA_KEY = 'canvas.camera'
 /** Set when viewing a shared snapshot at /s/:id */
-const SHARE_ID = /^\/s\/([A-Za-z0-9]{10})\/?$/.exec(location.pathname)?.[1] ?? null
+const SHARE_ID = /^\/s\/([A-Za-z0-9]{10})\/?$/.exec(APP_PATH)?.[1] ?? null
 
 export function App() {
 	const containerRef = useRef<HTMLDivElement>(null)

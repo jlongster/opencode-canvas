@@ -5,6 +5,7 @@ import { LAYOUT } from '../editor/layout'
 import { imageShader, rectShader, videoShader } from './shaders'
 import { TextureCache } from './TextureCache'
 import { VideoPool } from './VideoPool'
+import { url as withBase } from '../base'
 
 const THUMB_SIZE = 512
 const ITEM_RADIUS = 6
@@ -179,7 +180,7 @@ export class Renderer {
 			const item = id ? items[id] : undefined
 			const box = id ? layout.items.get(id) : undefined
 			if (item?.kind === 'video' && box && Box.intersects(box, viewBounds) && !wantedVideos.some((v) => v.id === id)) {
-				wantedVideos.push({ id: item.id, src: item.src })
+				wantedVideos.push({ id: item.id, src: withBase(item.src) })
 			}
 		}
 		consider(hovered)
@@ -493,7 +494,7 @@ class ItemActions {
 		}
 		if (this.itemId !== item.id) {
 			this.itemId = item.id
-			this.el.href = item.src
+			this.el.href = withBase(item.src)
 			this.el.download = downloadName(item)
 		}
 		const p = editor.pageToScreen({ x: box.x + box.w, y: box.y })

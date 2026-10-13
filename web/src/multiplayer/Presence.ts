@@ -3,6 +3,7 @@ import * as Y from 'yjs'
 import type { Camera, Editor } from '../editor/Editor'
 import { clamp, type Box, type Vec } from '../editor/geometry'
 import { atom, react } from '../state/signals'
+import { BASE } from '../base'
 
 export interface PeerUser {
 	name: string
@@ -61,7 +62,7 @@ export class Presence {
 		private editor: Editor,
 		room: string,
 	) {
-		const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/rooms`
+		const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${BASE}/api/rooms`
 		this.provider = new WebsocketProvider(url, room, this.doc, { disableBc: true })
 		const awareness = this.provider.awareness
 
@@ -182,7 +183,7 @@ export class Presence {
 	private async adoptExeIdentity() {
 		let name = ''
 		try {
-			const { email } = (await (await fetch('/api/me')).json()) as { email: string | null }
+			const { email } = (await (await fetch(`${BASE}/api/me`)).json()) as { email: string | null }
 			name = (email ?? '')
 				.split('@')[0]
 				.split(/[._-]+/)

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
-import { Editor, type Camera, type ToolId } from '../editor/Editor'
+import { Editor, type ToolId } from '../editor/Editor'
 import { Renderer } from '../render/Renderer'
 import { react } from '../state/signals'
 import type { Share } from '../../../shared/types'
@@ -12,7 +12,6 @@ import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
 import { APP_PATH } from '../base'
 
-const CAMERA_KEY = 'canvas.camera'
 /** Set when viewing a shared snapshot at /s/:id */
 const SHARE_ID = /^\/s\/([A-Za-z0-9]{10})\/?$/.exec(APP_PATH)?.[1] ?? null
 
@@ -62,27 +61,11 @@ export function App() {
 				.then((s) => {
 					if (disposed) return
 					setShare(s)
-					// Viewport sizes differ between people, so frame the same region rather than the same camera.
-					if (s.view) editor.zoomToBounds(s.view, { animate: false })
-					else editor.zoomToFit({ animate: false })
+					editor.whenViewportReady(() => editor.goToInitialView())
 				})
 				.catch((e) => setError(String(e.message ?? e)))
 		} else {
-			const saved = readCamera()
-			if (saved) editor.setCamera(saved)
-			disposers.push(
-				connect(editor, () => {
-					if (!saved) editor.zoomToFit({ animate: false })
-				}),
-			)
-			let saveTimer = 0
-			disposers.push(
-				react(() => {
-					const camera = editor.camera.get()
-					clearTimeout(saveTimer)
-					saveTimer = window.setTimeout(() => localStorage.setItem(CAMERA_KEY, JSON.stringify(camera)), 300)
-				}),
-			)
+			disposers.push(connect(editor, () => editor.whenViewportReady(() => editor.goToInitialView())))
 		}
 		disposers.push(react(() => (container.style.cursor = editor.cursor.get())))
 		;(window as any).editor = editor
@@ -286,13 +269,4 @@ function EmptyState({ editor }: { editor: Editor }) {
   -F file=@output.png -F caption="first try"`}</pre>
 		</div>
 	)
-}
-
-function readCamera(): Camera | null {
-	try {
-		const c = JSON.parse(localStorage.getItem(CAMERA_KEY) ?? 'null')
-		return c && Number.isFinite(c.x) && Number.isFinite(c.y) && c.z > 0 ? c : null
-	} catch {
-		return null
-	}
 }

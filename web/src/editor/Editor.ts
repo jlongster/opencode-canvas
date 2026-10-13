@@ -1,5 +1,5 @@
 import type { Item, Session } from '../../../shared/types'
-import { atom, computed, getGlobalEpoch, transact } from '../state/signals'
+import { atom, computed, getGlobalEpoch, react, transact } from '../state/signals'
 import { Box, clamp, easeInOutCubic, lerp, Vec } from './geometry'
 import { computeLayout, LAYOUT, type Layout } from './layout'
 import { StateNode } from './StateNode'
@@ -21,6 +21,10 @@ const DRAG_DISTANCE = 4
 const ANIMATION_MS = 320
 const PAN_FRICTION = 0.0045 // per ms
 const ZOOM_TO_PADDING = 48
+/** Opening view: zoom limits, side padding, and where the first row sits (fraction of screen height) */
+const INITIAL_ZOOM = { min: 0.3, max: 0.85 }
+const INITIAL_PADDING = 48
+const INITIAL_FIRST_ROW = 0.3
 /** The widest (in screen px) an item gets when focused by double-click */
 const FOCUS_MAX_WIDTH = 1350
 
@@ -287,6 +291,36 @@ export class Editor {
 	zoomToFit(opts: { animate?: boolean } = {}) {
 		const bounds = this.layout.get().bounds
 		if (bounds) this.zoomToBounds(bounds, { ...opts, maxZoom: 1 })
+	}
+
+	/**
+	 * The view a page opens with: content centred horizontally, zoomed to fit its width (within
+	 * INITIAL_ZOOM limits), and the first row of items INITIAL_FIRST_ROW of the way down the screen.
+	 */
+	goToInitialView() {
+		const layout = this.layout.get()
+		const { w, h } = this.viewport.peek()
+		if (!layout.bounds) return
+		const z = clamp((w - INITIAL_PADDING * 2) / layout.bounds.w, INITIAL_ZOOM.min, INITIAL_ZOOM.max)
+		const first = layout.sections[0]
+		const firstItem = first?.itemIds[0]
+		const top = firstItem ? this.getItemBoundsWithTitle(firstItem)!.y : (first?.box.y ?? layout.bounds.y)
+		this.stopCameraMotion()
+		this.setCamera({
+			x: w / 2 / z - (layout.bounds.x + layout.bounds.w / 2),
+			y: (h * INITIAL_FIRST_ROW) / z - top,
+			z,
+		})
+	}
+
+	/** Runs fn once the viewport has a real size (the ResizeObserver reports it asynchronously). */
+	whenViewportReady(fn: () => void) {
+		if (this.viewport.peek().w > 1) return fn()
+		const stop = react(() => {
+			if (this.viewport.get().w <= 1) return
+			queueMicrotask(() => stop())
+			fn()
+		})
 	}
 
 	zoomToSelection() {

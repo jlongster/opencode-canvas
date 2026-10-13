@@ -39,6 +39,15 @@ export interface Share {
 	items: Item[]
 }
 
+export type ShareRole = 'edit' | 'view'
+
+/** What the browser gets when it opens a share link: the share plus what this link may do. */
+export interface OpenedShare extends Share {
+	role: ShareRole
+	/** only present on edit links; needed to join the room with edit rights */
+	editKey?: string
+}
+
 export type ServerEvent =
 	| { type: 'session'; session: Session }
 	| { type: 'session_deleted'; id: string }

@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type JSX } from 'react'
 import { Editor, type ToolId } from '../editor/Editor'
 import { Renderer } from '../render/Renderer'
 import { react } from '../state/signals'
-import type { Share } from '../../../shared/types'
-import { connect, createShare, deleteSession, loadShare } from '../sync/client'
+import type { OpenedShare } from '../../../shared/types'
+import { connect, createShare, deleteSession, loadShare, type ShareLink, type ShareLinks } from '../sync/client'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedNotes } from '../multiplayer/SharedNotes'
@@ -12,8 +12,13 @@ import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
 import { APP_PATH } from '../base'
 
-/** Set when viewing a shared snapshot at /s/:id */
-const SHARE_ID = /^\/s\/([A-Za-z0-9]{10})\/?$/.exec(APP_PATH)?.[1] ?? null
+/** Set when viewing a shared snapshot: /s/:id is view-only, /e/:editKey can edit. */
+const SHARE_LINK: ShareLink | null = (() => {
+	const view = /^\/s\/([A-Za-z0-9]{10})\/?$/.exec(APP_PATH)?.[1]
+	if (view) return { kind: 'view', id: view }
+	const edit = /^\/e\/([A-Za-z0-9]{20})\/?$/.exec(APP_PATH)?.[1]
+	return edit ? { kind: 'edit', key: edit } : null
+})()
 
 export function App() {
 	const containerRef = useRef<HTMLDivElement>(null)
@@ -21,33 +26,22 @@ export function App() {
 	const overlayRef = useRef<HTMLDivElement>(null)
 	const [editor] = useState(() => new Editor())
 	const [error, setError] = useState<string | null>(null)
-	const [share, setShare] = useState<Share | null>(null)
+	const [share, setShare] = useState<OpenedShare | null>(null)
 	const [presence, setPresence] = useState<Presence | null>(null)
 
 	useEffect(() => {
 		const container = containerRef.current!
 		let renderer: Renderer | null = null
+		let live: Presence | null = null
 		let disposed = false
 		const disposers: (() => void)[] = []
 
 		editor.mount(container)
 
-		// Shared pages are multiplayer: everyone viewing the same share is in one room.
-		const live = SHARE_ID ? new Presence(editor, `share-${SHARE_ID}`) : null
-		if (live) {
-			const notes = new SharedNotes(overlayRef.current!, editor, live.doc, live)
-			const cursors = new PeerCursors(overlayRef.current!, editor, live)
-			disposers.push(() => cursors.destroy(), () => notes.destroy(), () => live.destroy())
-			setPresence(live)
-			;(window as any).presence = live
-		}
-
 		Renderer.create(canvasRef.current!, overlayRef.current!, editor, {
-			readOnly: !!SHARE_ID,
+			readOnly: !!SHARE_LINK,
 			onCloseSection: (id) => deleteSession(id).catch((e) => console.error(e)),
-			getRemoteSelections: live
-				? () => live.peers.get().map((p) => ({ ids: p.selection ?? [], color: p.user.color }))
-				: undefined,
+			getRemoteSelections: () => live?.peers.get().map((p) => ({ ids: p.selection ?? [], color: p.user.color })) ?? [],
 		})
 			.then((r) => {
 				if (disposed) return r.destroy()
@@ -56,12 +50,20 @@ export function App() {
 			})
 			.catch((e) => setError(String(e.message ?? e)))
 
-		if (SHARE_ID) {
-			loadShare(editor, SHARE_ID)
+		if (SHARE_LINK) {
+			loadShare(editor, SHARE_LINK)
 				.then((s) => {
 					if (disposed) return
 					setShare(s)
 					editor.whenViewportReady(() => editor.goToInitialView())
+					// Shared pages are multiplayer: everyone on the same share is in one room.
+					live = new Presence(editor, `share-${s.id}`, s.editKey)
+					const p = live
+					const notes = new SharedNotes(overlayRef.current!, editor, p, s.role)
+					const cursors = new PeerCursors(overlayRef.current!, editor, p)
+					disposers.push(() => cursors.destroy(), () => notes.destroy(), () => p.destroy())
+					setPresence(p)
+					;(window as any).presence = p
 				})
 				.catch((e) => setError(String(e.message ?? e)))
 		} else {
@@ -89,13 +91,13 @@ export function App() {
 			{presence && <CursorChat editor={editor} presence={presence} />}
 			<div className="top-right">
 				{presence && <PresenceBar presence={presence} />}
-				<Toolbar editor={editor} canShare={!SHARE_ID} />
+				<Toolbar editor={editor} canShare={!SHARE_LINK} />
 			</div>
 			<StatusBar editor={editor} share={share} />
-			{!SHARE_ID && <EmptyState editor={editor} />}
+			{!SHARE_LINK && <EmptyState editor={editor} />}
 			{error && (
 				<div className="error">
-					<strong>{SHARE_ID ? "Can't open this share." : "Can't start the renderer."}</strong>
+					<strong>{SHARE_LINK ? "Can't open this share." : "Can't start the renderer."}</strong>
 					<span>{error}</span>
 				</div>
 			)}
@@ -162,18 +164,14 @@ function Toolbar({ editor, canShare }: { editor: Editor; canShare: boolean }) {
 	const hasSelection = useValue(() => editor.selectedIds.get().length > 0)
 	const hasContent = useValue(() => Object.keys(editor.sessions.get()).length > 0)
 	const [shareState, setShareState] = useState<
-		{ status: 'idle' } | { status: 'sharing' } | { status: 'done'; url: string; copied: boolean } | { status: 'error'; message: string }
+		{ status: 'idle' } | { status: 'sharing' } | { status: 'done'; links: ShareLinks } | { status: 'error'; message: string }
 	>({ status: 'idle' })
 
 	const share = async () => {
 		setShareState({ status: 'sharing' })
 		try {
-			const url = await createShare(editor.viewportPageBounds.get())
-			const copied = await navigator.clipboard.writeText(url).then(
-				() => true,
-				() => false,
-			)
-			setShareState({ status: 'done', url, copied })
+			const links = await createShare(editor.viewportPageBounds.get())
+			setShareState({ status: 'done', links })
 		} catch (e) {
 			setShareState({ status: 'error', message: (e as Error).message })
 		}
@@ -204,15 +202,15 @@ function Toolbar({ editor, canShare }: { editor: Editor; canShare: boolean }) {
 				</>
 			)}
 			{shareState.status === 'done' && (
-				<div className="share-popover">
-					<span className="share-note">{shareState.copied ? 'Link copied' : 'Snapshot saved'}</span>
-					<input readOnly value={shareState.url} onFocus={(e) => e.currentTarget.select()} />
-					<a href={shareState.url} target="_blank" rel="noreferrer">
-						Open
-					</a>
-					<button title="Close" onClick={() => setShareState({ status: 'idle' })}>
-						×
-					</button>
+				<div className="share-popover links">
+					<div className="share-popover-head">
+						<span className="share-note">Snapshot saved</span>
+						<button title="Close" onClick={() => setShareState({ status: 'idle' })}>
+							×
+						</button>
+					</div>
+					<ShareLinkRow label="Can edit" hint="Full access: notes, and drawing later" url={shareState.links.editUrl} />
+					<ShareLinkRow label="View only" hint="Can look around and leave faded notes" url={shareState.links.viewUrl} />
 				</div>
 			)}
 			{shareState.status === 'error' && (
@@ -227,7 +225,31 @@ function Toolbar({ editor, canShare }: { editor: Editor; canShare: boolean }) {
 	)
 }
 
-function StatusBar({ editor, share }: { editor: Editor; share: Share | null }) {
+function ShareLinkRow({ label, hint, url }: { label: string; hint: string; url: string }) {
+	const [copied, setCopied] = useState(false)
+	const copy = () =>
+		navigator.clipboard.writeText(url).then(() => {
+			setCopied(true)
+			setTimeout(() => setCopied(false), 1500)
+		})
+	return (
+		<div className="share-row">
+			<div className="share-row-label">
+				<strong>{label}</strong>
+				<span>{hint}</span>
+			</div>
+			<input readOnly value={url} onFocus={(e) => e.currentTarget.select()} />
+			<button className="share-copy" onClick={copy}>
+				{copied ? 'Copied' : 'Copy'}
+			</button>
+			<a href={url} target="_blank" rel="noreferrer">
+				Open
+			</a>
+		</div>
+	)
+}
+
+function StatusBar({ editor, share }: { editor: Editor; share: OpenedShare | null }) {
 	const connection = useValue(() => editor.connection.get())
 	const counts = useValue(
 		() => `${Object.keys(editor.sessions.get()).length}·${Object.keys(editor.items.get()).length}·${editor.selectedIds.get().length}`,
@@ -243,9 +265,12 @@ function StatusBar({ editor, share }: { editor: Editor; share: Share | null }) {
 	return (
 		<div className="status">
 			{share ? (
-				<span className="shared-badge" title="A frozen copy. It doesn't update.">
-					Shared snapshot · {new Date(share.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
-				</span>
+				<>
+					<span className={`role-badge ${share.role}`}>{share.role === 'edit' ? 'Can edit' : 'View only'}</span>
+					<span className="shared-badge" title="A frozen copy. It doesn't update.">
+						Shared snapshot · {new Date(share.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+					</span>
+				</>
 			) : (
 				<span className={`dot ${connection}`} title={connection} />
 			)}

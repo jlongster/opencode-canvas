@@ -1,8 +1,9 @@
 import { copyFile, link, mkdir, rename, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { extname, join, resolve } from 'node:path'
-import type { Item, MediaKind, ServerEvent, Session, Share, Snapshot } from '../shared/types'
+import type { Item, MediaKind, OpenedShare, ServerEvent, Session, Share, Snapshot } from '../shared/types'
 import { roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
+import { readdir } from 'node:fs/promises'
 
 const PORT = Number(process.env.PORT ?? 4410)
 const DATA_DIR = resolve(process.env.CANVAS_DATA ?? join(import.meta.dir, '../data'))
@@ -21,9 +22,10 @@ const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.mkv'])
 await mkdir(MEDIA_DIR, { recursive: true })
 await mkdir(SHARES_DIR, { recursive: true })
 // Each share's room document (sticky notes etc.) is saved next to the share.
+const SHARE_ROOM = /^share-([A-Za-z0-9]{10})(-viewers)?$/
 setRoomPersistence((room) => {
-	const id = /^share-([A-Za-z0-9]{10})$/.exec(room)?.[1]
-	return id ? join(SHARES_DIR, `${id}.ydoc`) : null
+	const m = SHARE_ROOM.exec(room)
+	return m ? join(SHARES_DIR, `${m[1]}${m[2] ? '.viewers' : ''}.ydoc`) : null
 })
 
 // ---------- persistence ----------
@@ -248,11 +250,46 @@ async function deleteItem(id: string) {
 // ---------- shares ----------
 
 const SHARE_ID = /^[A-Za-z0-9]{10}$/
+const EDIT_KEY = /^[A-Za-z0-9]{20}$/
 
-function newShareId() {
+/** A share as stored on disk. The edit key is secret: it's never sent with the view-only share. */
+type StoredShare = Share & { editKey: string }
+
+function randomId(length: number) {
 	const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
-	const bytes = crypto.getRandomValues(new Uint8Array(10))
+	const bytes = crypto.getRandomValues(new Uint8Array(length))
 	return [...bytes].map((b) => alphabet[b % alphabet.length]).join('')
+}
+
+const shares = new Map<string, StoredShare>()
+const shareByEditKey = new Map<string, string>()
+
+async function writeShare(share: StoredShare) {
+	shares.set(share.id, share)
+	shareByEditKey.set(share.editKey, share.id)
+	await Bun.write(join(SHARES_DIR, `${share.id}.json`), JSON.stringify(share))
+}
+
+// Load every share, giving older ones (made before edit links existed) an edit key.
+for (const file of await readdir(SHARES_DIR)) {
+	const id = file.endsWith('.json') ? file.slice(0, -5) : null
+	if (!id || !SHARE_ID.test(id)) continue
+	const share = (await Bun.file(join(SHARES_DIR, file)).json()) as Partial<StoredShare> & Share
+	if (share.editKey) {
+		shares.set(id, share as StoredShare)
+		shareByEditKey.set(share.editKey, id)
+	} else {
+		await writeShare({ ...share, editKey: randomId(20) })
+	}
+}
+
+function openShare(share: StoredShare, role: OpenedShare['role']): OpenedShare {
+	const { editKey, ...rest } = share
+	return role === 'edit' ? { ...rest, role, editKey } : { ...rest, role }
+}
+
+function shareLinks(share: StoredShare) {
+	return { id: share.id, viewUrl: `${PUBLIC_URL}/s/${share.id}`, editUrl: `${PUBLIC_URL}/e/${share.editKey}` }
 }
 
 /**
@@ -260,13 +297,13 @@ function newShareId() {
  * share's own folder, so the share keeps working after the originals are deleted, without
  * using extra disk space.
  */
-async function createShare(body: { sessionIds?: string[]; view?: Share['view'] }): Promise<Share> {
+async function createShare(body: { sessionIds?: string[]; view?: Share['view'] }): Promise<StoredShare> {
 	const wanted = body.sessionIds ? new Set(body.sessionIds) : null
 	const sessions = [...db.sessions.values()].filter((s) => !wanted || wanted.has(s.id))
 	if (!sessions.length) throw new HttpError(400, 'nothing to share')
 	const sessionIds = new Set(sessions.map((s) => s.id))
 
-	const id = newShareId()
+	const id = randomId(10)
 	const dir = join(SHARES_DIR, id)
 	await mkdir(dir, { recursive: true })
 	const keep = async (url: string) => {
@@ -281,8 +318,8 @@ async function createShare(body: { sessionIds?: string[]; view?: Share['view'] }
 		if (!sessionIds.has(item.sessionId)) continue
 		items.push({ ...item, src: await keep(item.src), thumb: await keep(item.thumb) })
 	}
-	const share: Share = { id, createdAt: Date.now(), view: body.view, sessions, items }
-	await Bun.write(join(SHARES_DIR, `${id}.json`), JSON.stringify(share))
+	const share: StoredShare = { id, createdAt: Date.now(), view: body.view, sessions, items, editKey: randomId(20) }
+	await writeShare(share)
 	return share
 }
 
@@ -401,17 +438,35 @@ async function handle(req: Request): Promise<Response> {
 	if (p === '/api/shares' && method === 'POST') {
 		const body = (await req.json().catch(() => ({}))) as { sessionIds?: string[]; view?: Share['view'] }
 		const share = await createShare(body)
-		return json({ id: share.id, url: `${PUBLIC_URL}/s/${share.id}` }, 201)
+		return json(shareLinks(share), 201)
+	}
+
+	// Edit links: /e/<editKey> in the browser, /api/edit/<editKey> for the data.
+	m = /^\/api\/edit\/([^/]+)$/.exec(p)
+	if (m && method === 'GET') {
+		const share = EDIT_KEY.test(m[1]) ? shares.get(shareByEditKey.get(m[1]) ?? '') : undefined
+		if (!share) throw new HttpError(404, 'share not found')
+		return json(openShare(share, 'edit'))
+	}
+
+	m = /^\/api\/shares\/([^/]+)\/links$/.exec(p)
+	if (m && method === 'GET') {
+		const share = shares.get(m[1])
+		if (!share) throw new HttpError(404, 'share not found')
+		return json(shareLinks(share))
 	}
 
 	m = /^\/api\/shares\/([^/]+)$/.exec(p)
 	if (m && SHARE_ID.test(m[1])) {
-		const file = join(SHARES_DIR, `${m[1]}.json`)
-		if (!existsSync(file)) throw new HttpError(404, 'share not found')
-		if (method === 'GET') return serveFile(req, file, 'public, max-age=31536000, immutable')
+		const share = shares.get(m[1])
+		if (!share) throw new HttpError(404, 'share not found')
+		if (method === 'GET') return json(openShare(share, 'view'))
 		if (method === 'DELETE') {
-			await rm(file, { force: true })
+			shares.delete(share.id)
+			shareByEditKey.delete(share.editKey)
+			await rm(join(SHARES_DIR, `${m[1]}.json`), { force: true })
 			await rm(join(SHARES_DIR, `${m[1]}.ydoc`), { force: true })
+			await rm(join(SHARES_DIR, `${m[1]}.viewers.ydoc`), { force: true })
 			await rm(join(SHARES_DIR, m[1]), { recursive: true, force: true })
 			return json({ ok: true })
 		}
@@ -448,12 +503,17 @@ Bun.serve<RoomSocketData, never>({
 	maxRequestBodySize: 1024 * 1024 * 1024,
 	websocket: roomSockets,
 	async fetch(req, server) {
-		const room = /^\/api\/rooms\/([^/]+)$/.exec(stripBase(new URL(req.url).pathname))?.[1]
+		const reqUrl = new URL(req.url)
+		const room = /^\/api\/rooms\/([^/]+)$/.exec(stripBase(reqUrl.pathname))?.[1]
 		if (room !== undefined) {
-			// Rooms exist for shares only: "share-<shareId>".
-			const shareId = /^share-([A-Za-z0-9]{10})$/.exec(room)?.[1]
-			if (!shareId || !existsSync(join(SHARES_DIR, `${shareId}.json`))) return json({ error: 'no such room' }, 404)
-			if (server.upgrade(req, { data: { room } })) return
+			// Each share has two rooms: "share-<id>" (editors write; view links are read-only) and
+			// "share-<id>-viewers" (viewer notes; anyone with the link writes). The edit key grants edit rights.
+			const m = SHARE_ROOM.exec(room)
+			const share = shares.get(m?.[1] ?? '')
+			if (!share) return json({ error: 'no such room' }, 404)
+			const canEdit = reqUrl.searchParams.get('key') === share.editKey
+			const readOnly = !m![2] && !canEdit
+			if (server.upgrade(req, { data: { room, readOnly } })) return
 			return json({ error: 'expected a websocket upgrade' }, 426)
 		}
 		try {

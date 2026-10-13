@@ -1,24 +1,31 @@
-import type { ServerEvent, Share, Snapshot } from '../../../shared/types'
+import type { OpenedShare, ServerEvent, Share, Snapshot } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { url as withBase } from '../base'
 
-/** Freezes the current canvas into a share and returns its full URL. */
-export async function createShare(view: Share['view']): Promise<string> {
+export interface ShareLinks {
+	id: string
+	viewUrl: string
+	editUrl: string
+}
+
+/** Freezes the current canvas into a share and returns its view and edit links. */
+export async function createShare(view: Share['view']): Promise<ShareLinks> {
 	const res = await fetch(withBase('/api/shares'), {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ view }),
 	})
 	if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? `share failed: ${res.status}`)
-	const { url } = (await res.json()) as { url: string }
-	return url
+	return (await res.json()) as ShareLinks
 }
 
-/** Loads a share into the editor (read-only, no live updates). */
-export async function loadShare(editor: Editor, id: string): Promise<Share> {
-	const res = await fetch(withBase(`/api/shares/${id}`))
+export type ShareLink = { kind: 'view'; id: string } | { kind: 'edit'; key: string }
+
+/** Loads a share into the editor (no live updates). Edit links come back with role "edit". */
+export async function loadShare(editor: Editor, link: ShareLink): Promise<OpenedShare> {
+	const res = await fetch(withBase(link.kind === 'edit' ? `/api/edit/${link.key}` : `/api/shares/${link.id}`))
 	if (!res.ok) throw new Error(res.status === 404 ? 'This share link does not exist.' : `Could not load share (${res.status}).`)
-	const share = (await res.json()) as Share
+	const share = (await res.json()) as OpenedShare
 	editor.loadSnapshot(share.sessions, share.items)
 	return share
 }

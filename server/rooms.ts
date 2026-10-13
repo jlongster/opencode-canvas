@@ -15,9 +15,13 @@ import * as Y from 'yjs'
 const MESSAGE_SYNC = 0
 const MESSAGE_AWARENESS = 1
 const MESSAGE_QUERY_AWARENESS = 3
+// Sub-type of a sync message (see y-protocols/sync): a request for the document, not a write.
+const SYNC_STEP_1 = 0
 
 export interface RoomSocketData {
 	room: string
+	/** read-only sockets can sync and share presence, but their document writes are ignored */
+	readOnly: boolean
 	/** resolves once the room (and its saved document) is loaded; messages queue behind it */
 	ready?: Promise<Room>
 }
@@ -185,7 +189,15 @@ function handleMessage(room: Room, ws: Socket, bytes: Uint8Array) {
 	try {
 		const decoder = decoding.createDecoder(bytes)
 		const type = decoding.readVarUint(decoder)
-		if (type === MESSAGE_SYNC) {
+		if (type === MESSAGE_SYNC && ws.data.readOnly) {
+			// Read-only sockets get the document, but anything they try to write is ignored. (Writes
+			// can't be accepted selectively: Yjs needs every update from a client, in order.)
+			if (decoding.readVarUint(decoder) !== SYNC_STEP_1) return
+			const encoder = encoding.createEncoder()
+			encoding.writeVarUint(encoder, MESSAGE_SYNC)
+			syncProtocol.writeSyncStep2(encoder, room.doc, decoding.readVarUint8Array(decoder))
+			send(ws, encoding.toUint8Array(encoder))
+		} else if (type === MESSAGE_SYNC) {
 			const encoder = encoding.createEncoder()
 			encoding.writeVarUint(encoder, MESSAGE_SYNC)
 			syncProtocol.readSyncMessage(decoder, encoder, room.doc, ws)

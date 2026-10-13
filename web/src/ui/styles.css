@@ -569,6 +569,7 @@ body,
 }
 
 .toolbar.tools {
+	top: 12px;
 	left: 50%;
 	right: auto;
 	transform: translateX(-50%);

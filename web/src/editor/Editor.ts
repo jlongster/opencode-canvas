@@ -346,7 +346,8 @@ export class Editor {
 		}
 
 		this.select([next])
-		this.centerOn(layout.items.get(next)!)
+		this.stopCameraMotion()
+		this.centerOn(layout.items.get(next)!, { animate: false })
 	}
 
 	zoomToItem(id: string) {

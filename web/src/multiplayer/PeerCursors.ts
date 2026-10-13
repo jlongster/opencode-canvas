@@ -10,7 +10,10 @@ const EASE_MS = 45
  */
 export class PeerCursors {
 	private host: HTMLDivElement
-	private cursors = new Map<number, { el: HTMLDivElement; label: HTMLSpanElement; shown: Vec; color: string; name: string }>()
+	private cursors = new Map<
+		number,
+		{ el: HTMLDivElement; label: HTMLSpanElement; message: HTMLSpanElement; shown: Vec; color: string; name: string; chat: string | null }
+	>()
 	private dispose: () => void
 
 	constructor(
@@ -37,10 +40,12 @@ export class PeerCursors {
 				const el = document.createElement('div')
 				el.className = 'peer-cursor'
 				el.innerHTML =
-					'<svg width="18" height="18" viewBox="0 0 18 18"><path d="M2 1.5 L15.5 8.2 L9.2 9.6 L6.4 15.6 Z" stroke="white" stroke-width="1.3" stroke-linejoin="round"/></svg><span class="peer-cursor-label"></span>'
-				const label = el.querySelector('span')!
+					'<svg width="18" height="18" viewBox="0 0 18 18"><path d="M2 1.5 L15.5 8.2 L9.2 9.6 L6.4 15.6 Z" stroke="white" stroke-width="1.3" stroke-linejoin="round"/></svg>' +
+					'<span class="peer-cursor-label"><span class="peer-cursor-name"></span><span class="peer-cursor-message"></span></span>'
+				const label = el.querySelector<HTMLSpanElement>('.peer-cursor-label')!
+				const message = el.querySelector<HTMLSpanElement>('.peer-cursor-message')!
 				this.host.appendChild(el)
-				c = { el, label, shown: { ...peer.cursor }, color: '', name: '' }
+				c = { el, label, message, shown: { ...peer.cursor }, color: '', name: '', chat: null }
 				this.cursors.set(peer.clientId, c)
 			}
 			if (c.color !== peer.user.color) {
@@ -50,8 +55,15 @@ export class PeerCursors {
 			}
 			if (c.name !== peer.user.name) {
 				c.name = peer.user.name
-				c.label.textContent = c.name
+				c.label.firstElementChild!.textContent = c.name
 			}
+			const chat = peer.chat ?? null
+			if (c.chat !== chat) {
+				c.chat = chat
+				c.message.textContent = chat || '…'
+				c.label.classList.toggle('chatting', chat !== null)
+			}
+			c.label.classList.toggle('sent', chat !== null && !!peer.chatSent)
 			c.shown.x += (peer.cursor.x - c.shown.x) * k
 			c.shown.y += (peer.cursor.y - c.shown.y) * k
 			const p = this.editor.pageToScreen(c.shown)

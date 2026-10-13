@@ -17,6 +17,10 @@ interface PresenceState {
 	selection: string[]
 	/** the part of the page they're looking at */
 	view: Box | null
+	/** cursor chat message, shown next to their cursor while it's set */
+	chat: string | null
+	/** true once the message was sent (Enter), so viewers can fade it out */
+	chatSent: boolean
 }
 
 export interface Peer extends PresenceState {
@@ -26,6 +30,8 @@ export interface Peer extends PresenceState {
 const USER_KEY = 'canvas.user'
 const PUBLISH_MS = 40
 const FOLLOW_EASE_MS = 70
+const CHAT_LINGER_MS = 5000
+const CHAT_MAX = 140
 
 export const COLORS = ['#f87171', '#fb923c', '#facc15', '#4ade80', '#2dd4bf', '#38bdf8', '#818cf8', '#c084fc', '#f472b6', '#a3e635']
 const ADJECTIVES = ['Curious', 'Brave', 'Quiet', 'Swift', 'Clever', 'Gentle', 'Lucky', 'Sunny', 'Bold', 'Calm', 'Witty', 'Cosmic']
@@ -40,6 +46,10 @@ export class Presence {
 	readonly me = atom<PeerUser>('me', loadUser())
 	readonly followingId = atom<number | null>('followingId', null)
 	readonly status = atom<'connecting' | 'connected' | 'disconnected'>('presenceStatus', 'connecting')
+	/** Our cursor chat message (null when there's none) and whether we're still typing it */
+	readonly chat = atom<string | null>('chat', null)
+	readonly chatOpen = atom<boolean>('chatOpen', false)
+	private chatTimer = 0
 
 	private doc = new Y.Doc()
 	private provider: WebsocketProvider
@@ -66,6 +76,8 @@ export class Presence {
 		this.disposers.push(
 			react(() => {
 				this.me.get()
+				this.chat.get()
+				this.chatOpen.get()
 				editor.pointerPage.get()
 				editor.selectedIds.get()
 				editor.viewportPageBounds.get()
@@ -93,6 +105,12 @@ export class Presence {
 
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === 'Escape' && this.followingId.peek() !== null) this.followingId.set(null)
+			const target = e.target as HTMLElement | null
+			const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+			if (e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+				e.preventDefault()
+				this.openChat()
+			}
 		}
 		window.addEventListener('keydown', onKey)
 		this.disposers.push(() => window.removeEventListener('keydown', onKey))
@@ -111,6 +129,33 @@ export class Presence {
 		this.setUser({ ...this.me.peek(), color })
 	}
 
+	// ---------- cursor chat ----------
+	// "/" opens a bubble at your cursor. Others see the text live as you type. Enter keeps the
+	// message up for a few seconds and then it fades; Escape removes it right away.
+
+	openChat() {
+		clearTimeout(this.chatTimer)
+		this.chat.set('')
+		this.chatOpen.set(true)
+	}
+
+	setChatText(text: string) {
+		this.chat.set(text.slice(0, CHAT_MAX))
+	}
+
+	commitChat() {
+		this.chatOpen.set(false)
+		clearTimeout(this.chatTimer)
+		if (!this.chat.peek()) return this.chat.set(null)
+		this.chatTimer = window.setTimeout(() => this.chat.set(null), CHAT_LINGER_MS)
+	}
+
+	closeChat() {
+		clearTimeout(this.chatTimer)
+		this.chatOpen.set(false)
+		this.chat.set(null)
+	}
+
 	toggleFollow(clientId: number) {
 		this.followingId.set(this.followingId.peek() === clientId ? null : clientId)
 	}
@@ -121,6 +166,7 @@ export class Presence {
 
 	destroy() {
 		clearTimeout(this.publishTimer)
+		clearTimeout(this.chatTimer)
 		for (const d of this.disposers.splice(0)) d()
 		this.provider.awareness.setLocalState(null)
 		this.provider.destroy()
@@ -165,6 +211,8 @@ export class Presence {
 			user: this.me.peek(),
 			cursor: editor.pointerPage.peek(),
 			selection: editor.selectedIds.peek(),
+			chat: this.chat.peek(),
+			chatSent: !this.chatOpen.peek(),
 			view: editor.viewportPageBounds.get(),
 		}
 		this.provider.awareness.setLocalState(state)

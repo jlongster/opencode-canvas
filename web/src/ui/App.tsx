@@ -6,6 +6,7 @@ import type { Share } from '../../../shared/types'
 import { connect, createShare, deleteSession, loadShare } from '../sync/client'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
+import { CursorChat } from './CursorChat'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
 
@@ -99,6 +100,7 @@ export function App() {
 			</div>
 			<ToolPicker editor={editor} />
 			{presence && <FollowIndicator presence={presence} />}
+			{presence && <CursorChat editor={editor} presence={presence} />}
 			<div className="top-right">
 				{presence && <PresenceBar presence={presence} />}
 				<Toolbar editor={editor} canShare={!SHARE_ID} />

@@ -327,6 +327,86 @@ body,
 	white-space: nowrap;
 }
 
+.peer-cursor-message {
+	display: none;
+}
+
+.peer-cursor-label.chatting {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	/* the cursor element is zero-width, so size to the text instead of shrinking to it */
+	width: max-content;
+	max-width: 280px;
+	padding: 5px 10px 6px;
+	border-radius: 4px 14px 14px 14px;
+	white-space: normal;
+}
+
+.peer-cursor-label.chatting .peer-cursor-name {
+	font-size: 10px;
+	opacity: 0.7;
+}
+
+.peer-cursor-label.chatting .peer-cursor-message {
+	display: block;
+	font-size: 14px;
+	line-height: 1.3;
+	overflow-wrap: anywhere;
+}
+
+.cursor-chat {
+	position: absolute;
+	left: 0;
+	top: 0;
+	max-width: 300px;
+	padding: 6px 12px;
+	border-radius: 4px 16px 16px 16px;
+	color: rgba(0, 0, 0, 0.85);
+	font-size: 14px;
+	line-height: 1.3;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+	pointer-events: auto;
+	z-index: 4;
+	will-change: transform;
+}
+
+.cursor-chat input {
+	field-sizing: content;
+	min-width: 110px;
+	max-width: 276px;
+	padding: 0;
+	border: 0;
+	outline: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+}
+
+.cursor-chat input::placeholder {
+	color: rgba(0, 0, 0, 0.45);
+}
+
+.cursor-chat.sent {
+	pointer-events: none;
+	overflow-wrap: anywhere;
+	animation: chat-fade 5s forwards;
+}
+
+.peer-cursor-label.chatting.sent {
+	animation: chat-fade 5s forwards;
+}
+
+@keyframes chat-fade {
+	0%,
+	85% {
+		opacity: 1;
+	}
+	100% {
+		opacity: 0;
+	}
+}
+
 .follow-frame {
 	position: absolute;
 	inset: 0;

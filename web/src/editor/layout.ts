@@ -22,6 +22,8 @@ export const LAYOUT = {
 	sectionPadding: 24,
 	sectionGap: 96,
 	emptySectionHeight: 160,
+	/** Space reserved above an item that has a title (page units; the text scales with zoom) */
+	titleHeight: 40,
 }
 
 /**
@@ -46,6 +48,7 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 		const list = (bySession.get(session.id) ?? []).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
 		let y = pad
 		for (const item of list) {
+			if (item.title) y += LAYOUT.titleHeight
 			const h = (item.height / item.width) * W
 			layout.items.set(item.id, { x: x + pad, y, w: W, h })
 			layout.sectionOf.set(item.id, session.id)

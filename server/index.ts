@@ -161,6 +161,11 @@ function assertSessionId(id: string | undefined): string {
 	return id
 }
 
+function textField(value: unknown): string | undefined {
+	const text = typeof value === 'string' ? value.trim() : undefined
+	return text || undefined
+}
+
 function newId() {
 	return crypto.randomUUID().replaceAll('-', '').slice(0, 16)
 }
@@ -168,7 +173,7 @@ function newId() {
 async function addItem(
 	sessionId: string,
 	data: Blob,
-	opts: { filename?: string; caption?: string; id?: string },
+	opts: { filename?: string; title?: string; caption?: string; id?: string },
 ): Promise<Item> {
 	const ext = (extname(opts.filename ?? '').toLowerCase() || extFromMime(data.type)).toLowerCase()
 	const kind = kindOf(ext, data.type)
@@ -192,6 +197,7 @@ async function addItem(
 			thumb: `/media/${thumbFile}`,
 			width,
 			height,
+			title: opts.title,
 			caption: opts.caption,
 			createdAt: Date.now(),
 		}
@@ -302,23 +308,24 @@ async function handle(req: Request): Promise<Response> {
 			const form = await req.formData()
 			const file = form.get('file')
 			if (!(file instanceof Blob)) throw new HttpError(400, 'missing "file" field')
-			const caption = form.get('caption')?.toString()
+			const meta = { title: textField(form.get('title')), caption: textField(form.get('caption')) }
 			const filename = file instanceof File ? file.name : undefined
-			return json(await addItem(sessionId, file, { filename, caption }), 201)
+			return json(await addItem(sessionId, file, { filename, ...meta }), 201)
 		}
 		const body = (await req.json().catch(() => null)) as
-			| { path?: string; url?: string; caption?: string }
+			| { path?: string; url?: string; title?: string; caption?: string }
 			| null
+		const meta = { title: textField(body?.title), caption: textField(body?.caption) }
 		if (body?.path) {
 			const f = Bun.file(body.path)
 			if (!(await f.exists())) throw new HttpError(404, `no file at ${body.path}`)
-			return json(await addItem(sessionId, f, { filename: body.path, caption: body.caption }), 201)
+			return json(await addItem(sessionId, f, { filename: body.path, ...meta }), 201)
 		}
 		if (body?.url) {
 			const res = await fetch(body.url)
 			if (!res.ok) throw new HttpError(502, `fetch ${body.url} failed: ${res.status}`)
 			const blob = await res.blob()
-			return json(await addItem(sessionId, blob, { filename: new URL(body.url).pathname, caption: body.caption }), 201)
+			return json(await addItem(sessionId, blob, { filename: new URL(body.url).pathname, ...meta }), 201)
 		}
 		throw new HttpError(400, 'send multipart "file", or JSON {"path"} or {"url"}')
 	}

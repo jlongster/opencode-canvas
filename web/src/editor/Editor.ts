@@ -1,7 +1,7 @@
 import type { Item, Session } from '../../../shared/types'
 import { atom, computed, getGlobalEpoch, transact } from '../state/signals'
 import { Box, clamp, easeInOutCubic, lerp, Vec } from './geometry'
-import { computeLayout, type Layout } from './layout'
+import { computeLayout, LAYOUT, type Layout } from './layout'
 import { StateNode } from './StateNode'
 import { HandTool } from './tools/HandTool'
 import { SelectTool } from './tools/SelectTool'
@@ -349,12 +349,19 @@ export class Editor {
 
 		this.select([next])
 		this.stopCameraMotion()
-		this.centerOn(layout.items.get(next)!, { animate: false })
+		this.centerOn(this.getItemBoundsWithTitle(next)!, { animate: false })
 	}
 
 	zoomToItem(id: string) {
-		const box = this.layout.get().items.get(id)
+		const box = this.getItemBoundsWithTitle(id)
 		if (box) this.zoomToBounds(box)
+	}
+
+	/** The item's box plus the title strip above it, if it has a title. */
+	getItemBoundsWithTitle(id: string): Box | undefined {
+		const box = this.layout.get().items.get(id)
+		if (!box || !this.items.get()[id]?.title) return box
+		return { x: box.x, y: box.y - LAYOUT.titleHeight, w: box.w, h: box.h + LAYOUT.titleHeight }
 	}
 
 	zoomToSection(id: string) {

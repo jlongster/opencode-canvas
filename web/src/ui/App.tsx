@@ -149,7 +149,9 @@ function StatusBar({ editor }: { editor: Editor }) {
 	const hovered = useValue(() => {
 		const id = editor.hoveredId.get()
 		const item = id ? editor.items.get()[id] : null
-		return item ? `${item.caption ?? item.id} — ${item.width}×${item.height}` : null
+		if (!item) return null
+		const text = [item.title, item.caption].filter(Boolean).join(': ') || item.id
+		return `${text} — ${item.width}×${item.height}`
 	})
 	const [sessions, items, selected] = counts.split('·')
 	return (

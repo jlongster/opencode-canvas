@@ -100,6 +100,22 @@ body,
 	color: #fca5a5;
 }
 
+.item-title {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: flex;
+	align-items: center;
+	padding: 0 0.15em;
+	color: #d4d4d8;
+	font-weight: 500;
+	line-height: 1.2;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	will-change: transform;
+}
+
 .item-download {
 	position: absolute;
 	left: 0;

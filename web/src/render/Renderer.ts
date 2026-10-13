@@ -1,6 +1,7 @@
 import type { Item } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { Box } from '../editor/geometry'
+import { LAYOUT } from '../editor/layout'
 import { imageShader, rectShader, videoShader } from './shaders'
 import { TextureCache } from './TextureCache'
 import { VideoPool } from './VideoPool'
@@ -58,6 +59,7 @@ export class Renderer {
 	private videos: VideoPool
 	private labels: SectionLabels
 	private actions: ItemActions
+	private titles: ItemTitles
 
 	private displayedItems = new Map<string, Displayed>()
 	private displayedSections = new Map<string, Displayed>()
@@ -140,6 +142,7 @@ export class Renderer {
 		this.textures = new TextureCache(device, imageLayout)
 		this.videos = new VideoPool(overlay)
 		this.labels = new SectionLabels(overlay, (id) => options.onCloseSection?.(id))
+		this.titles = new ItemTitles(overlay)
 		this.actions = new ItemActions(overlay)
 
 		const ro = new ResizeObserver(([entry]) => {
@@ -324,6 +327,7 @@ export class Renderer {
 		this.device.queue.submit([encoder.finish()])
 
 		this.labels.update(layout.sections, this.displayedSections, editor)
+		this.titles.update(items, this.displayedItems, cull, editor)
 		const showDownload = hovered && editor.isShiftDown.get()
 		this.actions.update(showDownload ? items[hovered] : undefined, showDownload ? this.displayedItems.get(hovered) : undefined, editor)
 
@@ -394,7 +398,60 @@ export class Renderer {
 		this.videos.destroy()
 		this.labels.destroy()
 		this.actions.destroy()
+		this.titles.destroy()
 		this.device.destroy()
+	}
+}
+
+/**
+ * Item titles as DOM text in the strip the layout reserves above each titled item.
+ * The text scales with zoom like the images do, and only on-screen titles exist in the DOM.
+ */
+class ItemTitles {
+	private els = new Map<string, HTMLDivElement>()
+	private host: HTMLDivElement
+
+	constructor(parent: HTMLElement) {
+		this.host = document.createElement('div')
+		this.host.className = 'item-titles'
+		parent.appendChild(this.host)
+	}
+
+	update(items: Record<string, Item>, displayed: Map<string, Displayed>, view: Box, editor: Editor) {
+		const z = editor.camera.peek().z
+		const strip = LAYOUT.titleHeight
+		const fontSize = 18 * z
+		const seen = new Set<string>()
+		if (fontSize >= 6) {
+			for (const [id, d] of displayed) {
+				const title = items[id]?.title
+				if (!title || !Box.intersects({ x: d.x, y: d.y - strip, w: d.w, h: strip }, view)) continue
+				seen.add(id)
+				let el = this.els.get(id)
+				if (!el) {
+					el = document.createElement('div')
+					el.className = 'item-title'
+					this.host.appendChild(el)
+					this.els.set(id, el)
+				}
+				if (el.textContent !== title) el.textContent = title
+				const p = editor.pageToScreen({ x: d.x, y: d.y - strip })
+				el.style.transform = `translate(${p.x}px, ${p.y}px)`
+				el.style.width = `${d.w * z}px`
+				el.style.height = `${strip * z}px`
+				el.style.fontSize = `${fontSize}px`
+				el.style.opacity = String(d.opacity)
+			}
+		}
+		for (const [id, el] of this.els) {
+			if (seen.has(id)) continue
+			el.remove()
+			this.els.delete(id)
+		}
+	}
+
+	destroy() {
+		this.host.remove()
 	}
 }
 
@@ -439,7 +496,7 @@ class ItemActions {
 
 function downloadName(item: Item) {
 	const ext = item.src.slice(item.src.lastIndexOf('.'))
-	const base = (item.caption ?? item.id).replace(/\.[a-z0-9]{2,4}$/i, '').replace(/[^\w.-]+/g, '-').slice(0, 80) || item.id
+	const base = (item.title ?? item.caption ?? item.id).replace(/\.[a-z0-9]{2,4}$/i, '').replace(/[^\w.-]+/g, '-').slice(0, 80) || item.id
 	return base + ext
 }
 

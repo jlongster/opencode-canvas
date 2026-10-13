@@ -16,6 +16,9 @@ export interface Item {
 	thumb: string
 	width: number
 	height: number
+	/** Shown above the item on the canvas */
+	title?: string
+	/** Longer description, shown when hovering */
 	caption?: string
 	createdAt: number
 }

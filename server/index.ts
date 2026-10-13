@@ -1,12 +1,13 @@
-import { mkdir, rename, rm } from 'node:fs/promises'
+import { copyFile, link, mkdir, rename, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { extname, join, resolve } from 'node:path'
-import type { Item, MediaKind, ServerEvent, Session, Snapshot } from '../shared/types'
+import type { Item, MediaKind, ServerEvent, Session, Share, Snapshot } from '../shared/types'
 
 const PORT = Number(process.env.PORT ?? 4410)
 const DATA_DIR = resolve(process.env.CANVAS_DATA ?? join(import.meta.dir, '../data'))
 const MEDIA_DIR = join(DATA_DIR, 'media')
 const INDEX_FILE = join(DATA_DIR, 'index.json')
+const SHARES_DIR = join(DATA_DIR, 'shares')
 const WEB_DIST = resolve(import.meta.dir, '../web/dist')
 const THUMB_SIZE = 512
 
@@ -14,6 +15,7 @@ const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.mkv'])
 
 await mkdir(MEDIA_DIR, { recursive: true })
+await mkdir(SHARES_DIR, { recursive: true })
 
 // ---------- persistence ----------
 
@@ -234,6 +236,47 @@ async function deleteItem(id: string) {
 	return true
 }
 
+// ---------- shares ----------
+
+const SHARE_ID = /^[A-Za-z0-9]{10}$/
+
+function newShareId() {
+	const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
+	const bytes = crypto.getRandomValues(new Uint8Array(10))
+	return [...bytes].map((b) => alphabet[b % alphabet.length]).join('')
+}
+
+/**
+ * Freezes the given sessions (default: all) into a share. Media files are hard-linked into the
+ * share's own folder, so the share keeps working after the originals are deleted, without
+ * using extra disk space.
+ */
+async function createShare(body: { sessionIds?: string[]; view?: Share['view'] }): Promise<Share> {
+	const wanted = body.sessionIds ? new Set(body.sessionIds) : null
+	const sessions = [...db.sessions.values()].filter((s) => !wanted || wanted.has(s.id))
+	if (!sessions.length) throw new HttpError(400, 'nothing to share')
+	const sessionIds = new Set(sessions.map((s) => s.id))
+
+	const id = newShareId()
+	const dir = join(SHARES_DIR, id)
+	await mkdir(dir, { recursive: true })
+	const keep = async (url: string) => {
+		const file = url.replace('/media/', '')
+		const dest = join(dir, file)
+		await link(join(MEDIA_DIR, file), dest).catch(() => copyFile(join(MEDIA_DIR, file), dest))
+		return `/shares/${id}/${file}`
+	}
+
+	const items: Item[] = []
+	for (const item of db.items.values()) {
+		if (!sessionIds.has(item.sessionId)) continue
+		items.push({ ...item, src: await keep(item.src), thumb: await keep(item.thumb) })
+	}
+	const share: Share = { id, createdAt: Date.now(), view: body.view, sessions, items }
+	await Bun.write(join(SHARES_DIR, `${id}.json`), JSON.stringify(share))
+	return share
+}
+
 // ---------- http ----------
 
 class HttpError extends Error {
@@ -334,6 +377,31 @@ async function handle(req: Request): Promise<Response> {
 	if (m && method === 'DELETE') {
 		if (!(await deleteItem(decodeURIComponent(m[1])))) throw new HttpError(404, 'item not found')
 		return json({ ok: true })
+	}
+
+	if (p === '/api/shares' && method === 'POST') {
+		const body = (await req.json().catch(() => ({}))) as { sessionIds?: string[]; view?: Share['view'] }
+		const share = await createShare(body)
+		return json({ id: share.id, url: `/s/${share.id}` }, 201)
+	}
+
+	m = /^\/api\/shares\/([^/]+)$/.exec(p)
+	if (m && SHARE_ID.test(m[1])) {
+		const file = join(SHARES_DIR, `${m[1]}.json`)
+		if (!existsSync(file)) throw new HttpError(404, 'share not found')
+		if (method === 'GET') return serveFile(req, file, 'public, max-age=31536000, immutable')
+		if (method === 'DELETE') {
+			await rm(file, { force: true })
+			await rm(join(SHARES_DIR, m[1]), { recursive: true, force: true })
+			return json({ ok: true })
+		}
+	}
+
+	m = /^\/shares\/([A-Za-z0-9]{10})\/([\w.-]+)$/.exec(p)
+	if (m && method === 'GET') {
+		const path = join(SHARES_DIR, m[1], m[2])
+		if (!existsSync(path)) throw new HttpError(404, 'not found')
+		return serveFile(req, path, 'public, max-age=31536000, immutable')
 	}
 
 	m = /^\/media\/([\w.-]+)$/.exec(p)

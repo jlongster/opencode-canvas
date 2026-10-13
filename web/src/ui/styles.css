@@ -199,6 +199,51 @@ body,
 	color: white;
 }
 
+.share-popover {
+	position: absolute;
+	top: calc(100% + 8px);
+	right: 0;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 8px 8px 12px;
+	background: rgba(28, 28, 32, 0.96);
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	border-radius: 10px;
+	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+	white-space: nowrap;
+}
+
+.share-popover .share-note {
+	color: #86efac;
+}
+
+.share-popover input {
+	width: 300px;
+	height: 28px;
+	padding: 0 8px;
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 6px;
+	background: rgba(0, 0, 0, 0.3);
+	color: inherit;
+	font: inherit;
+	font-family: ui-monospace, monospace;
+	font-size: 12px;
+}
+
+.share-popover a {
+	color: rgb(120, 165, 255);
+	text-decoration: none;
+}
+
+.error-text {
+	color: #fca5a5;
+}
+
+.shared-badge {
+	color: #e4e4e7;
+}
+
 .toolbar .zoom {
 	min-width: 56px;
 	font-variant-numeric: tabular-nums;

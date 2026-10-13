@@ -28,6 +28,17 @@ export interface Snapshot {
 	items: Item[]
 }
 
+/** A frozen, read-only copy of the canvas that can be opened at /s/:id */
+export interface Share {
+	id: string
+	createdAt: number
+	/** The part of the canvas that was on screen when it was shared (page coordinates) */
+	view?: { x: number; y: number; w: number; h: number }
+	sessions: Session[]
+	/** Items whose src/thumb point at the share's own copies of the media */
+	items: Item[]
+}
+
 export type ServerEvent =
 	| { type: 'session'; session: Session }
 	| { type: 'session_deleted'; id: string }

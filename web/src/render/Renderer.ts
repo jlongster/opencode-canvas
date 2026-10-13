@@ -24,6 +24,8 @@ const PLACEHOLDER: RGBA = [1, 1, 1, 0.06]
 const NONE: RGBA = [0, 0, 0, 0]
 
 export interface RendererOptions {
+	/** Hide editing controls, e.g. when viewing a share */
+	readOnly?: boolean
 	/** Called when the user removes a section with its close button. */
 	onCloseSection?: (sectionId: string) => void
 }
@@ -141,7 +143,7 @@ export class Renderer {
 
 		this.textures = new TextureCache(device, imageLayout)
 		this.videos = new VideoPool(overlay)
-		this.labels = new SectionLabels(overlay, (id) => options.onCloseSection?.(id))
+		this.labels = new SectionLabels(overlay, options.readOnly ? null : (id) => options.onCloseSection?.(id))
 		this.titles = new ItemTitles(overlay)
 		this.actions = new ItemActions(overlay)
 
@@ -507,7 +509,8 @@ class SectionLabels {
 
 	constructor(
 		parent: HTMLElement,
-		private onClose: (sectionId: string) => void,
+		/** null hides the close buttons (read-only views) */
+		private onClose: ((sectionId: string) => void) | null,
 	) {
 		this.host = document.createElement('div')
 		this.host.className = 'section-labels'
@@ -517,8 +520,14 @@ class SectionLabels {
 	private createLabel(id: string) {
 		const el = document.createElement('div')
 		el.className = 'section-label'
-		el.innerHTML = '<span class="title"></span><span class="count"></span><button class="close" title="Remove this session">×</button>'
-		const button = el.querySelector('button')!
+		el.innerHTML = '<span class="title"></span><span class="count"></span>'
+		const onClose = this.onClose
+		if (!onClose) return el
+		const button = document.createElement('button')
+		button.className = 'close'
+		button.title = 'Remove this session'
+		button.textContent = '×'
+		el.appendChild(button)
 		let armTimer = 0
 		const disarm = () => {
 			clearTimeout(armTimer)
@@ -537,7 +546,7 @@ class SectionLabels {
 				return
 			}
 			disarm()
-			this.onClose(id)
+			onClose(id)
 		})
 		button.addEventListener('pointerleave', disarm)
 		return el

@@ -2,10 +2,13 @@ import { useEffect, useRef, useState, type JSX } from 'react'
 import { Editor, type Camera, type ToolId } from '../editor/Editor'
 import { Renderer } from '../render/Renderer'
 import { react } from '../state/signals'
-import { connect, deleteSession } from '../sync/client'
+import type { Share } from '../../../shared/types'
+import { connect, createShare, deleteSession, loadShare } from '../sync/client'
 import { useValue } from './useValue'
 
 const CAMERA_KEY = 'canvas.camera'
+/** Set when viewing a shared snapshot at /s/:id */
+const SHARE_ID = /^\/s\/([A-Za-z0-9]{10})\/?$/.exec(location.pathname)?.[1] ?? null
 
 export function App() {
 	const containerRef = useRef<HTMLDivElement>(null)
@@ -13,6 +16,7 @@ export function App() {
 	const overlayRef = useRef<HTMLDivElement>(null)
 	const [editor] = useState(() => new Editor())
 	const [error, setError] = useState<string | null>(null)
+	const [share, setShare] = useState<Share | null>(null)
 
 	useEffect(() => {
 		const container = containerRef.current!
@@ -21,10 +25,9 @@ export function App() {
 		const disposers: (() => void)[] = []
 
 		editor.mount(container)
-		const saved = readCamera()
-		if (saved) editor.setCamera(saved)
 
 		Renderer.create(canvasRef.current!, overlayRef.current!, editor, {
+			readOnly: !!SHARE_ID,
 			onCloseSection: (id) => deleteSession(id).catch((e) => console.error(e)),
 		})
 			.then((r) => {
@@ -34,20 +37,33 @@ export function App() {
 			})
 			.catch((e) => setError(String(e.message ?? e)))
 
-		disposers.push(
-			connect(editor, () => {
-				if (!saved) editor.zoomToFit({ animate: false })
-			}),
-		)
-
-		let saveTimer = 0
-		disposers.push(
-			react(() => {
-				const camera = editor.camera.get()
-				clearTimeout(saveTimer)
-				saveTimer = window.setTimeout(() => localStorage.setItem(CAMERA_KEY, JSON.stringify(camera)), 300)
-			}),
-		)
+		if (SHARE_ID) {
+			loadShare(editor, SHARE_ID)
+				.then((s) => {
+					if (disposed) return
+					setShare(s)
+					// Viewport sizes differ between people, so frame the same region rather than the same camera.
+					if (s.view) editor.zoomToBounds(s.view, { animate: false })
+					else editor.zoomToFit({ animate: false })
+				})
+				.catch((e) => setError(String(e.message ?? e)))
+		} else {
+			const saved = readCamera()
+			if (saved) editor.setCamera(saved)
+			disposers.push(
+				connect(editor, () => {
+					if (!saved) editor.zoomToFit({ animate: false })
+				}),
+			)
+			let saveTimer = 0
+			disposers.push(
+				react(() => {
+					const camera = editor.camera.get()
+					clearTimeout(saveTimer)
+					saveTimer = window.setTimeout(() => localStorage.setItem(CAMERA_KEY, JSON.stringify(camera)), 300)
+				}),
+			)
+		}
 		disposers.push(react(() => (container.style.cursor = editor.cursor.get())))
 		;(window as any).editor = editor
 
@@ -66,12 +82,12 @@ export function App() {
 				<div ref={overlayRef} className="overlay" />
 			</div>
 			<ToolPicker editor={editor} />
-			<Toolbar editor={editor} />
-			<StatusBar editor={editor} />
-			<EmptyState editor={editor} />
+			<Toolbar editor={editor} canShare={!SHARE_ID} />
+			<StatusBar editor={editor} share={share} />
+			{!SHARE_ID && <EmptyState editor={editor} />}
 			{error && (
 				<div className="error">
-					<strong>Can't start the renderer.</strong>
+					<strong>{SHARE_ID ? "Can't open this share." : "Can't start the renderer."}</strong>
 					<span>{error}</span>
 				</div>
 			)}
@@ -122,9 +138,28 @@ function ToolPicker({ editor }: { editor: Editor }) {
 	)
 }
 
-function Toolbar({ editor }: { editor: Editor }) {
+function Toolbar({ editor, canShare }: { editor: Editor; canShare: boolean }) {
 	const zoom = useValue(() => Math.round(editor.camera.get().z * 100))
 	const hasSelection = useValue(() => editor.selectedIds.get().length > 0)
+	const hasContent = useValue(() => Object.keys(editor.sessions.get()).length > 0)
+	const [shareState, setShareState] = useState<
+		{ status: 'idle' } | { status: 'sharing' } | { status: 'done'; url: string; copied: boolean } | { status: 'error'; message: string }
+	>({ status: 'idle' })
+
+	const share = async () => {
+		setShareState({ status: 'sharing' })
+		try {
+			const url = await createShare(editor.viewportPageBounds.get())
+			const copied = await navigator.clipboard.writeText(url).then(
+				() => true,
+				() => false,
+			)
+			setShareState({ status: 'done', url, copied })
+		} catch (e) {
+			setShareState({ status: 'error', message: (e as Error).message })
+		}
+	}
+
 	return (
 		<div className="toolbar" onPointerDown={(e) => e.stopPropagation()}>
 			<button title="Zoom out (−)" onClick={() => editor.zoomOut()}>−</button>
@@ -137,11 +172,43 @@ function Toolbar({ editor }: { editor: Editor }) {
 			<button title="Zoom to selection (Shift+2)" disabled={!hasSelection} onClick={() => editor.zoomToSelection()}>
 				Selection
 			</button>
+			{canShare && (
+				<>
+					<div className="sep" />
+					<button
+						title="Save a read-only snapshot and copy its link"
+						disabled={!hasContent || shareState.status === 'sharing'}
+						onClick={share}
+					>
+						{shareState.status === 'sharing' ? 'Sharing…' : 'Share'}
+					</button>
+				</>
+			)}
+			{shareState.status === 'done' && (
+				<div className="share-popover">
+					<span className="share-note">{shareState.copied ? 'Link copied' : 'Snapshot saved'}</span>
+					<input readOnly value={shareState.url} onFocus={(e) => e.currentTarget.select()} />
+					<a href={shareState.url} target="_blank" rel="noreferrer">
+						Open
+					</a>
+					<button title="Close" onClick={() => setShareState({ status: 'idle' })}>
+						×
+					</button>
+				</div>
+			)}
+			{shareState.status === 'error' && (
+				<div className="share-popover error-text">
+					<span>{shareState.message}</span>
+					<button title="Close" onClick={() => setShareState({ status: 'idle' })}>
+						×
+					</button>
+				</div>
+			)}
 		</div>
 	)
 }
 
-function StatusBar({ editor }: { editor: Editor }) {
+function StatusBar({ editor, share }: { editor: Editor; share: Share | null }) {
 	const connection = useValue(() => editor.connection.get())
 	const counts = useValue(
 		() => `${Object.keys(editor.sessions.get()).length}·${Object.keys(editor.items.get()).length}·${editor.selectedIds.get().length}`,
@@ -156,7 +223,13 @@ function StatusBar({ editor }: { editor: Editor }) {
 	const [sessions, items, selected] = counts.split('·')
 	return (
 		<div className="status">
-			<span className={`dot ${connection}`} title={connection} />
+			{share ? (
+				<span className="shared-badge" title="A frozen copy. It doesn't update.">
+					Shared snapshot · {new Date(share.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+				</span>
+			) : (
+				<span className={`dot ${connection}`} title={connection} />
+			)}
 			<span>
 				{sessions} sessions · {items} items{selected !== '0' && ` · ${selected} selected`}
 			</span>

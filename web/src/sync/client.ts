@@ -1,5 +1,26 @@
-import type { ServerEvent, Snapshot } from '../../../shared/types'
+import type { ServerEvent, Share, Snapshot } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
+
+/** Freezes the current canvas into a share and returns its full URL. */
+export async function createShare(view: Share['view']): Promise<string> {
+	const res = await fetch('/api/shares', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ view }),
+	})
+	if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? `share failed: ${res.status}`)
+	const { url } = (await res.json()) as { url: string }
+	return new URL(url, location.origin).toString()
+}
+
+/** Loads a share into the editor (read-only, no live updates). */
+export async function loadShare(editor: Editor, id: string): Promise<Share> {
+	const res = await fetch(`/api/shares/${id}`)
+	if (!res.ok) throw new Error(res.status === 404 ? 'This share link does not exist.' : `Could not load share (${res.status}).`)
+	const share = (await res.json()) as Share
+	editor.loadSnapshot(share.sessions, share.items)
+	return share
+}
 
 /** Permanently deletes a session and its media. The canvas updates from the server's event. */
 export async function deleteSession(id: string) {

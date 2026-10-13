@@ -127,7 +127,7 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 		key: 'V',
 		icon: (
 			<svg viewBox="0 0 24 24" width="16" height="16">
-				<path d="M5 3l14 8-6.5 1.5L9 19z" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+				<path d="M5 4l14 8-6.5 1.5L9 20z" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
 			</svg>
 		),
 	},
@@ -147,7 +147,7 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 		label: 'Hand',
 		key: 'H',
 		icon: (
-			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+			<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
 				<path d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v6M10 10.5V6a2 2 0 0 0-4 0v8" />
 				<path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-5.9-2.4l-3.6-3.6a2 2 0 0 1 2.8-2.8L7 15" />
 			</svg>

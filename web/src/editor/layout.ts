@@ -1,5 +1,5 @@
 import type { Item, Session } from '../../../shared/types'
-import type { Box } from './geometry'
+import { Box } from './geometry'
 
 export interface SectionLayout {
 	id: string
@@ -23,6 +23,7 @@ export const LAYOUT = {
 	sectionPadding: 32,
 	sectionGap: 120,
 	emptySectionHeight: 160,
+	emptySectionWidth: 480,
 	/** Space reserved above a row that has a titled item (page units; the text scales with zoom) */
 	titleHeight: 40,
 }
@@ -51,6 +52,8 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 		let rowY = y + pad
 		let row: Item[] = []
 		let rowAspect = 0
+		// The section is as wide as its widest row, so a short last-and-only row doesn't leave empty background.
+		let contentWidth = 0
 
 		const placeRow = (height: number) => {
 			if (row.some((item) => item.title)) rowY += titleHeight
@@ -61,6 +64,7 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 				layout.sectionOf.set(item.id, session.id)
 				x += w + gap
 			}
+			contentWidth = Math.max(contentWidth, x - gap - pad)
 			rowY += height + gap
 			row = []
 			rowAspect = 0
@@ -75,14 +79,12 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 		if (row.length) placeRow(H)
 
 		const contentHeight = list.length ? rowY - gap - (y + pad) : LAYOUT.emptySectionHeight
-		const box = { x: 0, y: top, w: W + pad * 2, h: contentHeight + pad * 2 }
+		const width = list.length ? contentWidth : LAYOUT.emptySectionWidth
+		const box = { x: 0, y: top, w: width + pad * 2, h: contentHeight + pad * 2 }
 		layout.sections.push({ id: session.id, title: session.title, box, itemIds: list.map((i) => i.id) })
 		y = top + box.h + sectionGap
 	}
 
-	if (layout.sections.length) {
-		const last = layout.sections[layout.sections.length - 1].box
-		layout.bounds = { x: 0, y: 0, w: W + pad * 2, h: last.y + last.h }
-	}
+	layout.bounds = Box.union(layout.sections.map((s) => s.box))
 	return layout
 }

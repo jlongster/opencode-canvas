@@ -445,9 +445,24 @@ export class Editor {
 	}
 
 	/** Fit the item to the screen, but never wider than FOCUS_MAX_WIDTH screen pixels. */
-	zoomToItem(id: string) {
+	zoomToItem(id: string, opts: { animate?: boolean } = {}) {
 		const box = this.getItemBoundsWithTitle(id)
-		if (box) this.zoomToBounds(box, { maxZoom: FOCUS_MAX_WIDTH / box.w })
+		if (box) this.zoomToBounds(box, { ...opts, maxZoom: FOCUS_MAX_WIDTH / box.w })
+	}
+
+	/**
+	 * Select one thing by its selection key and zoom to it: items like a double-click, session
+	 * frames and notes to their whole box. Returns false (and changes nothing) if it doesn't exist.
+	 */
+	focusSelectionKey(key: string, opts: { animate?: boolean } = {}): boolean {
+		const { kind, id } = parseSelectionId(key)
+		const box = this.getSelectionBounds(key)
+		if (!box) return false
+		this.stopCameraMotion()
+		this.select([key])
+		if (kind === 'item') this.zoomToItem(id, opts)
+		else this.zoomToBounds(box, opts)
+		return true
 	}
 
 	/** The item's box plus the title strip above it, if it has a title. */

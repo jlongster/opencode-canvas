@@ -9,6 +9,7 @@ import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedNotes } from '../multiplayer/SharedNotes'
 import { CursorChat } from './CursorChat'
+import { DeepLink, urlForSelection } from './deepLink'
 import { NotFound } from './NotFound'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
@@ -78,6 +79,8 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			disposers.push(() => (editor.deletions.backend = null))
 		}
 		disposers.push(react(() => saveTool(editor.currentToolId.get())))
+		const deepLink = new DeepLink(editor)
+		disposers.push(() => deepLink.destroy())
 
 		Renderer.create(canvasRef.current!, overlayRef.current!, editor, {
 			readOnly: link.role === 'view',
@@ -97,7 +100,10 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					setCanvas(c)
 					if (!first) return
 					loaded = true
-					editor.whenViewportReady(() => editor.goToInitialView())
+					// The node in the URL hash, if any, else the usual opening view.
+					editor.whenViewportReady(() => {
+						if (!disposed) deepLink.focusInitial()
+					})
 					// Everyone on the same canvas is in one room, whichever link they came from.
 					live = new Presence(editor, `canvas-${c.id}`, link.role === 'view')
 					const p = live
@@ -283,7 +289,8 @@ function ToolPicker({ editor, withNotes }: { editor: Editor; withNotes: boolean 
 
 function Toolbar({ editor, canvas }: { editor: Editor; canvas: Canvas | null }) {
 	const zoom = useValue(() => Math.round(editor.camera.get().z * 100))
-	const hasSelection = useValue(() => editor.selectedIds.get().length > 0)
+	const selectedCount = useValue(() => editor.selectedIds.get().length)
+	const hasSelection = selectedCount > 0
 	const [sharing, setSharing] = useState(false)
 
 	return (
@@ -298,9 +305,10 @@ function Toolbar({ editor, canvas }: { editor: Editor; canvas: Canvas | null }) 
 			<button title="Zoom to selection (Shift+2)" disabled={!hasSelection} onClick={() => editor.zoomToSelection()}>
 				Selection
 			</button>
+			{(selectedCount === 1 || canvas) && <div className="sep" />}
+			{selectedCount === 1 && <CopySelectionLink editor={editor} />}
 			{canvas && (
 				<>
-					<div className="sep" />
 					<button title="Links to this canvas" aria-pressed={sharing} onClick={() => setSharing(!sharing)}>
 						Share
 					</button>
@@ -319,6 +327,21 @@ function Toolbar({ editor, canvas }: { editor: Editor; canvas: Canvas | null }) 
 				</div>
 			)}
 		</div>
+	)
+}
+
+/** Copies this page's URL with a hash pointing at the one selected thing. */
+function CopySelectionLink({ editor }: { editor: Editor }) {
+	const [copied, setCopied] = useState(false)
+	const copy = () =>
+		navigator.clipboard.writeText(urlForSelection(editor.getSelectedIds())).then(() => {
+			setCopied(true)
+			setTimeout(() => setCopied(false), 1500)
+		})
+	return (
+		<button title="Copy link to selection" onClick={copy}>
+			{copied ? 'Copied' : 'Copy link'}
+		</button>
 	)
 }
 

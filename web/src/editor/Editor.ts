@@ -587,13 +587,15 @@ export class Editor {
 		const dx = e.deltaX * scale
 		const dy = e.deltaY * scale
 
-		if (e.ctrlKey || e.metaKey || e.shiftKey) {
+		if (e.ctrlKey || e.metaKey || this.inputs.isSpaceDown) {
 			// Trackpad pinch arrives as ctrl+wheel with small deltas; mouse wheel + modifier as big ones.
-			// With shift held, some platforms (macOS) report the wheel as horizontal, so take either axis.
 			const delta = dy !== 0 ? dy : dx
 			const z = this.camera.peek().z
 			const factor = Math.exp(-clamp(delta, -50, 50) * 0.01)
 			this.zoomAt(point, z * factor)
+		} else if (e.shiftKey) {
+			// Some platforms (macOS) already turn shift+wheel into deltaX, so take whichever axis moved.
+			this.panBy(-(dy !== 0 ? dy : dx), 0)
 		} else {
 			this.panBy(-dx, -dy)
 		}

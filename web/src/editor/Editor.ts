@@ -29,6 +29,8 @@ const INITIAL_PADDING = 48
 const INITIAL_FIRST_ROW = 0.3
 /** The widest (in screen px) an item gets when focused by double-click */
 const FOCUS_MAX_WIDTH = 1350
+/** The highest zoom focusing something (double-click, deep link, zoom-to-selection) goes to */
+const FOCUS_MAX_ZOOM = 2
 
 class Root extends StateNode {
 	static override id = 'root'
@@ -328,8 +330,10 @@ export class Editor {
 		this.zoomAt(this.viewportCenter(), 1, { animate: true })
 	}
 
+	/** Fit the bounds to the screen, never zooming past FOCUS_MAX_ZOOM (or opts.maxZoom if lower). */
 	zoomToBounds(bounds: Box, opts: { animate?: boolean; maxZoom?: number } = {}) {
-		this.setCamera(this.getCameraForBounds(bounds, { maxZoom: opts.maxZoom }), { animate: opts.animate ?? true })
+		const maxZoom = Math.min(opts.maxZoom ?? FOCUS_MAX_ZOOM, FOCUS_MAX_ZOOM)
+		this.setCamera(this.getCameraForBounds(bounds, { maxZoom }), { animate: opts.animate ?? true })
 	}
 
 	zoomToFit(opts: { animate?: boolean } = {}) {
@@ -444,7 +448,7 @@ export class Editor {
 		this.centerOn(this.getItemBoundsWithTitle(next)!, { animate: false })
 	}
 
-	/** Fit the item to the screen, but never wider than FOCUS_MAX_WIDTH screen pixels. */
+	/** Fit the item to the screen, but never wider than FOCUS_MAX_WIDTH screen pixels or past FOCUS_MAX_ZOOM. */
 	zoomToItem(id: string, opts: { animate?: boolean } = {}) {
 		const box = this.getItemBoundsWithTitle(id)
 		if (box) this.zoomToBounds(box, { ...opts, maxZoom: FOCUS_MAX_WIDTH / box.w })

@@ -16,6 +16,11 @@ const BASE_PATH = '/canvas'
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.bmp'])
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.mkv'])
+const HTML_EXTS = new Set(['.html', '.htm'])
+const HTML_MAX_BYTES = 2 * 1024 * 1024
+const HTML_DEFAULT_SIZE = { width: 800, height: 600 }
+const HTML_MIN_SIZE = 50
+const HTML_MAX_SIZE = 8000
 
 await mkdir(MEDIA_DIR, { recursive: true })
 await mkdir(ROOMS_DIR, { recursive: true })
@@ -150,6 +155,7 @@ async function makeThumb(input: string, output: string) {
 }
 
 function kindOf(ext: string, mime?: string): MediaKind | null {
+	if (HTML_EXTS.has(ext) || mime?.startsWith('text/html')) return 'html'
 	if (VIDEO_EXTS.has(ext) || mime?.startsWith('video/')) return 'video'
 	if (IMAGE_EXTS.has(ext) || mime?.startsWith('image/')) return 'image'
 	return null
@@ -222,7 +228,9 @@ function canvasData(canvas: Canvas): CanvasData {
 
 function canvasSummary(canvas: Canvas): CanvasSummary {
 	const { sessions, items } = canvasData(canvas)
+	// HTML items have no image thumbnail.
 	const previews = items
+		.filter((i) => i.kind !== 'html')
 		.sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
 		.slice(0, 4)
 		.map((i) => i.thumb)
@@ -268,15 +276,25 @@ function newId() {
 	return crypto.randomUUID().replaceAll('-', '').slice(0, 16)
 }
 
-async function addItem(
-	canvasId: string,
-	sessionId: string,
-	data: Blob,
-	opts: { filename?: string; group?: string | null; title?: string; caption?: string; id?: string },
-): Promise<Item> {
+interface ItemOptions {
+	filename?: string
+	group?: string | null
+	title?: string
+	caption?: string
+	id?: string
+	/** HTML items: the CSS pixel size the page is designed for */
+	width?: number
+	height?: number
+}
+
+async function addItem(canvasId: string, sessionId: string, data: Blob, opts: ItemOptions): Promise<Item> {
 	const ext = (extname(opts.filename ?? '').toLowerCase() || extFromMime(data.type)).toLowerCase()
 	const kind = kindOf(ext, data.type)
 	if (!kind) throw new HttpError(415, `unsupported media type (${ext || data.type || 'unknown'})`)
+	if (kind === 'html') {
+		if (data.size > HTML_MAX_BYTES) throw new HttpError(413, `HTML is larger than ${HTML_MAX_BYTES / 1024 / 1024} MB`)
+		return addHtmlItem(canvasId, sessionId, await data.text(), opts)
+	}
 
 	const id = opts.id ?? newId()
 	const file = `${id}${ext}`
@@ -314,6 +332,53 @@ async function addItem(
 	}
 }
 
+/** An HTML page, shown on the canvas in a sandboxed iframe at the size it was designed for. No thumbnail. */
+async function addHtmlItem(canvasId: string, sessionId: string, html: string, opts: ItemOptions): Promise<Item> {
+	if (Buffer.byteLength(html) > HTML_MAX_BYTES) throw new HttpError(413, `HTML is larger than ${HTML_MAX_BYTES / 1024 / 1024} MB`)
+	if (!html.trim()) throw new HttpError(400, '"html" is empty')
+	const id = opts.id ?? newId()
+	const file = `${id}.html`
+	await Bun.write(join(MEDIA_DIR, file), htmlDocument(html))
+	getCanvas(canvasId)
+	ensureSession(canvasId, sessionId)
+	const item: Item = {
+		id,
+		canvasId,
+		sessionId,
+		kind: 'html',
+		src: `/media/${file}`,
+		thumb: `/media/${file}`,
+		width: opts.width ?? HTML_DEFAULT_SIZE.width,
+		height: opts.height ?? HTML_DEFAULT_SIZE.height,
+		...(opts.group ? { group: opts.group } : {}),
+		title: opts.title,
+		caption: opts.caption,
+		createdAt: Date.now(),
+	}
+	db.items.set(id, item)
+	save()
+	broadcast({ type: 'item', item })
+	return item
+}
+
+/** Full documents are kept as they are; fragments get a minimal page: UTF-8, no margin, white background. */
+function htmlDocument(html: string) {
+	if (/^\s*(<!--[\s\S]*?-->\s*)*<(!doctype|html|head)\b/i.test(html)) return html
+	return (
+		'<!doctype html>\n<html><head><meta charset="utf-8">' +
+		'<style>html{background:#fff;color:#111;font-family:system-ui,sans-serif}body{margin:0}</style>' +
+		'</head><body>\n' + html + '\n</body></html>\n'
+	)
+}
+
+/** An HTML item's "width"/"height": a CSS pixel size, clamped to sane bounds. */
+function sizeField(value: unknown, name: string): number | undefined {
+	if (value === undefined || value === null || value === '') return undefined
+	const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+	if (!Number.isFinite(n)) throw new HttpError(400, `"${name}" must be a number (CSS pixels)`)
+	return Math.round(Math.min(HTML_MAX_SIZE, Math.max(HTML_MIN_SIZE, n)))
+}
+
 function ensureSession(canvasId: string, id: string, title?: string): Session {
 	const key = sessionKey(canvasId, id)
 	const existing = db.sessions.get(key)
@@ -332,7 +397,7 @@ async function deleteItem(id: string) {
 	if (!item) return false
 	db.items.delete(id)
 	await rm(join(MEDIA_DIR, item.src.replace('/media/', '')), { force: true })
-	await rm(join(MEDIA_DIR, item.thumb.replace('/media/', '')), { force: true })
+	if (item.thumb && item.thumb !== item.src) await rm(join(MEDIA_DIR, item.thumb.replace('/media/', '')), { force: true })
 	save()
 	broadcast({ type: 'item_deleted', canvasId: item.canvasId, id })
 	return true
@@ -392,7 +457,7 @@ async function deleteCanvas(canvas: Canvas) {
 const API_INDEX = {
 	about:
 		'Review canvases. There are several canvases, each with its own id (:cid). On a canvas, each OpenCode ' +
-		'session is one frame; inside it, items (images/videos) are organised into named groups. Use your exact ' +
+		'session is one frame; inside it, items (images, videos or HTML pages) are organised into named groups. Use your exact ' +
 		'$OPENCODE_SESSION_ID as the session id; the same session can post to several canvases.',
 	endpoints: {
 		'GET /api/canvases': 'All canvases, newest first, with session/item counts and preview thumbnails',
@@ -406,14 +471,24 @@ const API_INDEX = {
 		'PUT /api/canvases/:cid/sessions/:sessionId': 'Create or rename a session. Body: {"title"}',
 		'DELETE /api/canvases/:cid/sessions/:sessionId': 'Delete a session and all its items',
 		'POST /api/canvases/:cid/sessions/:sessionId/items':
-			'Add an image or video. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
-			'plus optional "group", "title", "caption". Creates the session if needed.',
+			'Add an image, video or HTML page. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
+			'or JSON {"html": "<html source>"} for an HTML item. Plus optional "group", "title", "caption". ' +
+			'Creates the session if needed.',
 		'GET /api/items/:itemId': 'One item',
 		'PATCH /api/items/:itemId': 'Change an item\'s "group", "title" or "caption" (null clears)',
 		'DELETE /api/items/:itemId': 'Delete an item',
 		'PATCH /api/canvases/:cid/sessions/:sessionId/groups/:group': 'Rename a group. Body: {"name"} (null ungroups its items)',
 		'DELETE /api/canvases/:cid/sessions/:sessionId/groups/:group': 'Delete a group and all its items',
 	},
+	html:
+		'HTML items are for diagrams, charts, SVG drawings and annotated explanations. Send {"html", "width", ' +
+		'"height"} (or a .html/.htm file by path, url or multipart, with "width"/"height" as fields). width/height ' +
+		`are the CSS pixel size the page is designed for (default ${HTML_DEFAULT_SIZE.width}x${HTML_DEFAULT_SIZE.height}, ` +
+		`clamped to ${HTML_MIN_SIZE}-${HTML_MAX_SIZE}); the page is laid out at that size and scaled with the canvas, so ` +
+		'it stays crisp at any zoom. Max 2 MB. It runs in a sandboxed iframe (scripts allowed, no same-origin access, ' +
+		'no interaction: the canvas takes all input) so make it static and fit the given size without scrolling. ' +
+		'A fragment is wrapped in a minimal page (UTF-8, no margin, white background); send a full document to ' +
+		'control everything. Inline everything (styles, scripts, images as data: URLs).',
 	layout:
 		'Sessions sit side by side, newest on the right. In a session, the untitled group comes first, then named ' +
 		'groups in the order they were first posted to; each group\'s items flow left to right in rows, in posting order.',
@@ -579,14 +654,26 @@ async function handle(req: Request): Promise<Response> {
 				group: groupField(form.get('group') ?? undefined),
 				title: textField(form.get('title')),
 				caption: textField(form.get('caption')),
+				width: sizeField(form.get('width') ?? undefined, 'width'),
+				height: sizeField(form.get('height') ?? undefined, 'height'),
 			}
 			const filename = file instanceof File ? file.name : undefined
 			return json(await addItem(canvasId, sessionId, file, { filename, ...meta }), 201)
 		}
 		const body = (await req.json().catch(() => null)) as
-			| { path?: string; url?: string; group?: unknown; title?: string; caption?: string }
+			| { path?: string; url?: string; html?: unknown; width?: unknown; height?: unknown; group?: unknown; title?: string; caption?: string }
 			| null
-		const meta = { group: groupField(body?.group), title: textField(body?.title), caption: textField(body?.caption) }
+		const meta = {
+			group: groupField(body?.group),
+			title: textField(body?.title),
+			caption: textField(body?.caption),
+			width: sizeField(body?.width, 'width'),
+			height: sizeField(body?.height, 'height'),
+		}
+		if (body?.html !== undefined) {
+			if (typeof body.html !== 'string') throw new HttpError(400, '"html" must be a string')
+			return json(await addHtmlItem(canvasId, sessionId, body.html, meta), 201)
+		}
 		if (body?.path) {
 			const f = Bun.file(body.path)
 			if (!(await f.exists())) throw new HttpError(404, `no file at ${body.path}`)
@@ -598,7 +685,7 @@ async function handle(req: Request): Promise<Response> {
 			const blob = await res.blob()
 			return json(await addItem(canvasId, sessionId, blob, { filename: new URL(body.url).pathname, ...meta }), 201)
 		}
-		throw new HttpError(400, 'send multipart "file", or JSON {"path"} or {"url"}')
+		throw new HttpError(400, 'send multipart "file", or JSON {"path"}, {"url"} or {"html"}')
 	}
 
 	m = /^\/api\/items\/([^/]+)$/.exec(p)
@@ -624,7 +711,10 @@ async function handle(req: Request): Promise<Response> {
 	if (m && method === 'GET') {
 		const path = join(MEDIA_DIR, m[1])
 		if (!existsSync(path)) throw new HttpError(404, 'not found')
-		return serveFile(req, path, 'public, max-age=31536000, immutable')
+		const res = serveFile(req, path, 'public, max-age=31536000, immutable')
+		// Agent-written HTML gets an opaque origin even when opened directly, so it can't use this site's cookies or API.
+		if (HTML_EXTS.has(extname(path).toLowerCase())) res.headers.set('content-security-policy', 'sandbox allow-scripts')
+		return res
 	}
 
 	if (method === 'GET' && existsSync(WEB_DIST) && !p.startsWith('/api/')) {

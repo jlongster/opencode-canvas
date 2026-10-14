@@ -1,4 +1,4 @@
-export type MediaKind = 'image' | 'video'
+export type MediaKind = 'image' | 'video' | 'html'
 
 /** One canvas: a board of sessions, with an edit link (/c/:id) and a view-only link (/v/:viewKey). */
 export interface Canvas {
@@ -40,8 +40,9 @@ export interface Item {
 	kind: MediaKind
 	/** URL of the original file */
 	src: string
-	/** URL of a small preview (for video, the poster frame) */
+	/** URL of a small preview (for video, the poster frame; for html, the page itself: there is no image) */
 	thumb: string
+	/** Pixel size; for html, the CSS pixel size the page is laid out at */
 	width: number
 	height: number
 	/**

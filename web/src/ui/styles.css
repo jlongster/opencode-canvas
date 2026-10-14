@@ -148,6 +148,29 @@ body,
 	will-change: transform;
 }
 
+/* HTML items: sandboxed iframes scaled onto their box (see HtmlItems in Renderer.ts). Never take input. */
+.html-items {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+}
+
+.html-item {
+	position: absolute;
+	left: 0;
+	top: 0;
+	overflow: hidden;
+	pointer-events: none;
+}
+
+.html-item iframe {
+	display: block;
+	border: 0;
+	transform-origin: 0 0;
+	pointer-events: none;
+	transition: opacity 220ms;
+}
+
 .item-download {
 	position: absolute;
 	left: 0;

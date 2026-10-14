@@ -12,6 +12,12 @@ const ITEM_RADIUS = 6
 const SECTION_RADIUS = 20
 const EASE_MS = 90 // time constant for layout motion
 const FADE_MS = 220
+/** Most HTML items mounted as iframes at once; the rest show their placeholder. */
+const MAX_HTML_FRAMES = 40
+/** Mount HTML items this far (screen px) outside the viewport, so they're ready when panned in. */
+const HTML_MARGIN_PX = 400
+/** HTML items smaller than this on screen aren't worth an iframe. */
+const MIN_HTML_PX = 24
 
 const RECT_FLOATS = 16
 const IMAGE_FLOATS = 8
@@ -65,6 +71,7 @@ export class Renderer {
 	private labels: SectionLabels
 	private actions: ItemActions
 	private titles: ItemTitles
+	private html: HtmlItems
 
 	private displayedItems = new Map<string, Displayed>()
 	private displayedSections = new Map<string, Displayed>()
@@ -146,6 +153,7 @@ export class Renderer {
 
 		this.textures = new TextureCache(device, imageLayout)
 		this.videos = new VideoPool(overlay)
+		this.html = new HtmlItems(overlay)
 		this.labels = new SectionLabels(overlay, options.readOnly ? null : (id) => options.onCloseSection?.(id))
 		this.titles = new ItemTitles(overlay)
 		this.actions = new ItemActions(overlay)
@@ -245,6 +253,14 @@ export class Renderer {
 			const rgba = hexToRgba(color)
 			for (const id of ids) if (!remoteSelected.has(id)) remoteSelected.set(id, rgba)
 		}
+		// HTML items are iframes in the overlay, above this canvas; mounted ones draw their own outlines.
+		const htmlMounted = this.html.update(
+			items,
+			this.displayedItems,
+			Box.expand(viewBounds, HTML_MARGIN_PX / camera.z),
+			editor,
+			{ selected, hovered, remote: remoteSelected },
+		)
 
 		for (const [id, d] of this.displayedItems) {
 			if (!Box.intersects(d, cull)) continue
@@ -253,7 +269,9 @@ export class Renderer {
 
 			const video = item.kind === 'video' ? this.videos.getReady(id) : undefined
 			let texAlpha = 0
-			if (video) {
+			if (item.kind === 'html') {
+				// No texture: the placeholder shows under the iframe while it loads.
+			} else if (video) {
 				videoDraws.push({ index: pushImage(d, d.opacity), video })
 				texAlpha = 1
 			} else {
@@ -267,6 +285,7 @@ export class Renderer {
 			}
 			if (texAlpha < 1) pushRect(d, withAlpha(PLACEHOLDER, d.opacity * (1 - texAlpha)), NONE, 0, ITEM_RADIUS, false)
 
+			if (htmlMounted.has(id)) continue
 			// Someone else's selection sits outside ours, so both stay visible.
 			const remote = remoteSelected.get(id)
 			if (remote) overlays.push(() => pushRect(Box.expand(d, 3 / camera.z), NONE, remote, 2.5, ITEM_RADIUS + 3 / camera.z, false))
@@ -412,6 +431,7 @@ export class Renderer {
 		this.labels.destroy()
 		this.actions.destroy()
 		this.titles.destroy()
+		this.html.destroy()
 		this.device.destroy()
 	}
 }
@@ -462,6 +482,114 @@ class ItemTitles {
 			el.remove()
 			this.els.delete(id)
 		}
+	}
+
+	destroy() {
+		this.host.remove()
+	}
+}
+
+interface HtmlFrame {
+	wrap: HTMLDivElement
+	frame: HTMLIFrameElement
+	loaded: boolean
+	src: string
+	style: string
+}
+
+/**
+ * HTML items as sandboxed iframes in the overlay, laid out at the item's design size (item.width ×
+ * item.height CSS px) and scaled onto its displayed box, so the browser renders them crisply at any
+ * zoom. They never take input (the editor hit-tests from layout boxes), so they behave like images.
+ * Only items in or near the viewport get an iframe, at most MAX_HTML_FRAMES, biggest on screen first.
+ * Since they cover the WebGPU canvas, their selection/hover outlines are drawn here too.
+ */
+class HtmlItems {
+	private frames = new Map<string, HtmlFrame>()
+	private host: HTMLDivElement
+
+	constructor(parent: HTMLElement) {
+		this.host = document.createElement('div')
+		this.host.className = 'html-items'
+		// First in the overlay, so titles, buttons, notes and cursors all sit above.
+		parent.prepend(this.host)
+	}
+
+	/** Returns the ids of the items that are mounted. */
+	update(
+		items: Record<string, Item>,
+		displayed: Map<string, Displayed>,
+		view: Box,
+		editor: Editor,
+		marks: { selected: Set<string>; hovered: string | null; remote: Map<string, RGBA> },
+	): Set<string> {
+		const z = editor.camera.peek().z
+		const wanted: { item: Item; d: Displayed; area: number }[] = []
+		for (const [id, d] of displayed) {
+			const item = items[id]
+			if (item?.kind !== 'html' || !Box.intersects(d, view)) continue
+			if (Math.min(d.w, d.h) * z < MIN_HTML_PX) continue
+			wanted.push({ item, d, area: d.w * d.h })
+		}
+		if (wanted.length > MAX_HTML_FRAMES) wanted.sort((a, b) => b.area - a.area).splice(MAX_HTML_FRAMES)
+
+		const seen = new Set<string>()
+		for (const { item, d } of wanted) {
+			seen.add(item.id)
+			const f = this.frames.get(item.id) ?? this.mount(item)
+			const src = withBase(item.src)
+			if (f.src !== src) {
+				f.src = src
+				f.loaded = false
+				f.frame.src = src
+			}
+			const p = editor.pageToScreen(d)
+			const remote = marks.remote.get(item.id)
+			const shadow = marks.selected.has(item.id)
+				? `0 0 0 2px ${css(ACCENT)}`
+				: marks.hovered === item.id
+					? `0 0 0 1.5px ${css(withAlpha(ACCENT, 0.7))}`
+					: 'none'
+			const style =
+				`transform:translate(${p.x}px,${p.y}px);width:${d.w * z}px;height:${d.h * z}px;` +
+				`border-radius:${ITEM_RADIUS * z}px;box-shadow:${shadow};` +
+				(remote ? `outline:2.5px solid ${css(remote)};outline-offset:3px;` : '')
+			if (f.style !== style) {
+				f.style = style
+				f.wrap.style.cssText = style
+			}
+			f.frame.style.width = `${item.width}px`
+			f.frame.style.height = `${item.height}px`
+			f.frame.style.transform = `scale(${(d.w * z) / item.width}, ${(d.h * z) / item.height})`
+			f.frame.style.opacity = f.loaded ? String(d.opacity) : '0'
+		}
+		for (const [id, f] of this.frames) {
+			if (seen.has(id)) continue
+			f.wrap.remove()
+			this.frames.delete(id)
+		}
+		return seen
+	}
+
+	private mount(item: Item): HtmlFrame {
+		const wrap = document.createElement('div')
+		wrap.className = 'html-item'
+		const frame = document.createElement('iframe')
+		// Scripts may run, but with an opaque origin: no access to this page, its cookies or the API.
+		frame.setAttribute('sandbox', 'allow-scripts')
+		frame.setAttribute('scrolling', 'no')
+		frame.loading = 'lazy'
+		frame.tabIndex = -1
+		frame.title = item.title ?? 'HTML item'
+		const f: HtmlFrame = { wrap, frame, loaded: false, src: '', style: '' }
+		frame.addEventListener('load', () => {
+			f.loaded = true
+			frame.style.opacity = '1'
+		})
+		wrap.appendChild(frame)
+		this.host.appendChild(wrap)
+		this.frames.set(item.id, f)
+		return f
 	}
 
 	destroy() {
@@ -658,6 +786,10 @@ function premul(out: Float32Array, o: number, [r, g, b, a]: RGBA) {
 function hexToRgba(hex: string): RGBA {
 	const n = parseInt(hex.replace('#', ''), 16)
 	return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, 1]
+}
+
+function css([r, g, b, a]: RGBA) {
+	return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${a})`
 }
 
 function withAlpha([r, g, b, a]: RGBA, k: number): RGBA {

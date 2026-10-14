@@ -82,7 +82,7 @@ export interface Note {
 /** Someone on a canvas right now, from the room's Yjs awareness (GET /api/canvases/:cid/presence). */
 export interface PresenceEntry {
 	clientId: number
-	user: { name: string; color: string }
+	user: { name: string; color: string; agent?: boolean }
 	/** item ids as they are, "frame:<sessionId>" for session frames, "note:<noteId>" for sticky notes */
 	selection: string[]
 	/** page coordinates, or null when their pointer is off the canvas */

@@ -8,6 +8,8 @@ import { BASE } from '../base'
 export interface PeerUser {
 	name: string
 	color: string
+	/** set by AI agents working through the canvas MCP server: no cursor or view, just activity */
+	agent?: boolean
 }
 
 /** What each person broadcasts through Yjs awareness. */

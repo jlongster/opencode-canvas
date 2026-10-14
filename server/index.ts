@@ -600,7 +600,7 @@ function presence(canvasId: string): PresenceEntry[] {
 		if (!user || typeof user !== 'object') continue
 		entries.push({
 			clientId,
-			user: { name: String(user.name ?? ''), color: String(user.color ?? '') },
+			user: { name: String(user.name ?? ''), color: String(user.color ?? ''), ...(user.agent === true ? { agent: true } : {}) },
 			selection: Array.isArray(state.selection) ? state.selection.filter((s): s is string => typeof s === 'string') : [],
 			cursor: (state.cursor as PresenceEntry['cursor']) ?? null,
 			view: (state.view as PresenceEntry['view']) ?? null,

@@ -264,6 +264,116 @@ body,
 	margin-left: 6px;
 }
 
+/* AI agents: a robot glyph instead of initials and a slow pulsing ring, so they read as non-human */
+.avatar.agent::after {
+	content: '';
+	position: absolute;
+	inset: -2px;
+	border-radius: 50%;
+	pointer-events: none;
+	animation: agent-pulse 2.4s ease-out infinite;
+}
+
+@keyframes agent-pulse {
+	0% {
+		box-shadow: 0 0 0 0 color-mix(in srgb, var(--ring) 70%, transparent);
+	}
+	70%,
+	100% {
+		box-shadow: 0 0 0 7px color-mix(in srgb, var(--ring) 0%, transparent);
+	}
+}
+
+.agent-glyph {
+	display: block;
+	flex: none;
+	fill: currentColor;
+	stroke: currentColor;
+	stroke-width: 0;
+}
+
+.agent-glyph path[stroke-linecap] {
+	fill: none;
+}
+
+.agent-glyph-eye {
+	fill: #f8fafc;
+}
+
+.agent-glyph-pupil {
+	fill: #111113;
+	animation: agent-look 7s ease-in-out infinite;
+}
+
+@keyframes agent-look {
+	0%,
+	30% {
+		transform: translate(0, 0);
+	}
+	38%,
+	55% {
+		transform: translate(-1.4px, 0.6px);
+	}
+	63%,
+	100% {
+		transform: translate(0, 0);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.avatar.agent::after,
+	.agent-glyph-pupil {
+		animation: none;
+	}
+}
+
+.agent-activity {
+	position: absolute;
+	top: calc(100% + 8px);
+	right: 0;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 6px;
+	pointer-events: none;
+}
+
+.agent-activity-line {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	max-width: 320px;
+	padding: 4px 10px 4px 6px;
+	border: 1px solid color-mix(in srgb, var(--ring) 45%, transparent);
+	border-radius: 999px;
+	background: rgba(17, 17, 19, 0.92);
+	color: #e4e4e7;
+	font-size: 12px;
+	white-space: nowrap;
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+	animation: chat-fade 5s forwards;
+}
+
+.agent-activity-line .agent-glyph {
+	width: 15px;
+	height: 15px;
+	color: var(--ring);
+}
+
+.agent-activity-name {
+	flex: none;
+	max-width: 140px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--ring);
+	font-weight: 500;
+}
+
+.agent-activity-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
 .avatar.more {
 	background: #3f3f46;
 	color: #e4e4e7;

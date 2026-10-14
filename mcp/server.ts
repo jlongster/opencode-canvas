@@ -13,6 +13,8 @@ import { resolve } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
+import { WebsocketProvider } from 'y-websocket'
+import * as Y from 'yjs'
 import { z } from 'zod'
 import type {
 	Canvas, CanvasData, CanvasSummary, Item, Note, PresenceEntry, ResolvedSelection, Session, SessionView,
@@ -111,6 +113,123 @@ function tool<A>(fn: (args: A) => Promise<CallToolResult>) {
 	}
 }
 
+// ---------- agent presence ----------
+// While an agent works on a canvas it joins the canvas's multiplayer room like a browser does, so
+// people see it in the avatar stack: its selection outlines what it's working on and its chat says
+// what it just did. It has no cursor or view. It leaves after a while without tool calls.
+
+const ROOMS_URL = API.replace(/^http/, 'ws') + '/rooms'
+const AGENT_COLOR = '#22d3ee'
+const AGENT_IDLE_MS = 2 * 60_000
+/** a little longer than browsers keep a sent chat message up, so the fade-out finishes first */
+const AGENT_CHAT_MS = 6000
+const SESSION_ID = process.env.OPENCODE_SESSION_ID
+
+interface AgentRoom {
+	provider: WebsocketProvider
+	doc: Y.Doc
+	name: string
+	selection: string[]
+	chat: string | null
+	idleTimer?: ReturnType<typeof setTimeout>
+	chatTimer?: ReturnType<typeof setTimeout>
+}
+
+const agentRooms = new Map<string, AgentRoom>()
+
+function fallbackAgentName() {
+	return SESSION_ID ? `Agent ses_…${SESSION_ID.slice(-6)}` : 'Agent'
+}
+
+function agentName(sessions: Session[]) {
+	const title = SESSION_ID ? sessions.find((s) => s.id === SESSION_ID)?.title.trim() : undefined
+	if (!title) return fallbackAgentName()
+	return `Agent · ${title.length > 32 ? title.slice(0, 31) + '…' : title}`
+}
+
+/** Joins the canvas's room (once) and shows what the agent is doing there. Never throws. */
+function agentActivity(canvasId: string, activity: { selection?: string[]; chat?: string; sessions?: Session[] }) {
+	try {
+		let room = agentRooms.get(canvasId)
+		if (!room) {
+			const doc = new Y.Doc()
+			const provider = new WebsocketProvider(ROOMS_URL, `canvas-${canvasId}`, doc, {
+				WebSocketPolyfill: WebSocket as unknown as typeof globalThis.WebSocket,
+				disableBc: true,
+			})
+			room = { provider, doc, name: fallbackAgentName(), selection: [], chat: null }
+			agentRooms.set(canvasId, room)
+			if (!activity.sessions) {
+				const joined = room
+				api<CanvasData>('GET', `/canvases/${canvasId}`)
+					.then((data) => {
+						if (agentRooms.get(canvasId) !== joined) return
+						joined.name = agentName(data.sessions)
+						publishAgent(joined)
+					})
+					.catch(() => {})
+			}
+		}
+		if (activity.sessions) room.name = agentName(activity.sessions)
+		if (activity.selection) room.selection = activity.selection
+		if (activity.chat !== undefined) {
+			room.chat = activity.chat.slice(0, 140)
+			clearTimeout(room.chatTimer)
+			const r = room
+			r.chatTimer = setTimeout(() => {
+				r.chat = null
+				publishAgent(r)
+			}, AGENT_CHAT_MS)
+		}
+		clearTimeout(room.idleTimer)
+		room.idleTimer = setTimeout(() => leaveCanvas(canvasId), AGENT_IDLE_MS)
+		publishAgent(room)
+	} catch {
+		// presence is decoration: never let it break a tool call
+	}
+}
+
+function publishAgent(room: AgentRoom) {
+	room.provider.awareness.setLocalState({
+		user: { name: room.name, color: AGENT_COLOR, agent: true },
+		cursor: null,
+		selection: room.selection,
+		view: null,
+		chat: room.chat,
+		chatSent: true,
+	})
+}
+
+function leaveCanvas(canvasId: string) {
+	const room = agentRooms.get(canvasId)
+	if (!room) return
+	agentRooms.delete(canvasId)
+	clearTimeout(room.idleTimer)
+	clearTimeout(room.chatTimer)
+	room.provider.awareness.setLocalState(null)
+	room.provider.destroy()
+	room.doc.destroy()
+}
+
+/** The agent's own awareness client id on a canvas, to leave it out of presence results. */
+const ownClientId = (canvasId: string) => agentRooms.get(canvasId)?.doc.clientID
+
+const itemLabel = (item: Item) => item.title || item.name
+
+let shuttingDown = false
+function shutdown() {
+	if (shuttingDown) return
+	shuttingDown = true
+	for (const id of [...agentRooms.keys()]) leaveCanvas(id)
+	// give the awareness removals a moment to reach the server
+	setTimeout(() => process.exit(0), 100)
+}
+process.stdin.on('end', shutdown)
+process.stdin.on('close', shutdown)
+process.on('SIGINT', shutdown)
+process.on('SIGTERM', shutdown)
+process.on('SIGHUP', shutdown)
+
 // ---------- tools ----------
 
 const server = new McpServer({ name: 'canvas', version: '1.0.0' })
@@ -148,6 +267,8 @@ server.registerTool(
 			api<SessionView[]>('GET', `/canvases/${id}/sessions`),
 			api<Note[]>('GET', `/canvases/${id}/notes`),
 		])
+		const ownFrame = SESSION_ID && sessions.some((s) => s.id === SESSION_ID) ? [`frame:${SESSION_ID}`] : []
+		agentActivity(id, { selection: ownFrame, chat: 'Looking over the canvas', sessions: data.sessions })
 		return ok({
 			id,
 			title: data.canvas.title,
@@ -186,7 +307,9 @@ server.registerTool(
 	},
 	tool(async ({ canvas }: { canvas: string }) => {
 		const id = await canvasId(canvas)
-		const { users } = await api<{ users: ResolvedSelection[] }>('GET', `/canvases/${id}/selection`)
+		agentActivity(id, { selection: [], chat: 'Checking what you\'ve selected' })
+		const own = ownClientId(id)
+		const users = (await api<{ users: ResolvedSelection[] }>('GET', `/canvases/${id}/selection`)).users.filter((u) => u.clientId !== own)
 		return ok({
 			canvasId: id,
 			users: users.map((u) => ({
@@ -212,7 +335,8 @@ server.registerTool(
 	},
 	tool(async ({ canvas }: { canvas: string }) => {
 		const id = await canvasId(canvas)
-		const people = await api<PresenceEntry[]>('GET', `/canvases/${id}/presence`)
+		const own = ownClientId(id)
+		const people = (await api<PresenceEntry[]>('GET', `/canvases/${id}/presence`)).filter((p) => p.clientId !== own)
 		return ok(
 			people.map((p) => ({
 				clientId: p.clientId,
@@ -235,6 +359,7 @@ server.registerTool(
 	},
 	tool(async ({ canvas }: { canvas: string }) => {
 		const id = await canvasId(canvas)
+		agentActivity(id, { selection: [], chat: 'Reading the sticky notes' })
 		return ok((await api<Note[]>('GET', `/canvases/${id}/notes`)).map(noteSummary))
 	}),
 )
@@ -254,6 +379,7 @@ server.registerTool(
 			.filter((i) => [i.name, i.title, i.caption, i.group].some((f) => f?.toLowerCase().includes(q)))
 			.sort((a, b) => a.createdAt - b.createdAt)
 			.map((i) => ({ ...itemSummary(i), sessionId: i.sessionId, session: titles.get(i.sessionId) }))
+		agentActivity(id, { selection: found.slice(0, 50).map((i) => i.id), chat: `Searching for "${query.trim()}"`, sessions })
 		return ok(found)
 	}),
 )
@@ -272,6 +398,8 @@ server.registerTool(
 	},
 	tool(async ({ itemId, includeImage, fullSize }: { itemId: string; includeImage?: boolean; fullSize?: boolean }) => {
 		const item = await api<Item>('GET', `/items/${encodeURIComponent(itemId)}`)
+		const zoom = includeImage && fullSize && item.kind === 'image' ? ' (zoomed)' : ''
+		agentActivity(item.canvasId, { selection: [item.id], chat: `Looking at ${itemLabel(item)}${zoom}` })
 		const result: CallToolResult = { content: [{ type: 'text', text: JSON.stringify(itemDetail(item)) }] }
 		if (item.kind === 'html') {
 			const res = await fetch(mediaUrl(item.src))
@@ -333,6 +461,13 @@ server.registerTool(
 		const { canvas: _, sessionId: __, path, ...rest } = args
 		const body = { ...rest, ...(path !== undefined ? { path: resolve(path) } : {}) }
 		const item = await api<Item>('POST', `/canvases/${id}/sessions/${encodeURIComponent(sessionId)}/items`, body)
+		agentActivity(id, { selection: [item.id], chat: `Posted ${itemLabel(item)}` })
+		// the post may have created our session frame, so pick up its title for the agent's name
+		if (sessionId === SESSION_ID) {
+			api<CanvasData>('GET', `/canvases/${id}`)
+				.then((data) => agentActivity(id, { sessions: data.sessions }))
+				.catch(() => {})
+		}
 		return ok(itemDetail(item))
 	}),
 )
@@ -352,7 +487,9 @@ server.registerTool(
 	tool(async ({ itemId, ...changes }: { itemId: string; name?: string; title?: string | null; caption?: string | null; group?: string | null }) => {
 		const body = Object.fromEntries(Object.entries(changes).filter(([, v]) => v !== undefined))
 		if (!Object.keys(body).length) throw new ApiError('nothing to change: give name, title, caption or group')
-		return ok(itemDetail(await api<Item>('PATCH', `/items/${encodeURIComponent(itemId)}`, body)))
+		const item = await api<Item>('PATCH', `/items/${encodeURIComponent(itemId)}`, body)
+		agentActivity(item.canvasId, { selection: [item.id], chat: `Updated ${itemLabel(item)}` })
+		return ok(itemDetail(item))
 	}),
 )
 
@@ -362,7 +499,12 @@ server.registerTool(
 		description: 'Delete an item (restorable for an hour with restore). Deleting a session\'s last item removes the session too.',
 		inputSchema: { itemId: z.string() },
 	},
-	tool(async ({ itemId }: { itemId: string }) => ok(await api('DELETE', `/items/${encodeURIComponent(itemId)}`))),
+	tool(async ({ itemId }: { itemId: string }) => {
+		const item = await api<Item>('GET', `/items/${encodeURIComponent(itemId)}`).catch(() => null)
+		const result = await api('DELETE', `/items/${encodeURIComponent(itemId)}`)
+		if (item) agentActivity(item.canvasId, { selection: [], chat: `Deleted ${itemLabel(item)}` })
+		return ok(result)
+	}),
 )
 
 server.registerTool(
@@ -379,6 +521,11 @@ server.registerTool(
 	tool(async ({ canvas, itemIds, sessionIds }: { canvas: string; itemIds?: string[]; sessionIds?: string[] }) => {
 		const id = await canvasId(canvas)
 		const restored = await api<{ sessions: Session[]; items: Item[] }>('POST', `/canvases/${id}/restore`, { itemIds, sessionIds })
+		const count = restored.items.length
+		agentActivity(id, {
+			selection: [...restored.sessions.map((s) => `frame:${s.id}`), ...restored.items.map((i) => i.id)],
+			chat: `Restored ${count} item${count === 1 ? '' : 's'}`,
+		})
 		return ok({ sessions: restored.sessions.map((s) => ({ id: s.id, title: s.title })), items: restored.items.map(itemSummary) })
 	}),
 )

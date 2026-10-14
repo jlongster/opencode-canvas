@@ -1,6 +1,7 @@
 import { Box, Vec } from '../geometry'
+import { frameKey } from '../selection'
 import { StateNode } from '../StateNode'
-import type { EventOf, Target } from '../types'
+import type { EventOf } from '../types'
 
 export class SelectTool extends StateNode {
 	static override id = 'select'
@@ -31,15 +32,15 @@ class Idle extends StateNode {
 
 	override onPointerDown(e: EventOf<'pointer_down'>) {
 		if (e.button !== 0) return
-		if (e.target.type === 'item') this.parent!.transition('pointing_item', e)
+		if (e.target.type === 'item' || e.target.type === 'frame_title') this.parent!.transition('pointing_item', e)
 		else this.parent!.transition('pointing_canvas', e)
 	}
 
 	override onDoubleClick(e: EventOf<'double_click'>) {
 		const { editor } = this
 		if (e.target.type === 'item') editor.zoomToItem(e.target.id)
-		else if (e.target.type === 'section') editor.zoomToSection(e.target.id)
-		else editor.zoomToFit()
+		else if (e.target.type === 'section' || e.target.type === 'frame_title') editor.zoomToSection(e.target.id)
+		else editor.selectNone()
 	}
 
 	override onKeyDown(e: EventOf<'key_down'>) {
@@ -54,18 +55,21 @@ class Idle extends StateNode {
 	}
 }
 
-/** Pointer is down on an item but hasn't moved far enough to count as a drag. */
+/**
+ * Pointer is down on an item (or a session frame's title, which selects the whole frame) but
+ * hasn't moved far enough to count as a drag.
+ */
 class PointingItem extends StateNode {
 	static override id = 'pointing_item'
-	private target: Extract<Target, { type: 'item' }> | null = null
+	private key = ''
 	private deselectOnUp = false
 
 	override onEnter(info: unknown) {
 		const e = info as EventOf<'pointer_down'>
-		if (e.target.type !== 'item') return
+		if (e.target.type !== 'item' && e.target.type !== 'frame_title') return
 		const { editor } = this
-		const id = e.target.id
-		this.target = e.target
+		const id = e.target.type === 'item' ? e.target.id : frameKey(e.target.id)
+		this.key = id
 		const selected = editor.isSelected(id)
 		this.deselectOnUp = e.shiftKey && selected
 		if (e.shiftKey && !selected) editor.select([...editor.getSelectedIds(), id])
@@ -78,7 +82,7 @@ class PointingItem extends StateNode {
 
 	override onPointerUp(e: EventOf<'pointer_up'>) {
 		const { editor } = this
-		const id = this.target!.id
+		const id = this.key
 		if (this.deselectOnUp) editor.select(editor.getSelectedIds().filter((s) => s !== id))
 		else if (!e.shiftKey) editor.select([id])
 		this.parent!.transition('idle')
@@ -170,7 +174,7 @@ class Brushing extends StateNode {
 		this.lastShift = shiftKey
 		const brush = Box.fromPoints(originPagePoint, currentPagePoint)
 		editor.setBrush(brush)
-		const hits = editor.getItemsInBox(brush)
+		const hits = editor.getSelectableInBox(brush)
 		editor.select(shiftKey ? [...new Set([...this.initialSelection, ...hits])] : hits)
 	}
 }

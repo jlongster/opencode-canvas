@@ -39,7 +39,20 @@ interface StoredIndex {
 	canvases: Canvas[]
 	sessions: Session[]
 	items: Item[]
+	trash?: TrashEntry[]
 }
+
+/**
+ * Deleted items and sessions wait in the trash for TRASH_MS (their files stay on disk), so they can
+ * be restored with POST /api/canvases/:cid/restore. They're hidden from every API response.
+ */
+type TrashEntry =
+	| { kind: 'item'; item: Item; deletedAt: number }
+	/** itemIds: the items that were deleted along with the session */
+	| { kind: 'session'; session: Session; itemIds: string[]; deletedAt: number }
+
+const TRASH_MS = 60 * 60 * 1000
+const TRASH_SWEEP_MS = 5 * 60 * 1000
 
 /** Sessions are keyed by canvas and session id: one OpenCode session can post to several canvases. */
 const sessionKey = (canvasId: string, sessionId: string) => `${canvasId}/${sessionId}`
@@ -49,12 +62,17 @@ const db: { canvases: Map<string, Canvas>; sessions: Map<string, Session>; items
 	sessions: new Map(),
 	items: new Map(),
 }
+/** keyed "item:<id>" and "session:<canvasId>/<sessionId>" */
+const trash = new Map<string, TrashEntry>()
+const trashKey = (entry: TrashEntry) =>
+	entry.kind === 'item' ? `item:${entry.item.id}` : `session:${sessionKey(entry.session.canvasId, entry.session.id)}`
 
 if (existsSync(INDEX_FILE)) {
 	const stored = (await Bun.file(INDEX_FILE).json()) as StoredIndex
 	for (const c of stored.canvases) db.canvases.set(c.id, c)
 	for (const s of stored.sessions) db.sessions.set(sessionKey(s.canvasId, s.id), s)
 	for (const i of stored.items) db.items.set(i.id, i)
+	for (const t of stored.trash ?? []) trash.set(trashKey(t), t)
 }
 
 // Saves run one at a time; changes made during a save are picked up by one more pass.
@@ -82,7 +100,12 @@ async function flush() {
 }
 
 function storedIndex(): StoredIndex {
-	return { canvases: [...db.canvases.values()], sessions: [...db.sessions.values()], items: [...db.items.values()] }
+	return {
+		canvases: [...db.canvases.values()],
+		sessions: [...db.sessions.values()],
+		items: [...db.items.values()],
+		trash: [...trash.values()],
+	}
 }
 
 // ---------- live events (WebSocket) ----------
@@ -392,24 +415,106 @@ function ensureSession(canvasId: string, id: string, title?: string): Session {
 	return session
 }
 
-async function deleteItem(id: string) {
-	const item = db.items.get(id)
-	if (!item) return false
-	db.items.delete(id)
+async function removeItemFiles(item: Item) {
 	await rm(join(MEDIA_DIR, item.src.replace('/media/', '')), { force: true })
 	if (item.thumb && item.thumb !== item.src) await rm(join(MEDIA_DIR, item.thumb.replace('/media/', '')), { force: true })
-	save()
-	broadcast({ type: 'item_deleted', canvasId: item.canvasId, id })
-	return true
 }
 
-async function deleteSession(session: Session) {
-	for (const item of [...db.items.values()]) {
-		if (item.canvasId === session.canvasId && item.sessionId === session.id) await deleteItem(item.id)
+function sessionItems(canvasId: string, sessionId: string) {
+	return [...db.items.values()].filter((i) => i.canvasId === canvasId && i.sessionId === sessionId)
+}
+
+/** Moves an item to the trash. Without `keepSession`, a session left empty is trashed too. */
+function deleteItem(id: string, opts: { keepSession?: boolean } = {}) {
+	const item = db.items.get(id)
+	if (!item) return { deleted: false, sessionDeleted: false }
+	db.items.delete(id)
+	const entry: TrashEntry = { kind: 'item', item, deletedAt: Date.now() }
+	trash.set(trashKey(entry), entry)
+	save()
+	broadcast({ type: 'item_deleted', canvasId: item.canvasId, id })
+	// Empty frames disappear for everyone.
+	const session = db.sessions.get(sessionKey(item.canvasId, item.sessionId))
+	if (!opts.keepSession && session && !sessionItems(item.canvasId, item.sessionId).length) {
+		deleteSession(session)
+		return { deleted: true, sessionDeleted: true }
 	}
+	return { deleted: true, sessionDeleted: false }
+}
+
+/** Moves a session and all its items to the trash. */
+function deleteSession(session: Session) {
+	const items = sessionItems(session.canvasId, session.id)
+	for (const item of items) deleteItem(item.id, { keepSession: true })
 	db.sessions.delete(sessionKey(session.canvasId, session.id))
+	const entry: TrashEntry = { kind: 'session', session, itemIds: items.map((i) => i.id), deletedAt: Date.now() }
+	trash.set(trashKey(entry), entry)
 	save()
 	broadcast({ type: 'session_deleted', canvasId: session.canvasId, id: session.id })
+}
+
+/** Takes a session out of the trash (with the items deleted along with it). */
+function restoreSession(canvasId: string, sessionId: string, restored: { sessions: Session[]; items: Item[] }) {
+	const key = `session:${sessionKey(canvasId, sessionId)}`
+	const entry = trash.get(key)
+	if (entry?.kind !== 'session') return
+	trash.delete(key)
+	// The session may have been recreated since (by posting to it again): then only its items come back.
+	if (!db.sessions.has(sessionKey(canvasId, sessionId))) {
+		db.sessions.set(sessionKey(canvasId, sessionId), entry.session)
+		broadcast({ type: 'session', session: entry.session })
+		restored.sessions.push(entry.session)
+	}
+	save()
+	for (const id of entry.itemIds) restoreItem(canvasId, id, restored)
+}
+
+/** Takes an item out of the trash, bringing back its session first if that was deleted too. */
+function restoreItem(canvasId: string, id: string, restored: { sessions: Session[]; items: Item[] }) {
+	const entry = trash.get(`item:${id}`)
+	if (entry?.kind !== 'item' || entry.item.canvasId !== canvasId || db.items.has(id)) return
+	const { item } = entry
+	if (!db.sessions.has(sessionKey(canvasId, item.sessionId))) {
+		restoreSession(canvasId, item.sessionId, restored)
+		// The session restore may have brought this item back already.
+		if (db.items.has(id)) return
+		if (!db.sessions.has(sessionKey(canvasId, item.sessionId))) ensureSession(canvasId, item.sessionId)
+	}
+	trash.delete(`item:${id}`)
+	db.items.set(id, item)
+	save()
+	broadcast({ type: 'item', item })
+	restored.items.push(item)
+}
+
+function restore(canvasId: string, sessionIds: string[], itemIds: string[]) {
+	const restored: { sessions: Session[]; items: Item[] } = { sessions: [], items: [] }
+	for (const id of sessionIds) restoreSession(canvasId, id, restored)
+	for (const id of itemIds) restoreItem(canvasId, id, restored)
+	return restored
+}
+
+/** Permanently removes trash older than TRASH_MS (or everything of one canvas), with its files. */
+async function purgeTrash(opts: { canvasId?: string } = {}) {
+	const cutoff = Date.now() - TRASH_MS
+	let changed = false
+	for (const [key, entry] of [...trash]) {
+		const canvasId = entry.kind === 'item' ? entry.item.canvasId : entry.session.canvasId
+		if (opts.canvasId ? canvasId !== opts.canvasId : entry.deletedAt > cutoff) continue
+		trash.delete(key)
+		changed = true
+		if (entry.kind === 'item') await removeItemFiles(entry.item)
+	}
+	if (changed) save()
+}
+
+await purgeTrash()
+setInterval(() => purgeTrash().catch((e) => console.error('trash sweep failed:', e)), TRASH_SWEEP_MS)
+
+function idList(value: unknown, name: string): string[] {
+	if (value === undefined || value === null) return []
+	if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) throw new HttpError(400, `"${name}" must be an array of strings`)
+	return value as string[]
 }
 
 // ---------- canvases ----------
@@ -442,9 +547,11 @@ function createCanvas(title?: string): Canvas {
 
 async function deleteCanvas(canvas: Canvas) {
 	db.canvases.delete(canvas.id)
-	for (const session of canvasSessions(canvas.id)) await deleteSession(session)
+	for (const session of canvasSessions(canvas.id)) deleteSession(session)
 	// items whose session record is missing, just in case
-	for (const item of [...db.items.values()]) if (item.canvasId === canvas.id) await deleteItem(item.id)
+	for (const item of [...db.items.values()]) if (item.canvasId === canvas.id) deleteItem(item.id)
+	// A deleted canvas can't be restored, so its trash goes right away.
+	await purgeTrash({ canvasId: canvas.id })
 	await discardRoom(`canvas-${canvas.id}`)
 	await rm(roomFile(canvas.id), { force: true })
 	save()
@@ -469,16 +576,22 @@ const API_INDEX = {
 		'GET /api/canvases/:cid/sessions': 'The canvas\'s sessions, each with its groups and their items, in canvas order',
 		'GET /api/canvases/:cid/sessions/:sessionId': 'One session with its groups and items',
 		'PUT /api/canvases/:cid/sessions/:sessionId': 'Create or rename a session. Body: {"title"}',
-		'DELETE /api/canvases/:cid/sessions/:sessionId': 'Delete a session and all its items',
+		'DELETE /api/canvases/:cid/sessions/:sessionId': 'Delete a session and all its items (restorable for an hour, see restore)',
 		'POST /api/canvases/:cid/sessions/:sessionId/items':
 			'Add an image, video or HTML page. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
 			'or JSON {"html": "<html source>"} for an HTML item. Plus optional "group", "title", "caption". ' +
 			'Creates the session if needed.',
 		'GET /api/items/:itemId': 'One item',
 		'PATCH /api/items/:itemId': 'Change an item\'s "group", "title" or "caption" (null clears)',
-		'DELETE /api/items/:itemId': 'Delete an item',
+		'DELETE /api/items/:itemId':
+			'Delete an item (restorable for an hour). Deleting a session\'s last item deletes the session too ' +
+			'(the response says {"sessionDeleted": true})',
+		'POST /api/canvases/:cid/restore':
+			'Undo deletes within an hour of them. Body: {"itemIds": [...], "sessionIds": [...]} (either or both). ' +
+			'A session comes back with the items deleted along with it; an item brings back its session if that was ' +
+			'deleted too. Returns {"sessions", "items"}: what was restored',
 		'PATCH /api/canvases/:cid/sessions/:sessionId/groups/:group': 'Rename a group. Body: {"name"} (null ungroups its items)',
-		'DELETE /api/canvases/:cid/sessions/:sessionId/groups/:group': 'Delete a group and all its items',
+		'DELETE /api/canvases/:cid/sessions/:sessionId/groups/:group': 'Delete a group and all its items (restorable for an hour)',
 	},
 	html:
 		'HTML items are for diagrams, charts, SVG drawings and annotated explanations. Send {"html", "width", ' +
@@ -610,9 +723,19 @@ async function handle(req: Request): Promise<Response> {
 			return json(sessionView(session), existed ? 200 : 201)
 		}
 		if (method === 'DELETE') {
-			await deleteSession(getSession(canvas.id, id))
+			deleteSession(getSession(canvas.id, id))
 			return json({ ok: true })
 		}
+	}
+
+	m = /^\/api\/canvases\/([^/]+)\/restore$/.exec(p)
+	if (m && method === 'POST') {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		const body = (await req.json().catch(() => ({}))) as { itemIds?: unknown; sessionIds?: unknown }
+		const sessionIds = idList(body?.sessionIds, 'sessionIds')
+		const itemIds = idList(body?.itemIds, 'itemIds')
+		if (!sessionIds.length && !itemIds.length) throw new HttpError(400, 'send {"itemIds": [...]} and/or {"sessionIds": [...]}')
+		return json(restore(canvas.id, sessionIds, itemIds))
 	}
 
 	// ---- groups (named sets of items within a session) ----
@@ -634,8 +757,9 @@ async function handle(req: Request): Promise<Response> {
 			return json(sessionView(session))
 		}
 		if (method === 'DELETE') {
-			for (const item of items) await deleteItem(item.id)
-			return json({ ok: true, deleted: items.length })
+			let sessionDeleted = false
+			for (const item of items) sessionDeleted = deleteItem(item.id).sessionDeleted || sessionDeleted
+			return json({ ok: true, deleted: items.length, sessionDeleted })
 		}
 	}
 
@@ -702,8 +826,8 @@ async function handle(req: Request): Promise<Response> {
 			return json(updateItem(item, changes))
 		}
 		if (method === 'DELETE') {
-			await deleteItem(item.id)
-			return json({ ok: true })
+			const { sessionDeleted } = deleteItem(item.id)
+			return json({ ok: true, sessionDeleted })
 		}
 	}
 

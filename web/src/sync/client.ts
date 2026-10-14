@@ -30,9 +30,16 @@ export const renameCanvas = (id: string, title: string) =>
 export const deleteCanvas = (id: string) =>
 	request<{ ok: boolean }>(`/api/canvases/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
-/** Permanently deletes a session and its media. The canvas updates from the server's event. */
+/** Moves a session and its items to the server's trash (see restore). The canvas updates from the server's event. */
 export const deleteSession = (canvasId: string, id: string) =>
 	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+
+/** Moves an item to the trash; the server deletes its session too if it was the last item. */
+export const deleteItem = (id: string) => request<unknown>(`/api/items/${encodeURIComponent(id)}`, { method: 'DELETE' })
+
+/** Brings deleted items and sessions back from the trash (within an hour of deleting them). */
+export const restoreDeleted = (canvasId: string, ids: { itemIds: string[]; sessionIds: string[] }) =>
+	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/restore`, json('POST', ids))
 
 /** Thrown when a canvas doesn't exist (or was deleted). */
 export class CanvasNotFound extends Error {}

@@ -3,7 +3,8 @@ import { Editor, type ToolId } from '../editor/Editor'
 import { Renderer } from '../render/Renderer'
 import { react } from '../state/signals'
 import type { Canvas } from '../../../shared/types'
-import { connectCanvas, deleteSession, editUrl, listUrl, renameCanvas, viewUrl, type CanvasLink } from '../sync/client'
+import { frameKey } from '../editor/selection'
+import { connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, viewUrl, type CanvasLink } from '../sync/client'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedNotes } from '../multiplayer/SharedNotes'
@@ -66,13 +67,21 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 
 		editor.mount(container)
 		editor.setCurrentTool(loadTool())
+		// Only edit links can delete (and undo deleting); view links just select.
+		if (link.role === 'edit') {
+			const id = link.id
+			editor.deletions.backend = {
+				deleteItem: (itemId) => deleteItem(itemId),
+				deleteSession: (sessionId) => deleteSession(id, sessionId),
+				restore: (ids) => restoreDeleted(id, ids),
+			}
+			disposers.push(() => (editor.deletions.backend = null))
+		}
 		disposers.push(react(() => saveTool(editor.currentToolId.get())))
 
 		Renderer.create(canvasRef.current!, overlayRef.current!, editor, {
 			readOnly: link.role === 'view',
-			onCloseSection: (id) => {
-				if (link.role === 'edit') deleteSession(link.id, id).catch((e) => console.error(e))
-			},
+			onCloseSection: (id) => editor.deletions.delete([frameKey(id)]),
 			getRemoteSelections: () => live?.peers.get().map((p) => ({ ids: p.selection ?? [], color: p.user.color })) ?? [],
 		})
 			.then((r) => {
@@ -147,6 +156,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 				<Toolbar editor={editor} canvas={role === 'edit' ? canvas : null} />
 			</div>
 			<StatusBar editor={editor} />
+			<UndoToast editor={editor} />
 			{canvas && <EmptyState editor={editor} canvas={canvas} role={role} />}
 			{error && (
 				<div className="error">
@@ -233,7 +243,7 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 		label: 'Sticky note',
 		key: 'N',
 		icon: (
-			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
+			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" style={{ transform: 'translateX(3px)' }}>
 				<path d="M4 4h16v10l-6 6H4z" />
 				<path d="M14 20v-6h6" />
 			</svg>
@@ -356,6 +366,23 @@ function StatusBar({ editor }: { editor: Editor }) {
 				{sessions} sessions · {items} items{selected !== '0' && ` · ${selected} selected`}
 			</span>
 			{hovered && <span className="hovered">{hovered}</span>}
+		</div>
+	)
+}
+
+/** "Deleted 3 items · Undo" at the bottom centre for a few seconds after deleting. */
+function UndoToast({ editor }: { editor: Editor }) {
+	const toast = useValue(() => editor.deletions.toast.get())
+	if (!toast) return null
+	return (
+		<div className="toast" key={toast.id} role="status" onPointerDown={(e) => e.stopPropagation()}>
+			<span>{toast.message}</span>
+			{toast.undo && (
+				<>
+					<span className="toast-sep">·</span>
+					<button onClick={() => editor.deletions.undo()}>Undo</button>
+				</>
+			)}
 		</div>
 	)
 }

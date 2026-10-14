@@ -1,7 +1,9 @@
 import type { Item, Session } from '../../../shared/types'
 import { atom, computed, getGlobalEpoch, react, transact } from '../state/signals'
 import { Box, clamp, easeInOutCubic, lerp, Vec } from './geometry'
-import { computeLayout, LAYOUT, type Layout } from './layout'
+import { Deletions } from './Deletions'
+import { computeLayout, frameTitleBox, LAYOUT, type Layout } from './layout'
+import { noteKey, parseSelectionId, type SelectionKind } from './selection'
 import { StateNode } from './StateNode'
 import { HandTool } from './tools/HandTool'
 import { NoteTool } from './tools/NoteTool'
@@ -65,10 +67,13 @@ export class Editor {
 	// --- records ---
 	readonly sessions = atom<Record<string, Session>>('sessions', {})
 	readonly items = atom<Record<string, Item>>('items', {})
+	/** Sticky notes' page boxes (ignoring their slight tilt), kept up to date by SharedNotes. */
+	readonly noteBoxes = atom<Record<string, Box>>('noteBoxes', {}, boxRecordEquals)
 
 	// --- instance state ---
 	readonly camera = atom<Camera>('camera', { x: 0, y: 0, z: 1 }, (a, b) => a.x === b.x && a.y === b.y && a.z === b.z)
 	readonly viewport = atom<{ w: number; h: number }>('viewport', { w: 1, h: 1 }, (a, b) => a.w === b.w && a.h === b.h)
+	/** Items, session frames and notes; see selection.ts for how the kinds are told apart. */
 	readonly selectedIds = atom<string[]>('selectedIds', [], arrayEquals)
 	readonly hoveredId = atom<string | null>('hoveredId', null)
 	readonly brush = atom<Box | null>('brush', null)
@@ -93,6 +98,7 @@ export class Editor {
 	readonly inputs = new Inputs()
 	/** Set when sticky notes are available (edit role); the note tool calls it to drop a note. */
 	createNote: ((point: Vec) => void) | null = null
+	readonly deletions = new Deletions(this)
 	readonly root: Root
 
 	private cameraAnimation: { from: Camera; to: Camera; start: number; duration: number } | null = null
@@ -115,8 +121,7 @@ export class Editor {
 		transact(() => {
 			this.sessions.set(Object.fromEntries(sessions.map((s) => [s.id, s])))
 			this.items.set(Object.fromEntries(items.map((i) => [i.id, i])))
-			const live = this.items.peek()
-			this.selectedIds.update((ids) => ids.filter((id) => id in live))
+			this.pruneSelection(['item', 'frame'])
 		})
 	}
 
@@ -132,8 +137,7 @@ export class Editor {
 		transact(() => {
 			this.sessions.update(({ [id]: _, ...rest }) => rest)
 			this.items.update((items) => Object.fromEntries(Object.entries(items).filter(([, i]) => i.sessionId !== id)))
-			const live = this.items.peek()
-			this.selectedIds.update((ids) => ids.filter((s) => s in live))
+			this.pruneSelection(['item', 'frame'])
 		})
 	}
 
@@ -142,6 +146,27 @@ export class Editor {
 			this.items.update(({ [id]: _, ...rest }) => rest)
 			this.selectedIds.update((ids) => ids.filter((s) => s !== id))
 		})
+	}
+
+	setNoteBoxes(boxes: Record<string, Box>) {
+		transact(() => {
+			this.noteBoxes.set(boxes)
+			this.pruneSelection(['note'])
+		})
+	}
+
+	/** Drop selected things of these kinds that no longer exist. */
+	private pruneSelection(kinds: SelectionKind[]) {
+		const items = this.items.peek()
+		const sessions = this.sessions.peek()
+		const notes = this.noteBoxes.peek()
+		this.selectedIds.update((ids) =>
+			ids.filter((key) => {
+				const { kind, id } = parseSelectionId(key)
+				if (!kinds.includes(kind)) return true
+				return kind === 'frame' ? id in sessions : kind === 'note' ? id in notes : id in items
+			}),
+		)
 	}
 
 	// ---------- selection & hover ----------
@@ -155,11 +180,16 @@ export class Editor {
 	select(ids: string[]) {
 		this.selectedIds.set(ids)
 	}
+	/** Shift-click: add the key, or remove it if it's already selected. */
+	toggleSelected(key: string) {
+		const ids = this.selectedIds.peek()
+		this.selectedIds.set(ids.includes(key) ? ids.filter((k) => k !== key) : [...ids, key])
+	}
 	selectNone() {
 		this.selectedIds.set([])
 	}
 	selectAll() {
-		this.selectedIds.set([...this.layout.get().items.keys()])
+		this.selectedIds.set([...this.layout.get().items.keys(), ...Object.keys(this.noteBoxes.get()).map(noteKey)])
 	}
 	setHovered(id: string | null) {
 		this.hoveredId.set(id)
@@ -189,6 +219,10 @@ export class Editor {
 
 	getTargetAt(point: Vec): Target {
 		const layout = this.layout.get()
+		const z = this.camera.peek().z
+		for (const section of layout.sections) {
+			if (Box.contains(frameTitleBox(section, z), point)) return { type: 'frame_title', id: section.id }
+		}
 		for (const section of layout.sections) {
 			if (!Box.contains(section.box, point)) continue
 			for (const id of section.itemIds) {
@@ -200,14 +234,24 @@ export class Editor {
 		return { type: 'canvas' }
 	}
 
-	getItemsInBox(box: Box): string[] {
+	/** Items and notes touching the box (frames are only selected by their title). */
+	getSelectableInBox(box: Box): string[] {
 		const ids: string[] = []
 		const layout = this.layout.get()
 		for (const section of layout.sections) {
 			if (!Box.intersects(section.box, box)) continue
 			for (const id of section.itemIds) if (Box.intersects(layout.items.get(id)!, box)) ids.push(id)
 		}
+		for (const [id, note] of Object.entries(this.noteBoxes.get())) if (Box.intersects(note, box)) ids.push(noteKey(id))
 		return ids
+	}
+
+	/** The page box of a selection key, if the thing exists. */
+	getSelectionBounds(key: string): Box | undefined {
+		const { kind, id } = parseSelectionId(key)
+		if (kind === 'frame') return this.layout.get().sections.find((s) => s.id === id)?.box
+		if (kind === 'note') return this.noteBoxes.get()[id]
+		return this.layout.get().items.get(id)
 	}
 
 	// ---------- camera ----------
@@ -324,8 +368,12 @@ export class Editor {
 	}
 
 	zoomToSelection() {
-		const layout = this.layout.get()
-		const bounds = Box.union(this.selectedIds.get().map((id) => layout.items.get(id)!).filter(Boolean))
+		const bounds = Box.union(
+			this.selectedIds
+				.get()
+				.map((key) => this.getSelectionBounds(key))
+				.filter((b): b is Box => !!b),
+		)
 		if (bounds) this.zoomToBounds(bounds)
 	}
 
@@ -343,7 +391,7 @@ export class Editor {
 	 */
 	selectAdjacent(direction: 'up' | 'down' | 'left' | 'right') {
 		const layout = this.layout.get()
-		const selected = this.selectedIds.get()
+		const selected = this.selectedIds.get().filter((key) => parseSelectionId(key).kind === 'item')
 		const anchor = selected[selected.length - 1]
 		const sectionId = anchor && layout.sectionOf.get(anchor)
 		let next: string | undefined
@@ -574,6 +622,12 @@ export class Editor {
 		if (mod && (e.key === '=' || e.key === '+')) return e.preventDefault(), this.zoomIn()
 		if (mod && e.key === '-') return e.preventDefault(), this.zoomOut()
 		if (mod && e.key === 'a') return e.preventDefault(), this.selectAll()
+		if (mod && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) return e.preventDefault(), this.deletions.undo()
+		if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {
+			e.preventDefault()
+			if (!this.inputs.isPointing) this.deletions.deleteSelected()
+			return
+		}
 		const arrows = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' } as const
 		if (!this.inputs.isPointing && e.key in arrows) {
 			e.preventDefault()
@@ -698,6 +752,11 @@ export class Editor {
 	getEpoch() {
 		return getGlobalEpoch()
 	}
+}
+
+function boxRecordEquals(a: Record<string, Box>, b: Record<string, Box>) {
+	const keys = Object.keys(a)
+	return keys.length === Object.keys(b).length && keys.every((k) => b[k] && Box.equals(a[k], b[k]))
 }
 
 function arrayEquals(a: string[], b: string[]) {

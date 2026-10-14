@@ -52,6 +52,21 @@ export const LAYOUT = {
 	groupGap: 56,
 	minFrameWidth: 480,
 	emptyFrameHeight: 160,
+	/** page-space font size of session titles (see .section-label in styles.css) */
+	frameTitlePx: 40,
+	/** session titles stay at least this big on screen; zoomed far out they grow upward out of the frame */
+	minFrameTitlePx: 13,
+}
+
+/**
+ * Where a session's title is on the page at zoom z: the header strip, from the top of the frame,
+ * extended upward when the title is drawn bigger than page scale (see SectionLabels).
+ */
+export function frameTitleBox(section: SectionLayout, z: number): Box {
+	const grow = Math.max(1, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx / z)
+	const bottom = section.header.y + section.header.h
+	const top = Math.min(section.box.y, bottom - section.header.h * grow)
+	return { x: section.box.x, y: top, w: section.box.w, h: bottom - top }
 }
 
 /**

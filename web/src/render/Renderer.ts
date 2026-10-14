@@ -2,6 +2,7 @@ import type { Item } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { Box } from '../editor/geometry'
 import { LAYOUT, type SectionLayout } from '../editor/layout'
+import { frameKey } from '../editor/selection'
 import { imageShader, rectShader, videoShader } from './shaders'
 import { TextureCache } from './TextureCache'
 import { VideoPool } from './VideoPool'
@@ -33,7 +34,7 @@ const NONE: RGBA = [0, 0, 0, 0]
 export interface RendererOptions {
 	/** Hide editing controls (view-only links) */
 	readOnly?: boolean
-	/** Other people's selections, outlined in their colour (multiplayer). */
+	/** Other people's selections (selection keys, see selection.ts), outlined in their colour (multiplayer). */
 	getRemoteSelections?: () => { ids: string[]; color: string }[]
 	/** Called when the user removes a section with its close button. */
 	onCloseSection?: (sectionId: string) => void
@@ -228,10 +229,24 @@ export class Renderer {
 			d[o + 12] = strokeWidth; d[o + 13] = radius; d[o + 14] = screen ? 1 : 0; d[o + 15] = 0
 		}
 
+		const overlays: (() => void)[] = []
+		const remoteSelected = new Map<string, RGBA>()
+		for (const { ids, color } of this.options.getRemoteSelections?.() ?? []) {
+			const rgba = hexToRgba(color)
+			for (const id of ids) if (!remoteSelected.has(id)) remoteSelected.set(id, rgba)
+		}
+
 		for (const section of layout.sections) {
 			const d = this.displayedSections.get(section.id)
 			if (!d || !Box.intersects(d, cull)) continue
 			pushRect(d, withAlpha(SECTION_FILL, d.opacity), withAlpha(SECTION_STROKE, d.opacity), 1, SECTION_RADIUS, false)
+			const key = frameKey(section.id)
+			const remote = remoteSelected.get(key)
+			if (remote) {
+				const r = Box.expand(d, 4 / camera.z)
+				overlays.push(() => pushRect(r, NONE, remote, 2.5, SECTION_RADIUS + 4 / camera.z, false))
+			}
+			if (selected.has(key)) overlays.push(() => pushRect(d, NONE, ACCENT, 2, SECTION_RADIUS, false))
 		}
 
 		let images = 0
@@ -246,13 +261,7 @@ export class Renderer {
 			return images - 1
 		}
 
-		const overlays: (() => void)[] = []
 		const pxRatio = camera.z * this.dpr
-		const remoteSelected = new Map<string, RGBA>()
-		for (const { ids, color } of this.options.getRemoteSelections?.() ?? []) {
-			const rgba = hexToRgba(color)
-			for (const id of ids) if (!remoteSelected.has(id)) remoteSelected.set(id, rgba)
-		}
 		// HTML items are iframes in the overlay, above this canvas; mounted ones draw their own outlines.
 		const htmlMounted = this.html.update(
 			items,
@@ -642,13 +651,9 @@ function downloadName(item: Item) {
 	return base + ext
 }
 
-/** Section titles as DOM text, positioned in screen space so they stay crisp and readable at any zoom. */
-/** Page-space font size of session titles (see .section-label in styles.css) */
-const FRAME_TITLE_PX = 40
-/** Session titles stay at least this big on screen */
-const MIN_TITLE_PX = 13
 const MAX_ITEM_TITLE_PX = 15
 
+/** Section titles as DOM text, positioned in screen space so they stay crisp and readable at any zoom. */
 class SectionLabels {
 	private els = new Map<string, HTMLDivElement>()
 	private host: HTMLDivElement
@@ -680,7 +685,7 @@ class SectionLabels {
 			button.classList.remove('armed')
 			button.textContent = '×'
 		}
-		// Removal is permanent, so it takes two clicks: the first arms the button, the second removes.
+		// Removal takes two clicks: the first arms the button, the second removes (undo brings it back).
 		button.addEventListener('pointerdown', (e) => e.stopPropagation())
 		button.addEventListener('dblclick', (e) => e.stopPropagation())
 		button.addEventListener('click', (e) => {
@@ -731,7 +736,7 @@ class SectionLabels {
 			}
 			const title = el.children[0] as HTMLElement
 			if (title.textContent !== s.title) title.textContent = s.title
-			place(el, shift(s.header), Math.max(z, MIN_TITLE_PX / FRAME_TITLE_PX))
+			place(el, shift(s.header), Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx))
 			el.style.opacity = String(d.opacity)
 
 			for (const g of s.groups) {

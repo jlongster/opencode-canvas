@@ -3,6 +3,8 @@ import type { Vec } from './geometry'
 export type Target =
 	| { type: 'item'; id: string }
 	| { type: 'section'; id: string }
+	/** a session frame's title strip */
+	| { type: 'frame_title'; id: string }
 	| { type: 'canvas' }
 
 export interface Modifiers {

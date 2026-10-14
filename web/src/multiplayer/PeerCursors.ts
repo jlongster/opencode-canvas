@@ -1,12 +1,14 @@
 import type { Editor } from '../editor/Editor'
 import type { Vec } from '../editor/geometry'
-import type { Presence } from './Presence'
+import { AgentWorms } from './AgentWorms'
+import type { Peer, Presence } from './Presence'
 
 const EASE_MS = 45
 
 /**
  * Other people's cursors, drawn as DOM in screen space. Positions are eased toward the latest
  * broadcast point every frame, so cursors glide instead of stepping at the network rate.
+ * AI agents get a worm instead (see AgentWorms).
  */
 export class PeerCursors {
 	private host: HTMLDivElement
@@ -14,6 +16,7 @@ export class PeerCursors {
 		number,
 		{ el: HTMLDivElement; label: HTMLSpanElement; message: HTMLSpanElement; shown: Vec; color: string; name: string; chat: string | null }
 	>()
+	private worms: AgentWorms
 	private dispose: () => void
 
 	constructor(
@@ -24,15 +27,21 @@ export class PeerCursors {
 		this.host = document.createElement('div')
 		this.host.className = 'peer-cursors'
 		parent.appendChild(this.host)
-		this.dispose = editor.onFrame((_now, elapsed) => this.update(elapsed))
+		this.worms = new AgentWorms(this.host, editor)
+		this.dispose = editor.onFrame((now, elapsed) => this.update(now, elapsed))
 	}
 
-	private update(elapsed: number) {
+	private update(now: number, elapsed: number) {
 		const k = 1 - Math.exp(-elapsed / EASE_MS)
 		const followingId = this.presence.followingId.peek()
 		const seen = new Set<number>()
+		const agents: Peer[] = []
 
 		for (const peer of this.presence.peers.peek()) {
+			if (peer.user.agent) {
+				agents.push(peer)
+				continue
+			}
 			if (!peer.cursor) continue
 			seen.add(peer.clientId)
 			let c = this.cursors.get(peer.clientId)
@@ -76,10 +85,13 @@ export class PeerCursors {
 			c.el.remove()
 			this.cursors.delete(id)
 		}
+
+		this.worms.update(now, elapsed, agents)
 	}
 
 	destroy() {
 		this.dispose()
+		this.worms.destroy()
 		this.host.remove()
 	}
 }

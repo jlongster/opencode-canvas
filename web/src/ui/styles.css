@@ -670,6 +670,48 @@ body,
 	animation: chat-fade 5s forwards;
 }
 
+/* ---------- agent worms ---------- */
+
+.agent-worms {
+	position: absolute;
+	left: 0;
+	top: 0;
+	pointer-events: none;
+}
+
+.agent-worm-labels {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+}
+
+.agent-worm {
+	position: absolute;
+	left: 0;
+	top: 0;
+	will-change: transform;
+	transition: opacity 250ms;
+}
+
+.agent-worm.leaving {
+	opacity: 0;
+}
+
+.agent-worm-label {
+	left: 14px;
+	top: 10px;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.agent-worm-label.chatting {
+	border-radius: 4px 14px 14px 14px;
+}
+
+/* the name stays; only the activity message fades out after a while */
+.agent-worm-label .peer-cursor-message.sent {
+	animation: chat-fade 5s forwards;
+}
+
 @keyframes chat-fade {
 	0%,
 	85% {

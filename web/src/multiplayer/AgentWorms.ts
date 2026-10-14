@@ -1,0 +1,649 @@
+import type { Editor } from '../editor/Editor'
+import type { Box, Vec } from '../editor/geometry'
+import type { Peer } from './Presence'
+
+/** Body joints, head first. Spacing and sizes are screen pixels, so worms look the same at any zoom. */
+const JOINTS = 9
+const SPACING = 5.2
+const HEAD_R = 8.5
+const TAIL_R = 3.2
+const OUTLINE = 1.6
+/** Where the head rests, relative to the top-right corner of what the agent is working on. */
+const PERCH: Vec = { x: 14, y: -12 }
+/** Trips longer than this (screen px), or entirely off-screen, burrow and pop up instead of crawling. */
+const SNAP_PX = 2400
+/** Goal moves smaller than this are followed directly rather than with a new trip. */
+const NUDGE_PX = 26
+const CHAT_MS = 5000
+const POP_MS = 380
+
+interface Trip {
+	from: Vec
+	to: Vec
+	/** bend of the path, as a fraction of its length, so worms take a squirrely curve rather than a ruler line */
+	bend: number
+	start: number
+	duration: number
+	/** inchworm pulses over the trip; whole numbers so the warped clock still ends at 1 */
+	pulses: number
+}
+
+interface Worm {
+	id: number
+	color: string
+	palette: { base: string; dark: string; light: string }
+	/** page-space joints; [0] is the head */
+	joints: Vec[]
+	head: Vec
+	goal: Vec | null
+	/** the box the agent is working on, for the eye to glance at */
+	focus: Box | null
+	trip: Trip | null
+	/** 0..1 how much the worm is moving, eased, drives wiggle and stretch */
+	motion: number
+	stretch: number
+	wigglePhase: number
+	heading: Vec
+	pupil: Vec
+	pupilVel: Vec
+	nextBlink: number
+	blinkStart: number
+	/** pop-in / burrow-out scale */
+	scale: number
+	popFrom: number
+	popStart: number
+	leaving: boolean
+	seed: number
+	el: HTMLDivElement
+	label: HTMLSpanElement
+	name: HTMLSpanElement
+	message: HTMLSpanElement | null
+	chat: string | null
+	chatAt: number
+	nameText: string
+}
+
+/**
+ * AI agents have no pointer, so each one gets a little googly-eyed worm that crawls to whatever
+ * it's working on (the first thing in its awareness selection). Bodies are drawn on one 2D canvas
+ * in screen space; the name and activity label are DOM, like human cursor labels.
+ */
+export class AgentWorms {
+	private canvas: HTMLCanvasElement
+	private ctx: CanvasRenderingContext2D
+	private labels: HTMLDivElement
+	private worms = new Map<number, Worm>()
+	private drewLastFrame = false
+	private reducedMotion: MediaQueryList
+
+	constructor(
+		parent: HTMLElement,
+		private editor: Editor,
+	) {
+		this.canvas = document.createElement('canvas')
+		this.canvas.className = 'agent-worms'
+		this.ctx = this.canvas.getContext('2d')!
+		this.labels = document.createElement('div')
+		this.labels.className = 'agent-worm-labels'
+		parent.append(this.canvas, this.labels)
+		this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+	}
+
+	/** Called once per frame with the agent peers. */
+	update(now: number, elapsed: number, agents: Peer[]) {
+		const seen = new Set<number>()
+		for (const peer of agents) {
+			seen.add(peer.clientId)
+			const target = this.targetFor(peer)
+			let worm = this.worms.get(peer.clientId)
+			// Hidden until it has somewhere to go.
+			if (!worm && !target) continue
+			if (!worm) {
+				worm = this.spawn(peer, target!.point, now)
+				this.worms.set(peer.clientId, worm)
+			}
+			if (worm.leaving) this.revive(worm, now)
+			if (target) {
+				worm.goal = target.point
+				worm.focus = target.box
+			} else {
+				worm.focus = null
+			}
+			this.syncLabel(worm, peer, now)
+		}
+		for (const worm of this.worms.values()) {
+			if (!seen.has(worm.id) && !worm.leaving) this.leave(worm, now)
+		}
+
+		this.resize()
+		const ctx = this.ctx
+		const dpr = window.devicePixelRatio || 1
+		if (this.worms.size === 0) {
+			if (this.drewLastFrame) ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+			this.drewLastFrame = false
+			return
+		}
+		ctx.setTransform(1, 0, 0, 1, 0, 0)
+		ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+		this.drewLastFrame = true
+
+		for (const worm of [...this.worms.values()]) {
+			this.step(worm, now, elapsed)
+			if (worm.leaving && worm.scale <= 0.001) {
+				worm.el.remove()
+				this.worms.delete(worm.id)
+				continue
+			}
+			this.draw(worm, now)
+		}
+	}
+
+	destroy() {
+		this.canvas.remove()
+		this.labels.remove()
+		this.worms.clear()
+	}
+
+	// ---------- state ----------
+
+	/** A cursor if the agent sends one, else a perch just outside the first selected thing. */
+	private targetFor(peer: Peer): { point: Vec; box: Box | null } | null {
+		const z = this.editor.camera.peek().z
+		if (peer.cursor) return { point: { ...peer.cursor }, box: null }
+		for (const key of peer.selection ?? []) {
+			const box = this.editor.getSelectionBounds(key)
+			if (!box) continue
+			return { point: { x: box.x + box.w + PERCH.x / z, y: box.y + PERCH.y / z }, box }
+		}
+		return null
+	}
+
+	private spawn(peer: Peer, at: Vec, now: number): Worm {
+		const el = document.createElement('div')
+		el.className = 'agent-worm'
+		el.innerHTML =
+			'<span class="peer-cursor-label agent-worm-label"><span class="peer-cursor-name"></span></span>'
+		const label = el.querySelector<HTMLSpanElement>('.agent-worm-label')!
+		const name = el.querySelector<HTMLSpanElement>('.peer-cursor-name')!
+		this.labels.appendChild(el)
+		const seed = Math.random() * 1000
+		const worm: Worm = {
+			id: peer.clientId,
+			color: '',
+			palette: palette('#22d3ee'),
+			joints: [],
+			head: { ...at },
+			goal: { ...at },
+			focus: null,
+			trip: null,
+			motion: 0,
+			stretch: 1,
+			wigglePhase: seed,
+			heading: { x: 1, y: 0 },
+			pupil: { x: 0, y: 0 },
+			pupilVel: { x: 0, y: 0 },
+			nextBlink: now + 1500 + Math.random() * 3000,
+			blinkStart: -1e9,
+			scale: 0,
+			popFrom: 0,
+			popStart: now,
+			leaving: false,
+			seed,
+			el,
+			label,
+			name,
+			message: null,
+			chat: null,
+			chatAt: 0,
+			nameText: '',
+		}
+		this.layOut(worm)
+		return worm
+	}
+
+	/** Puts the body in a gentle curl trailing down-left of the head, as if it just surfaced. */
+	private layOut(worm: Worm) {
+		const z = this.editor.camera.peek().z
+		worm.joints = []
+		for (let i = 0; i < JOINTS; i++) {
+			const a = Math.PI * 0.85 + i * 0.12
+			worm.joints.push({
+				x: worm.head.x + (Math.cos(a) * SPACING * i) / z,
+				y: worm.head.y + (Math.sin(-a) * SPACING * i * 0.6 + i * 0.8) / z,
+			})
+		}
+		worm.heading = { x: 1, y: 0 }
+	}
+
+	private leave(worm: Worm, now: number) {
+		worm.leaving = true
+		worm.trip = null
+		worm.popFrom = worm.scale
+		worm.popStart = now
+		worm.el.classList.add('leaving')
+	}
+
+	private revive(worm: Worm, now: number) {
+		worm.leaving = false
+		worm.popFrom = worm.scale
+		worm.popStart = now
+		worm.el.classList.remove('leaving')
+	}
+
+	private syncLabel(worm: Worm, peer: Peer, now: number) {
+		if (worm.color !== peer.user.color) {
+			worm.color = peer.user.color
+			worm.palette = palette(worm.color)
+			worm.label.style.background = worm.color
+		}
+		if (worm.nameText !== peer.user.name) {
+			worm.nameText = peer.user.name
+			worm.name.textContent = worm.nameText
+		}
+		const chat = peer.chat || null
+		if (worm.chat !== chat) {
+			worm.chat = chat
+			worm.chatAt = now
+			// A fresh element per message so its fade animation starts over.
+			worm.message?.remove()
+			worm.message = null
+			if (chat) {
+				worm.message = document.createElement('span')
+				worm.message.className = 'peer-cursor-message'
+				worm.message.textContent = chat
+				worm.label.appendChild(worm.message)
+			}
+		}
+		const sent = !!peer.chatSent
+		const showing = !!chat && (!sent || now - worm.chatAt < CHAT_MS)
+		worm.label.classList.toggle('chatting', showing)
+		worm.message?.classList.toggle('sent', sent)
+	}
+
+	private step(worm: Worm, now: number, elapsed: number) {
+		const still = this.reducedMotion.matches
+		const z = this.editor.camera.peek().z
+		const dt = elapsed / 1000
+
+		// Scale: pop in, burrow out.
+		const popT = Math.min(1, (now - worm.popStart) / POP_MS)
+		const popTo = worm.leaving ? 0 : 1
+		worm.scale = still ? popTo : worm.popFrom + (popTo - worm.popFrom) * (worm.leaving ? easeInBack(popT) : easeOutBack(popT))
+		if (popT >= 1) worm.scale = popTo
+
+		// Plan or adjust a trip toward the goal.
+		const goal = worm.goal
+		if (goal && !worm.leaving) {
+			const screenDist = Math.hypot(goal.x - worm.head.x, goal.y - worm.head.y) * z
+			if (worm.trip) {
+				const moved = Math.hypot(goal.x - worm.trip.to.x, goal.y - worm.trip.to.y) * z
+				if (moved > NUDGE_PX) worm.trip = this.plan(worm, goal, now)
+				else worm.trip.to = { ...goal }
+			} else if (screenDist > NUDGE_PX) {
+				if (screenDist > SNAP_PX || (!this.onScreen(worm.head, 80) && !this.onScreen(goal, 80))) {
+					// Too far to crawl: pop up there instead.
+					worm.head = { ...goal }
+					this.layOut(worm)
+					worm.popFrom = 0
+					worm.popStart = now
+					worm.scale = still ? 1 : 0
+				} else {
+					worm.trip = this.plan(worm, goal, now)
+				}
+			} else {
+				// Small drift (zoom, the item moved a little): follow directly.
+				const k = 1 - Math.exp(-elapsed / 90)
+				worm.head.x += (goal.x - worm.head.x) * k
+				worm.head.y += (goal.y - worm.head.y) * k
+			}
+		}
+
+		// Advance along the trip.
+		let pulse = 0
+		const trip = worm.trip
+		if (trip) {
+			const t = Math.min(1, (now - trip.start) / trip.duration)
+			let u = t
+			if (!still) {
+				// Inchworm clock: surges and pauses, but still lands at u = 1.
+				const w = 2 * Math.PI * trip.pulses
+				u = t + (0.7 * Math.sin(w * t)) / w
+				pulse = Math.cos(w * t)
+			}
+			const s = easeInOutSine(u)
+			worm.head = still ? lerp(trip.from, trip.to, s) : bezier(trip, s)
+			if (t >= 1) {
+				worm.head = { ...trip.to }
+				worm.trip = null
+			}
+		}
+		const moving = worm.trip ? 1 : 0
+		worm.motion += (moving - worm.motion) * (1 - Math.exp(-elapsed / 160))
+
+		// Stretch with the inchworm surge (and breathe a little at rest).
+		const breathe = still ? 0 : 0.05 * Math.sin(now / 600 + worm.seed)
+		const targetStretch = still ? 1 : 1 + 0.32 * pulse * worm.motion + breathe * (1 - worm.motion)
+		worm.stretch += (targetStretch - worm.stretch) * (1 - Math.exp(-elapsed / 50))
+		worm.wigglePhase += dt * (still ? 0 : 2.6 + 11 * worm.motion)
+
+		// Follow-the-leader chain in page space, spaced in screen pixels.
+		const spacing = (SPACING * worm.stretch * (worm.leaving ? worm.scale : 1)) / z
+		const joints = worm.joints
+		joints[0] = { ...worm.head }
+		for (let i = 1; i < joints.length; i++) {
+			const prev = joints[i - 1]
+			const dx = joints[i].x - prev.x
+			const dy = joints[i].y - prev.y
+			const len = Math.hypot(dx, dy)
+			if (len < 1e-6) joints[i] = { x: prev.x - spacing, y: prev.y }
+			else joints[i] = { x: prev.x + (dx / len) * spacing, y: prev.y + (dy / len) * spacing }
+		}
+
+		// Heading: where the neck points, nudged toward the destination while travelling.
+		let hx = joints[0].x - joints[1].x
+		let hy = joints[0].y - joints[1].y
+		if (worm.trip) {
+			hx += (worm.trip.to.x - worm.head.x) * 0.02
+			hy += (worm.trip.to.y - worm.head.y) * 0.02
+		}
+		const hl = Math.hypot(hx, hy)
+		if (hl > 1e-9) {
+			const k = 1 - Math.exp(-elapsed / 70)
+			worm.heading.x += (hx / hl - worm.heading.x) * k
+			worm.heading.y += (hy / hl - worm.heading.y) * k
+			const n = Math.hypot(worm.heading.x, worm.heading.y) || 1
+			worm.heading.x /= n
+			worm.heading.y /= n
+		}
+
+		// Googly pupil: springs toward where it's looking, overshooting a little.
+		let look: Vec
+		if (worm.trip) look = { x: worm.trip.to.x - worm.head.x, y: worm.trip.to.y - worm.head.y }
+		else if (worm.focus) {
+			// Mostly eyeing the work, with the occasional glance around.
+			const glance = Math.sin(now / 1700 + worm.seed) > 0.75
+			look = glance
+				? { x: Math.cos(now / 900 + worm.seed), y: -0.6 }
+				: { x: worm.focus.x + worm.focus.w / 2 - worm.head.x, y: worm.focus.y + worm.focus.h / 2 - worm.head.y }
+		} else look = { x: Math.cos(now / 1300 + worm.seed), y: Math.sin(now / 1900 + worm.seed) * 0.6 }
+		const ll = Math.hypot(look.x, look.y) || 1
+		const want = { x: (look.x / ll) * 2.6, y: (look.y / ll) * 2.6 }
+		if (still) worm.pupil = want
+		else {
+			const h = Math.min(dt, 0.05)
+			worm.pupilVel.x += ((want.x - worm.pupil.x) * 260 - worm.pupilVel.x * 11) * h
+			worm.pupilVel.y += ((want.y - worm.pupil.y) * 260 - worm.pupilVel.y * 11) * h
+			worm.pupil.x += worm.pupilVel.x * h
+			worm.pupil.y += worm.pupilVel.y * h
+			const pl = Math.hypot(worm.pupil.x, worm.pupil.y)
+			if (pl > 3) {
+				worm.pupil.x *= 3 / pl
+				worm.pupil.y *= 3 / pl
+			}
+		}
+
+		if (!still && now > worm.nextBlink) {
+			worm.blinkStart = now
+			worm.nextBlink = now + 1800 + Math.random() * 4200
+		}
+	}
+
+	private plan(worm: Worm, goal: Vec, now: number): Trip {
+		const z = this.editor.camera.peek().z
+		const dist = Math.hypot(goal.x - worm.head.x, goal.y - worm.head.y) * z
+		const duration = Math.min(1500, Math.max(500, 260 + dist * 0.95))
+		const side = Math.sin(worm.seed + now / 997) > 0 ? 1 : -1
+		return {
+			from: { ...worm.head },
+			to: { ...goal },
+			bend: side * (0.14 + 0.1 * Math.abs(Math.sin(now / 331))),
+			start: now,
+			duration,
+			pulses: Math.max(1, Math.round(duration / 330)),
+		}
+	}
+
+	private onScreen(p: Vec, margin: number) {
+		const s = this.editor.pageToScreen(p)
+		const { w, h } = this.editor.viewport.peek()
+		return s.x > -margin && s.y > -margin && s.x < w + margin && s.y < h + margin
+	}
+
+	private resize() {
+		const { w, h } = this.editor.viewport.peek()
+		const dpr = window.devicePixelRatio || 1
+		const cw = Math.round(w * dpr)
+		const ch = Math.round(h * dpr)
+		if (this.canvas.width !== cw || this.canvas.height !== ch) {
+			this.canvas.width = cw
+			this.canvas.height = ch
+			this.canvas.style.width = `${w}px`
+			this.canvas.style.height = `${h}px`
+		}
+	}
+
+	// ---------- drawing ----------
+
+	private draw(worm: Worm, now: number) {
+		const ctx = this.ctx
+		const still = this.reducedMotion.matches
+		const scale = worm.scale
+		const { base, dark, light } = worm.palette
+
+		// Joints to screen, then the side-to-side wiggle, strongest toward the tail.
+		const pts = worm.joints.map((j) => this.editor.pageToScreen(j))
+		const bob = still ? 0 : Math.sin(now / 420 + worm.seed) * 1.6 * (1 - worm.motion)
+		const amp = still ? 0 : 1.4 + 3.6 * worm.motion
+		const wiggled = pts.map((p, i) => {
+			const a = pts[Math.max(0, i - 1)]
+			const b = pts[Math.min(pts.length - 1, i + 1)]
+			const tx = a.x - b.x
+			const ty = a.y - b.y
+			const tl = Math.hypot(tx, ty) || 1
+			const f = i / (pts.length - 1)
+			const off = amp * Math.sin(worm.wigglePhase - i * 0.95) * (0.25 + 0.75 * f) * scale
+			return { x: p.x - (ty / tl) * off, y: p.y + (tx / tl) * off + (i === 0 ? bob : bob * (1 - f) * 0.6) }
+		})
+		const samples = catmullRom(wiggled, 5)
+		const thin = 1 / Math.sqrt(Math.max(0.6, worm.stretch))
+		const radius = (f: number) => (HEAD_R + (TAIL_R - HEAD_R) * Math.pow(f, 1.15)) * thin * scale
+		const n = samples.length
+
+		// Shadow, outline, body: tail first so the head ends up on top.
+		ctx.fillStyle = 'rgba(0, 0, 0, 0.22)'
+		for (let i = n - 1; i >= 0; i--) disc(ctx, samples[i].x, samples[i].y + 2.5 * scale, radius(i / (n - 1)) + OUTLINE * scale)
+		ctx.fillStyle = dark
+		for (let i = n - 1; i >= 0; i--) disc(ctx, samples[i].x, samples[i].y, radius(i / (n - 1)) + OUTLINE * scale)
+		ctx.fillStyle = base
+		for (let i = n - 1; i >= 0; i--) disc(ctx, samples[i].x, samples[i].y, radius(i / (n - 1)))
+
+		// Belly stripe along the lower side, then segment rings.
+		ctx.lineCap = 'round'
+		ctx.strokeStyle = light
+		ctx.globalAlpha = 0.55
+		ctx.lineWidth = 2.2 * scale
+		ctx.beginPath()
+		const side = normalAt(samples, Math.floor(n / 2)).ny >= 0 ? 1 : -1
+		for (let i = Math.floor(n * 0.18); i < n - 2; i++) {
+			const { nx, ny } = normalAt(samples, i)
+			const r = radius(i / (n - 1)) * 0.45
+			const x = samples[i].x + nx * r * side
+			const y = samples[i].y + ny * r * side
+			if (i === Math.floor(n * 0.18)) ctx.moveTo(x, y)
+			else ctx.lineTo(x, y)
+		}
+		ctx.stroke()
+		ctx.globalAlpha = 0.8
+		ctx.lineWidth = 1.3 * scale
+		for (let i = Math.floor(n * 0.25); i < n - 3; i += 4) {
+			const { nx, ny } = normalAt(samples, i)
+			const r = radius(i / (n - 1)) * 0.78
+			ctx.beginPath()
+			ctx.moveTo(samples[i].x - nx * r, samples[i].y - ny * r)
+			ctx.lineTo(samples[i].x + nx * r, samples[i].y + ny * r)
+			ctx.stroke()
+		}
+		ctx.globalAlpha = 1
+
+		// Head features. "Up" is screen-up, so the eye stays on top whichever way it faces.
+		const head = samples[0]
+		const fwd = worm.heading
+		const hr = radius(0)
+		worm.el.style.transform = `translate(${head.x}px, ${head.y}px)`
+		if (scale < 0.05) return
+
+		// Antenna with a twinkling sparkle, like the robot avatar.
+		const sway = still ? 0 : Math.sin(now / 260 + worm.seed) * 0.35 + worm.motion * Math.sin(worm.wigglePhase) * 0.3
+		const baseX = head.x - fwd.x * hr * 0.35
+		const baseY = head.y - hr * 0.8
+		const tipX = baseX - fwd.x * 4 * scale + Math.sin(sway) * 9 * scale
+		const tipY = baseY - Math.cos(sway) * 9 * scale
+		ctx.strokeStyle = dark
+		ctx.lineWidth = 1.5 * scale
+		ctx.beginPath()
+		ctx.moveTo(baseX, baseY)
+		ctx.quadraticCurveTo(baseX - fwd.x * 4 * scale, baseY - 6 * scale, tipX, tipY)
+		ctx.stroke()
+		const twinkle = still ? 1 : 1 + 0.3 * Math.sin(now / 180 + worm.seed)
+		sparkle(ctx, tipX, tipY, 3.6 * scale * twinkle, now / 900, light, dark)
+
+		// One big googly eye.
+		const ex = head.x + fwd.x * hr * 0.25
+		const ey = head.y - hr * 0.22
+		const er = hr * 0.72
+		const blinkT = (now - worm.blinkStart) / 150
+		const open = blinkT >= 0 && blinkT < 1 ? Math.abs(1 - 2 * blinkT) : 1
+		ctx.fillStyle = dark
+		ellipse(ctx, ex, ey, er + 1.3 * scale, (er + 1.3 * scale) * Math.max(open, 0.25))
+		ctx.fillStyle = '#f8fafc'
+		ellipse(ctx, ex, ey, er, er * Math.max(open, 0.12))
+		if (open > 0.35) {
+			const ps = (er / 5.5) * scale
+			const px = ex + worm.pupil.x * ps
+			const py = ey + worm.pupil.y * ps * open
+			ctx.fillStyle = '#111113'
+			ellipse(ctx, px, py, er * 0.46, er * 0.46 * open)
+			ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
+			disc(ctx, px - er * 0.15, py - er * 0.17 * open, er * 0.13)
+		}
+
+		// A small smile under the eye, toward the front.
+		ctx.strokeStyle = dark
+		ctx.lineWidth = 1.2 * scale
+		ctx.beginPath()
+		const mx = head.x + fwd.x * hr * 0.55
+		const my = head.y + hr * 0.42
+		ctx.arc(mx, my - 1.6 * scale, 2.2 * scale, Math.PI * 0.2, Math.PI * 0.8)
+		ctx.stroke()
+	}
+}
+
+function disc(ctx: CanvasRenderingContext2D, x: number, y: number, r: number) {
+	if (r <= 0) return
+	ctx.beginPath()
+	ctx.arc(x, y, r, 0, Math.PI * 2)
+	ctx.fill()
+}
+
+function ellipse(ctx: CanvasRenderingContext2D, x: number, y: number, rx: number, ry: number) {
+	if (rx <= 0 || ry <= 0) return
+	ctx.beginPath()
+	ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2)
+	ctx.fill()
+}
+
+function sparkle(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, spin: number, fill: string, stroke: string) {
+	if (r <= 0) return
+	ctx.beginPath()
+	for (let i = 0; i < 8; i++) {
+		const a = spin + (i * Math.PI) / 4
+		const d = i % 2 === 0 ? r : r * 0.32
+		const px = x + Math.cos(a) * d
+		const py = y + Math.sin(a) * d
+		if (i === 0) ctx.moveTo(px, py)
+		else ctx.lineTo(px, py)
+	}
+	ctx.closePath()
+	ctx.fillStyle = fill
+	ctx.strokeStyle = stroke
+	ctx.lineWidth = 0.9
+	ctx.fill()
+	ctx.stroke()
+}
+
+/** Unit normal of a polyline at sample i. */
+function normalAt(pts: Vec[], i: number) {
+	const a = pts[Math.max(0, i - 1)]
+	const b = pts[Math.min(pts.length - 1, i + 1)]
+	const tx = b.x - a.x
+	const ty = b.y - a.y
+	const l = Math.hypot(tx, ty) || 1
+	return { nx: -ty / l, ny: tx / l }
+}
+
+/** Smooth samples through the joints, `per` samples per span. */
+function catmullRom(pts: Vec[], per: number): Vec[] {
+	const out: Vec[] = []
+	for (let i = 0; i < pts.length - 1; i++) {
+		const p0 = pts[Math.max(0, i - 1)]
+		const p1 = pts[i]
+		const p2 = pts[i + 1]
+		const p3 = pts[Math.min(pts.length - 1, i + 2)]
+		for (let s = 0; s < per; s++) {
+			const t = s / per
+			const t2 = t * t
+			const t3 = t2 * t
+			out.push({
+				x: 0.5 * (2 * p1.x + (-p0.x + p2.x) * t + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
+				y: 0.5 * (2 * p1.y + (-p0.y + p2.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3),
+			})
+		}
+	}
+	out.push(pts[pts.length - 1])
+	return out
+}
+
+function bezier(trip: Trip, s: number): Vec {
+	const { from, to, bend } = trip
+	const dx = to.x - from.x
+	const dy = to.y - from.y
+	const c = { x: (from.x + to.x) / 2 - dy * bend, y: (from.y + to.y) / 2 + dx * bend }
+	const u = 1 - s
+	return {
+		x: u * u * from.x + 2 * u * s * c.x + s * s * to.x,
+		y: u * u * from.y + 2 * u * s * c.y + s * s * to.y,
+	}
+}
+
+function lerp(a: Vec, b: Vec, t: number): Vec {
+	return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }
+}
+
+function easeInOutSine(t: number) {
+	return -(Math.cos(Math.PI * Math.min(1, Math.max(0, t))) - 1) / 2
+}
+
+function easeOutBack(t: number) {
+	const c = 1.9
+	return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2)
+}
+
+function easeInBack(t: number) {
+	const c = 1.7
+	return (c + 1) * t * t * t - c * t * t
+}
+
+/** Base colour plus a darker outline and a lighter belly, mixed from any #rgb / #rrggbb. */
+function palette(color: string) {
+	const rgb = parseHex(color) ?? [34, 211, 238]
+	const mix = (to: number, k: number) => `rgb(${rgb.map((c) => Math.round(c + (to - c) * k)).join(', ')})`
+	return { base: `rgb(${rgb.join(', ')})`, dark: mix(0, 0.62), light: mix(255, 0.55) }
+}
+
+function parseHex(color: string): number[] | null {
+	const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim())
+	if (!m) return null
+	const hex = m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1]
+	return [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16))
+}

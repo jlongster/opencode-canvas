@@ -20,7 +20,10 @@ class Idle extends StateNode {
 	}
 
 	override onDoubleClick(e: EventOf<'double_click'>) {
-		if (e.target.type === 'item') this.editor.zoomToItem(e.target.id)
+		if (e.target.type === 'item') {
+			this.editor.select([e.target.id])
+			this.editor.zoomToItem(e.target.id)
+		}
 		else if (e.target.type === 'section') this.editor.zoomToSection(e.target.id)
 		else this.editor.zoomToFit()
 	}

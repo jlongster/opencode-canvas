@@ -23,10 +23,10 @@ const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.mkv'])
 await mkdir(MEDIA_DIR, { recursive: true })
 await mkdir(SHARES_DIR, { recursive: true })
 // Each share's room document (sticky notes etc.) is saved next to the share.
-const SHARE_ROOM = /^share-([A-Za-z0-9]{10})(-viewers)?$/
+const SHARE_ROOM = /^share-([A-Za-z0-9]{10})$/
 setRoomPersistence((room) => {
 	const m = SHARE_ROOM.exec(room)
-	return m ? join(SHARES_DIR, `${m[1]}${m[2] ? '.viewers' : ''}.ydoc`) : null
+	return m ? join(SHARES_DIR, `${m[1]}.ydoc`) : null
 })
 
 // ---------- persistence ----------
@@ -431,7 +431,6 @@ async function handle(req: Request): Promise<Response> {
 			shareByEditKey.delete(share.editKey)
 			await rm(join(SHARES_DIR, `${m[1]}.json`), { force: true })
 			await rm(join(SHARES_DIR, `${m[1]}.ydoc`), { force: true })
-			await rm(join(SHARES_DIR, `${m[1]}.viewers.ydoc`), { force: true })
 			await rm(join(SHARES_DIR, m[1]), { recursive: true, force: true })
 			return json({ ok: true })
 		}
@@ -489,13 +488,12 @@ Bun.serve<SocketData, never>({
 		}
 		const room = /^\/api\/rooms\/([^/]+)$/.exec(stripBase(reqUrl.pathname))?.[1]
 		if (room !== undefined) {
-			// Each share has two rooms: "share-<id>" (editors write; view links are read-only) and
-			// "share-<id>-viewers" (viewer notes; anyone with the link writes). The edit key grants edit rights.
+			// One room per share: "share-<id>". Without the edit key the connection is read-only:
+			// view links get live notes and presence, but can't change anything.
 			const m = SHARE_ROOM.exec(room)
 			const share = shares.get(m?.[1] ?? '')
 			if (!share) return json({ error: 'no such room' }, 404)
-			const canEdit = reqUrl.searchParams.get('key') === share.editKey
-			const readOnly = !m![2] && !canEdit
+			const readOnly = reqUrl.searchParams.get('key') !== share.editKey
 			if (server.upgrade(req, { data: { kind: 'room', room, readOnly } })) return
 			return json({ error: 'expected a websocket upgrade' }, 426)
 		}

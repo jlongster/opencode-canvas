@@ -330,23 +330,6 @@ body,
 	pointer-events: none;
 }
 
-/* Notes from view-only visitors: faded until you hover (or type in) them. */
-.note.from-viewer {
-	opacity: 0.3;
-	transition: opacity 160ms;
-}
-
-.note.from-viewer:hover,
-.note.from-viewer:focus-within,
-.note.from-viewer.dragging,
-.note.from-viewer.swooshing {
-	opacity: 1;
-}
-
-.note.swooshing {
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25), 0 20px 50px rgba(0, 0, 0, 0.45);
-}
-
 .note.locked .note-header {
 	cursor: default;
 }
@@ -668,6 +651,37 @@ body,
 .share-copy {
 	min-width: 64px;
 	border: 1px solid rgba(255, 255, 255, 0.12) !important;
+}
+
+.view-only-badge {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 38px;
+	padding: 0 12px;
+	background: rgba(28, 28, 32, 0.88);
+	border: 1px solid rgba(250, 204, 21, 0.3);
+	border-radius: 10px;
+	backdrop-filter: blur(12px);
+	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+	color: #fde68a;
+	cursor: default;
+}
+
+.view-only-badge span {
+	display: flex;
+	flex-direction: column;
+	line-height: 1.15;
+}
+
+.view-only-badge strong {
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.view-only-badge small {
+	color: #a1a1aa;
+	font-size: 11px;
 }
 
 .role-badge {

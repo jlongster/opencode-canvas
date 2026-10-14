@@ -52,11 +52,8 @@ export class Presence {
 	readonly chatOpen = atom<boolean>('chatOpen', false)
 	private chatTimer = 0
 
-	/** The share's main document: editor notes (and later drawings). Read-only on view links. */
+	/** The share's document: notes (and later drawings). Read-only on view links. */
 	readonly doc = new Y.Doc()
-	/** A second document everyone may write: notes from view-only visitors. */
-	readonly viewerDoc = new Y.Doc()
-	private viewerProvider: WebsocketProvider
 	private provider: WebsocketProvider
 	private disposers: (() => void)[] = []
 	private publishTimer = 0
@@ -71,9 +68,6 @@ export class Presence {
 		const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${BASE}/api/rooms`
 		const params: Record<string, string> = editKey ? { key: editKey } : {}
 		this.provider = new WebsocketProvider(url, room, this.doc, { disableBc: true, params })
-		this.viewerProvider = new WebsocketProvider(url, `${room}-viewers`, this.viewerDoc, { disableBc: true, params })
-		// Presence lives in the main room only.
-		this.viewerProvider.awareness.setLocalState(null)
 		const awareness = this.provider.awareness
 
 		this.provider.on('status', ({ status }: { status: string }) => {
@@ -181,9 +175,7 @@ export class Presence {
 		for (const d of this.disposers.splice(0)) d()
 		this.provider.awareness.setLocalState(null)
 		this.provider.destroy()
-		this.viewerProvider.destroy()
 		this.doc.destroy()
-		this.viewerDoc.destroy()
 	}
 
 	private setUser(user: PeerUser) {

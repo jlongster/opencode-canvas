@@ -86,10 +86,22 @@ export function App() {
 				<canvas ref={canvasRef} className="canvas" />
 				<div ref={overlayRef} className="overlay" />
 			</div>
-			<ToolPicker editor={editor} withNotes={!!presence} />
+			<ToolPicker editor={editor} withNotes={!!presence && share?.role === 'edit'} />
 			{presence && <FollowIndicator presence={presence} />}
 			{presence && <CursorChat editor={editor} presence={presence} />}
 			<div className="top-right">
+				{share?.role === 'view' && (
+					<div className="view-only-badge" title="This is a view-only link. You can look around, chat (/) and follow people, but editing tools are disabled.">
+						<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+							<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+							<circle cx="12" cy="12" r="3" />
+						</svg>
+						<span>
+							<strong>View only</strong>
+							<small>Editing tools disabled</small>
+						</span>
+					</div>
+				)}
 				{presence && <PresenceBar presence={presence} />}
 				<Toolbar editor={editor} canShare={!SHARE_LINK} />
 			</div>
@@ -210,7 +222,7 @@ function Toolbar({ editor, canShare }: { editor: Editor; canShare: boolean }) {
 						</button>
 					</div>
 					<ShareLinkRow label="Can edit" hint="Full access: notes, and drawing later" url={shareState.links.editUrl} />
-					<ShareLinkRow label="View only" hint="Can look around and leave faded notes" url={shareState.links.viewUrl} />
+					<ShareLinkRow label="View only" hint="Can look around and chat, but not edit" url={shareState.links.viewUrl} />
 				</div>
 			)}
 			{shareState.status === 'error' && (
@@ -266,7 +278,7 @@ function StatusBar({ editor, share }: { editor: Editor; share: OpenedShare | nul
 		<div className="status">
 			{share ? (
 				<>
-					<span className={`role-badge ${share.role}`}>{share.role === 'edit' ? 'Can edit' : 'View only'}</span>
+					{share.role === 'edit' && <span className="role-badge edit">Can edit</span>}
 					<span className="shared-badge" title="A frozen copy. It doesn't update.">
 						Shared snapshot · {new Date(share.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
 					</span>

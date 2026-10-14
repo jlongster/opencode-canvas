@@ -110,6 +110,7 @@ export class SharedNotes {
 		this.docs.viewer.transact(() => {
 			view.note.set('x', spot.x)
 			view.note.set('y', spot.y)
+			view.note.set('swooshFrom', at)
 			view.note.set('bumpedAt', Date.now())
 		})
 	}
@@ -182,7 +183,7 @@ class NoteView {
 		private editable: boolean,
 	) {
 		this.text = note.get('text') as Y.Text
-		this.lastBumpedAt = (note.get('bumpedAt') as number) ?? 0
+		this.lastBumpedAt = 0
 		this.el = document.createElement('div')
 		this.el.className = `note${kind === 'viewer' ? ' from-viewer' : ''}${editable ? '' : ' locked'}`
 		this.el.style.width = `${NOTE_W}px`
@@ -228,12 +229,16 @@ class NoteView {
 		const author = (this.note.get('author') as string) ?? ''
 		if (this.author.textContent !== author) this.author.textContent = author
 
+		// A new bumpedAt means the note was pushed off an image: swoosh from where it was dropped.
+		// (Also when the note first appears, if the push just happened, e.g. a fresh drop.)
 		const bumpedAt = (this.note.get('bumpedAt') as number) ?? 0
 		if (bumpedAt !== this.lastBumpedAt) {
+			const isFresh = this.lastBumpedAt !== 0 || Date.now() - bumpedAt < SWOOSH_MS
 			this.lastBumpedAt = bumpedAt
+			const from = (this.note.get('swooshFrom') as Vec | undefined) ?? this.shown
 			const to = this.target()
-			if (this.shown && (this.shown.x !== to.x || this.shown.y !== to.y)) {
-				this.swoosh = { from: { ...this.shown }, to, start: performance.now(), spin: Math.sign(to.x - this.shown.x || 1) * 12 }
+			if (isFresh && from && (from.x !== to.x || from.y !== to.y)) {
+				this.swoosh = { from: { ...from }, to, start: performance.now(), spin: Math.sign(to.x - from.x || 1) * 12 }
 			}
 		}
 	}
@@ -354,43 +359,70 @@ class NoteView {
 }
 
 /**
- * The closest position to `at` where a note doesn't overlap any obstacle. Candidates step off each
- * obstacle edge it touches (left, right, above, below), repeated a few rounds so a spot between
- * neighbouring images resolves outward to real free space.
+ * Where a viewer note should go so it doesn't cover any image. First choice is "off to the side":
+ * just past the left or right end of the run of images in the note's row. If neither side is free,
+ * it escapes the whole block of images it landed on (images close enough to touch count as one
+ * block), growing the block whenever an exit runs into another one.
  */
 function findFreeSpot(at: Vec, obstacles: Box[]): Vec {
-	const boxAt = (p: Vec): Box => ({ x: p.x, y: p.y, w: NOTE_W, h: NOTE_H })
-	const hits = (p: Vec) => obstacles.filter((o) => Box.intersects(o, boxAt(p)))
+	const noteAt = (p: Vec): Box => ({ x: p.x, y: p.y, w: NOTE_W, h: NOTE_H })
+	// Strict overlap: a note exactly touching an image's edge is fine.
+	const overlaps = (a: Box, b: Box) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+	const hits = (p: Vec) => obstacles.filter((o) => overlaps(o, noteAt(p)))
+	const nearest = (candidates: Vec[]) =>
+		candidates
+			.sort((p, q) => Math.hypot(p.x - at.x, p.y - at.y) - Math.hypot(q.x - at.x, q.y - at.y))
+			.find((c) => !hits(c).length)
+
 	if (!hits(at).length) return at
 
-	const seen = new Set<string>()
-	let frontier: Vec[] = [at]
-	let best: { p: Vec; d: number } | null = null
-	for (let round = 0; round < 5 && frontier.length; round++) {
-		const next: Vec[] = []
-		for (const p of frontier) {
-			for (const o of hits(p)) {
-				for (const c of [
-					{ x: o.x - NOTE_W, y: p.y },
-					{ x: o.x + o.w, y: p.y },
-					{ x: p.x, y: o.y - NOTE_H },
-					{ x: p.x, y: o.y + o.h },
-				]) {
-					const key = `${Math.round(c.x)},${Math.round(c.y)}`
-					if (seen.has(key)) continue
-					seen.add(key)
-					const d = Math.hypot(c.x - at.x, c.y - at.y)
-					if (hits(c).length) next.push(c)
-					else if (!best || d < best.d) best = { p: c, d }
-				}
+	// 1. Sideways: the images in the note's row band, chained left and right from the ones it covers.
+	const inBand = obstacles.filter((o) => o.y < at.y + NOTE_H && o.y + o.h > at.y)
+	let left = Math.min(...hits(at).map((o) => o.x))
+	let right = Math.max(...hits(at).map((o) => o.x + o.w))
+	for (let changed = true; changed; ) {
+		changed = false
+		for (const o of inBand) {
+			if (o.x + o.w < left || o.x > right) continue
+			if (o.x < left || o.x + o.w > right) changed = true
+			left = Math.min(left, o.x)
+			right = Math.max(right, o.x + o.w)
+		}
+	}
+	const sideways = nearest([
+		{ x: left - NOTE_W, y: at.y },
+		{ x: right, y: at.y },
+	])
+	if (sideways) return sideways
+
+	// 2. Otherwise, out of the whole block in whichever direction is closest.
+	let block = new Set(hits(at))
+	// Grow to every image connected to the ones under the note.
+	const grow = () => {
+		for (let changed = true; changed; ) {
+			changed = false
+			for (const o of obstacles) {
+				if (block.has(o) || ![...block].some((b) => overlaps(o, b))) continue
+				block.add(o)
+				changed = true
 			}
 		}
-		frontier = next
 	}
-	if (best) return best.p
-	// Fallback: just below everything.
-	const bottom = Math.max(...obstacles.map((o) => o.y + o.h))
-	return { x: at.x, y: bottom }
+	for (let round = 0; round < 6; round++) {
+		grow()
+		const b = Box.union(block)!
+		const candidates = [
+			{ x: b.x - NOTE_W, y: at.y },
+			{ x: b.x + b.w, y: at.y },
+			{ x: at.x, y: b.y - NOTE_H },
+			{ x: at.x, y: b.y + b.h },
+		]
+		const free = nearest(candidates)
+		if (free) return free
+		for (const c of candidates) for (const o of hits(c)) block.add(o)
+	}
+	const all = Box.union(obstacles)!
+	return { x: all.x - NOTE_W, y: at.y }
 }
 
 function easeOutBack(t: number) {

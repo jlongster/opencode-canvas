@@ -65,6 +65,8 @@ body,
 }
 
 .section-label .title {
+	min-width: 0;
+	line-height: 1.2;
 	font-weight: 650;
 	letter-spacing: -0.01em;
 	color: #f4f4f5;
@@ -85,16 +87,17 @@ body,
 }
 
 .section-label .close {
+	/* pinned to the frame's right edge, centred on the title's line (1.2 × 40px = 48px tall) */
 	flex: none;
-	margin: 0.2em 0 0 0.1em;
-	padding: 0.05em 0.25em;
+	margin: 0 0 0 auto;
+	padding: 0 0.3em;
 	border: 0;
 	border-radius: 0.15em;
 	background: transparent;
 	color: #a1a1aa;
 	font: inherit;
 	font-size: 0.55em;
-	line-height: 1;
+	line-height: 2.18;
 	opacity: 0.3;
 	cursor: pointer;
 	pointer-events: auto;
@@ -110,7 +113,8 @@ body,
 .section-label .close.armed {
 	opacity: 1;
 	font-size: 0.4em;
-	padding: 0.2em 0.4em;
+	line-height: 3;
+	padding: 0 0.5em;
 	background: rgba(239, 68, 68, 0.18);
 	color: #fca5a5;
 }

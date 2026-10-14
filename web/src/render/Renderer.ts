@@ -436,7 +436,7 @@ class ItemTitles {
 		// Scales with zoom, but never past MAX_ITEM_TITLE_PX on screen.
 		const fontSize = Math.min(13 * z, MAX_ITEM_TITLE_PX)
 		const seen = new Set<string>()
-		if (fontSize >= 5) {
+		{
 			for (const [id, d] of displayed) {
 				const title = items[id]?.title
 				if (!title || !Box.intersects({ x: d.x, y: d.y - strip, w: d.w, h: strip }, view)) continue
@@ -515,9 +515,8 @@ function downloadName(item: Item) {
 }
 
 /** Section titles as DOM text, positioned in screen space so they stay crisp and readable at any zoom. */
-/** Page-space font sizes (see .section-label / .group-heading in styles.css) */
+/** Page-space font size of session titles (see .section-label in styles.css) */
 const FRAME_TITLE_PX = 40
-const GROUP_HEADING_PX = 22
 /** Session titles stay at least this big on screen */
 const MIN_TITLE_PX = 13
 const MAX_ITEM_TITLE_PX = 15
@@ -605,7 +604,7 @@ class SectionLabels {
 			const title = el.children[0] as HTMLElement
 			if (title.textContent !== s.title) title.textContent = s.title
 			place(el, shift(s.header), Math.max(z, MIN_TITLE_PX / FRAME_TITLE_PX))
-			el.style.opacity = d.w * z < 60 ? '0' : String(d.opacity)
+			el.style.opacity = String(d.opacity)
 
 			for (const g of s.groups) {
 				if (!g.heading) continue
@@ -622,7 +621,7 @@ class SectionLabels {
 				const name = h.children[0] as HTMLElement
 				if (name.textContent !== g.name) name.textContent = g.name
 				place(h, shift(g.heading), z)
-				h.style.opacity = GROUP_HEADING_PX * z < 7 ? '0' : String(d.opacity)
+				h.style.opacity = String(d.opacity)
 			}
 		}
 		for (const [id, el] of this.els) {

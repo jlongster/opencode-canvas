@@ -15,7 +15,9 @@
  *
  * While an agent works on a canvas it shows up in the canvas's multiplayer room like a browser
  * does (see setServerPresence): its selection outlines what it's working on and its chat says what
- * it just did. It has no cursor or view.
+ * it just did. It has no cursor or view. With the say tool it talks to the people on the canvas: the
+ * message types out in its chat (chatSent false while typing, with speaking: true so browsers draw
+ * a speech bubble) and stays up for a while; activity messages don't replace it meanwhile.
  */
 import type { BunFile } from 'bun'
 import { isAbsolute } from 'node:path'
@@ -70,6 +72,12 @@ const AGENT_IDLE_MS = 2 * 60_000
 const AGENT_CHAT_MS = 6000
 /** rooms drop presence states not renewed within 30s (y-protocols' outdatedTimeout) */
 const AGENT_RENEW_MS = 10_000
+const SAY_MAX = 280
+/** typing speed: SAY_TICK_CHARS characters every SAY_TICK_MS (about 33 characters a second) */
+const SAY_TICK_MS = 60
+const SAY_TICK_CHARS = 2
+/** how long a finished message stays up */
+const sayHoldMs = (chars: number) => Math.min(20_000, 4000 + 60 * chars)
 
 class ToolError extends Error {}
 
@@ -127,10 +135,13 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 		sessionId?: string
 		selection: string[]
 		chat: string | null
+		/** a message from say, typing out or showing; activity chat waits while it's set */
+		speech: { chars: string[]; typed: number } | null
 		/** joined with join_canvas: stays without an idle timeout */
 		joined: boolean
 		idleTimer?: Timer
 		chatTimer?: Timer
+		speechTimer?: Timer
 	}
 
 	const agents = new Map<string, Agent>()
@@ -147,13 +158,15 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 		if (agents.get(a.key) !== a) return
 		if (!deps.canvasExists(a.canvasId)) return dropAgent(a)
 		a.clock++
+		const speech = a.speech
 		await setServerPresence(`canvas-${a.canvasId}`, a.clientId, a.clock, {
 			user: { name: agentName(a), color: AGENT_COLOR, agent: true },
 			cursor: null,
 			selection: a.selection,
 			view: null,
-			chat: a.chat,
-			chatSent: true,
+			chat: speech ? speech.chars.slice(0, speech.typed).join('') : a.chat,
+			chatSent: speech ? speech.typed >= speech.chars.length : true,
+			...(speech ? { speaking: true } : {}),
 		})
 	}
 
@@ -162,24 +175,56 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 		agents.delete(a.key)
 		clearTimeout(a.idleTimer)
 		clearTimeout(a.chatTimer)
+		clearTimeout(a.speechTimer)
 		a.clock++
 		setServerPresence(`canvas-${a.canvasId}`, a.clientId, a.clock, null).catch((e) => console.error('agent leave failed:', e))
 	}
 
+	/** Types a say message out in the agent's chat, then keeps it up for a while before clearing it. */
+	function startSpeech(a: Agent, text: string) {
+		clearTimeout(a.speechTimer)
+		clearTimeout(a.chatTimer)
+		a.chat = null
+		const chars = Array.from(text)
+		const speech = { chars, typed: Math.min(SAY_TICK_CHARS, chars.length) }
+		a.speech = speech
+		const tick = () => {
+			if (a.speech !== speech) return
+			if (speech.typed >= speech.chars.length) {
+				a.speechTimer = setTimeout(() => {
+					if (a.speech !== speech) return
+					a.speech = null
+					publish(a).catch(() => {})
+				}, sayHoldMs(speech.chars.length))
+				return
+			}
+			speech.typed = Math.min(speech.chars.length, speech.typed + SAY_TICK_CHARS)
+			publish(a).catch(() => {})
+			a.speechTimer = setTimeout(tick, SAY_TICK_MS)
+		}
+		a.speechTimer = setTimeout(tick, SAY_TICK_MS)
+	}
+
 	/** Shows what the agent is doing on a canvas, joining it first if needed. Never throws. */
-	async function agentActivity(who: Who, canvasId: string, activity: { selection?: string[]; chat?: string; join?: boolean }) {
+	async function agentActivity(
+		who: Who,
+		canvasId: string,
+		activity: { selection?: string[]; chat?: string; join?: boolean; say?: string },
+	) {
 		try {
 			const key = agentKey(who.mcpSession, canvasId)
 			let a = agents.get(key)
 			if (!a) {
 				const clientId = crypto.getRandomValues(new Uint32Array(1))[0]
-				a = { key, mcpSession: who.mcpSession, canvasId, clientId, clock: 0, selection: [], chat: null, joined: false }
+				a = { key, mcpSession: who.mcpSession, canvasId, clientId, clock: 0, selection: [], chat: null, speech: null, joined: false }
 				agents.set(key, a)
 			}
 			if (who.sessionId) a.sessionId = who.sessionId
 			if (activity.join) a.joined = true
 			if (activity.selection) a.selection = activity.selection
-			if (activity.chat !== undefined) {
+			if (activity.say !== undefined) startSpeech(a, activity.say)
+			// what the agent says stays up: activity messages don't replace it
+			else if (activity.chat !== undefined && !a.speech) {
 				a.chat = activity.chat.slice(0, 140)
 				clearTimeout(a.chatTimer)
 				const agent = a
@@ -348,7 +393,15 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 		)
 
 	function buildServer() {
-		const server = new McpServer({ name: 'canvas', version: '1.0.0' })
+		const server = new McpServer(
+			{ name: 'canvas', version: '1.0.0' },
+			{
+				instructions:
+					'Review canvases where you post images, videos and HTML for the user. While you use a canvas you appear on it ' +
+					'as a little worm showing what you are doing; use say to talk to the people looking at it in a speech bubble ' +
+					'(optionally pointing at an item, frame or note with about).',
+			},
+		)
 
 		server.registerTool(
 			'list_canvases',
@@ -499,6 +552,49 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				const a = agents.get(agentKey(caller.mcpSession, id))
 				if (a) dropAgent(a)
 				return ok({ canvasId: id, left: !!a })
+			}),
+		)
+
+		server.registerTool(
+			'say',
+			{
+				description:
+					'Talk to the people who have the canvas open: your worm types the message out in a speech bubble, which stays ' +
+					'up for a few seconds (longer for longer messages). Use it to point things out, explain what you posted or ' +
+					'ask for a look, e.g. "Here are three takes on the logo, the middle one is my favourite". Pass about (an ' +
+					'item id, frame:<sessionId> or note:<noteId>) and your worm crawls over to it first. A new message replaces ' +
+					'the one showing. Joins the canvas if you are not on it yet.',
+				inputSchema: {
+					canvas: canvasArg,
+					text: z.string().describe(`What to say (1-${SAY_MAX} characters)`),
+					about: z
+						.string()
+						.optional()
+						.describe('Something to point at while talking: an item id, "frame:<sessionId>" or "note:<noteId>"'),
+					sessionId: sessionArg,
+				},
+			},
+			tool(async ({ canvas, text, about, sessionId }: { canvas: string; text: string; about?: string; sessionId?: string }, extra) => {
+				const caller = who(extra, sessionId)
+				const id = canvasId(canvas)
+				const said = text.trim()
+				const length = Array.from(said).length
+				if (length < 1 || length > SAY_MAX) throw new ToolError(`text must be 1-${SAY_MAX} characters, got ${length}`)
+				let selection: string[] | undefined
+				if (about !== undefined) {
+					const ref = about.trim()
+					if (ref.startsWith('frame:')) {
+						if (!deps.canvasData(id).sessions.some((s) => s.id === ref.slice(6))) throw new ToolError(`no session frame ${ref} on this canvas`)
+					} else if (ref.startsWith('note:')) {
+						if (!(await deps.notes(id)).some((n) => n.id === ref.slice(5))) throw new ToolError(`no sticky note ${ref} on this canvas`)
+					} else if (deps.getItem(ref).canvasId !== id) {
+						throw new ToolError(`item ${ref} is on another canvas`)
+					}
+					selection = [ref]
+				}
+				await agentActivity(caller, id, { selection, say: said })
+				const a = agents.get(agentKey(caller.mcpSession, id))
+				return ok({ said, canvasId: id, name: a ? agentName(a) : 'Agent' })
 			}),
 		)
 

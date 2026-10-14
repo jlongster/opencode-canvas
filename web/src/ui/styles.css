@@ -712,6 +712,81 @@ body,
 	animation: chat-fade 5s forwards;
 }
 
+/* what the agent says (the say tool): a speech bubble above the head, its tail on the worm */
+.agent-worm-speech {
+	position: absolute;
+	left: -22px;
+	bottom: 24px;
+	width: max-content;
+	max-width: 260px;
+	padding: 7px 12px 8px;
+	border-radius: 14px;
+	background: var(--agent-color, #22d3ee);
+	color: rgba(0, 0, 0, 0.85);
+	font-size: 14px;
+	line-height: 1.35;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+	transform-origin: 22px calc(100% + 10px);
+	animation: agent-speech-in 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.agent-worm-speech::after {
+	content: '';
+	position: absolute;
+	left: 16px;
+	bottom: -6px;
+	width: 12px;
+	height: 12px;
+	border-radius: 0 0 3px 0;
+	background: inherit;
+	transform: rotate(45deg) skew(8deg, 8deg);
+}
+
+.agent-worm-speech.closing {
+	animation: agent-speech-out 220ms ease-in forwards;
+}
+
+.agent-worm-speech.typing .agent-worm-speech-text::after {
+	content: '';
+	display: inline-block;
+	width: 2px;
+	height: 1.05em;
+	margin-left: 1px;
+	vertical-align: -0.18em;
+	background: currentColor;
+	animation: agent-speech-caret 0.9s steps(1) infinite;
+}
+
+@keyframes agent-speech-in {
+	from {
+		opacity: 0;
+		transform: scale(0.6);
+	}
+}
+
+@keyframes agent-speech-out {
+	to {
+		opacity: 0;
+		transform: scale(0.85);
+	}
+}
+
+@keyframes agent-speech-caret {
+	50% {
+		opacity: 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.agent-worm-speech,
+	.agent-worm-speech.closing,
+	.agent-worm-speech.typing .agent-worm-speech-text::after {
+		animation: none;
+	}
+}
+
 @keyframes chat-fade {
 	0%,
 	85% {

@@ -16,6 +16,9 @@ const SNAP_PX = 2400
 const NUDGE_PX = 26
 const CHAT_MS = 5000
 const POP_MS = 380
+/** local typewriter speed for speech, catching up faster when it falls behind what has arrived */
+const TYPE_CPS = 36
+const SPEECH_CLOSE_MS = 220
 
 interface Trip {
 	from: Vec
@@ -61,7 +64,21 @@ interface Worm {
 	chat: string | null
 	chatAt: number
 	nameText: string
+	/** speech bubble from the agent's say tool, while it's showing */
+	bubble: HTMLDivElement | null
+	bubbleText: HTMLSpanElement | null
+	/** what has arrived so far, by character, and whether it's complete */
+	speech: string[]
+	speechDone: boolean
+	/** characters typed out locally (fractional) and how many are on screen */
+	speechShown: number
+	speechDrawn: number
+	/** 0..1 how much it's talking, eased, drives the mouth and head bob */
+	talk: number
 }
+
+/** Agents set speaking while their chat is a message from the say tool rather than an activity. */
+type AgentPeer = Peer & { speaking?: boolean }
 
 /**
  * AI agents have no pointer, so each one gets a little googly-eyed worm that crawls to whatever
@@ -197,6 +214,13 @@ export class AgentWorms {
 			chat: null,
 			chatAt: 0,
 			nameText: '',
+			bubble: null,
+			bubbleText: null,
+			speech: [],
+			speechDone: false,
+			speechShown: 0,
+			speechDrawn: 0,
+			talk: 0,
 		}
 		this.layOut(worm)
 		return worm
@@ -236,12 +260,15 @@ export class AgentWorms {
 			worm.color = peer.user.color
 			worm.palette = palette(worm.color)
 			worm.label.style.background = worm.color
+			worm.el.style.setProperty('--agent-color', worm.color)
 		}
 		if (worm.nameText !== peer.user.name) {
 			worm.nameText = peer.user.name
 			worm.name.textContent = worm.nameText
 		}
-		const chat = peer.chat || null
+		const speaking = !!(peer as AgentPeer).speaking && !!peer.chat
+		this.syncSpeech(worm, speaking ? peer.chat! : null, !!peer.chatSent)
+		const chat = (!speaking && peer.chat) || null
 		if (worm.chat !== chat) {
 			worm.chat = chat
 			worm.chatAt = now
@@ -261,10 +288,64 @@ export class AgentWorms {
 		worm.message?.classList.toggle('sent', sent)
 	}
 
+	/** Opens, extends, replaces or closes the speech bubble. */
+	private syncSpeech(worm: Worm, text: string | null, sent: boolean) {
+		if (text === null) {
+			if (worm.bubble) {
+				const bubble = worm.bubble
+				bubble.classList.add('closing')
+				setTimeout(() => bubble.remove(), this.reducedMotion.matches ? 0 : SPEECH_CLOSE_MS)
+				worm.bubble = worm.bubbleText = null
+				worm.speech = []
+			}
+			return
+		}
+		const chars = Array.from(text)
+		if (!worm.bubble) {
+			worm.bubble = document.createElement('div')
+			worm.bubble.className = 'agent-worm-speech'
+			worm.bubbleText = document.createElement('span')
+			worm.bubbleText.className = 'agent-worm-speech-text'
+			worm.bubble.appendChild(worm.bubbleText)
+			worm.el.appendChild(worm.bubble)
+			worm.speech = []
+			// Arriving at a message that's already finished: show it whole.
+			worm.speechShown = sent ? chars.length : 0
+			worm.speechDrawn = -1
+		} else if (chars.length < worm.speech.length || worm.speech.some((c, i) => chars[i] !== c)) {
+			// A new message replaced the one showing: type it from the start.
+			worm.speechShown = 0
+			worm.speechDrawn = -1
+		}
+		worm.speech = chars
+		worm.speechDone = sent
+	}
+
+	/** Types the speech out locally, smoothing over the server's bursts. */
+	private typeSpeech(worm: Worm, elapsed: number) {
+		const total = worm.speech.length
+		if (this.reducedMotion.matches) worm.speechShown = total
+		else {
+			const behind = total - worm.speechShown
+			worm.speechShown = Math.min(total, worm.speechShown + (Math.max(TYPE_CPS, behind * 4) * elapsed) / 1000)
+		}
+		const shown = Math.floor(worm.speechShown)
+		if (shown !== worm.speechDrawn && worm.bubbleText) {
+			worm.speechDrawn = shown
+			worm.bubbleText.textContent = worm.speech.slice(0, shown).join('')
+		}
+		const typing = shown < total || !worm.speechDone
+		worm.bubble?.classList.toggle('typing', typing)
+		return typing
+	}
+
 	private step(worm: Worm, now: number, elapsed: number) {
 		const still = this.reducedMotion.matches
 		const z = this.editor.camera.peek().z
 		const dt = elapsed / 1000
+
+		const talking = worm.bubble ? this.typeSpeech(worm, elapsed) : false
+		worm.talk += ((talking ? 1 : 0) - worm.talk) * (1 - Math.exp(-elapsed / 90))
 
 		// Scale: pop in, burrow out.
 		const popT = Math.min(1, (now - worm.popStart) / POP_MS)
@@ -434,6 +515,8 @@ export class AgentWorms {
 		// Joints to screen, then the side-to-side wiggle, strongest toward the tail.
 		const pts = worm.joints.map((j) => this.editor.pageToScreen(j))
 		const bob = still ? 0 : Math.sin(now / 420 + worm.seed) * 1.6 * (1 - worm.motion)
+		// Nodding along while it talks: the head only, fading down the neck.
+		const nod = still ? 0 : Math.sin(now / 95 + worm.seed) * 1.5 * worm.talk
 		const amp = still ? 0 : 1.4 + 3.6 * worm.motion
 		const wiggled = pts.map((p, i) => {
 			const a = pts[Math.max(0, i - 1)]
@@ -443,7 +526,8 @@ export class AgentWorms {
 			const tl = Math.hypot(tx, ty) || 1
 			const f = i / (pts.length - 1)
 			const off = amp * Math.sin(worm.wigglePhase - i * 0.95) * (0.25 + 0.75 * f) * scale
-			return { x: p.x - (ty / tl) * off, y: p.y + (tx / tl) * off + (i === 0 ? bob : bob * (1 - f) * 0.6) }
+			const neck = Math.max(0, 1 - i * 0.4)
+			return { x: p.x - (ty / tl) * off, y: p.y + (tx / tl) * off + (i === 0 ? bob : bob * (1 - f) * 0.6) + nod * neck }
 		})
 		const samples = catmullRom(wiggled, 5)
 		const thin = 1 / Math.sqrt(Math.max(0.6, worm.stretch))
@@ -490,7 +574,8 @@ export class AgentWorms {
 		const head = samples[0]
 		const fwd = worm.heading
 		const hr = radius(0)
-		worm.el.style.transform = `translate(${head.x}px, ${head.y}px)`
+		// The labels and speech bubble follow the head but not its nodding, so the text stays readable.
+		worm.el.style.transform = `translate(${head.x}px, ${head.y - nod}px)`
 		if (scale < 0.05) return
 
 		// Antenna with a twinkling sparkle, like the robot avatar.
@@ -528,14 +613,20 @@ export class AgentWorms {
 			disc(ctx, px - er * 0.15, py - er * 0.17 * open, er * 0.13)
 		}
 
-		// A small smile under the eye, toward the front.
-		ctx.strokeStyle = dark
-		ctx.lineWidth = 1.2 * scale
-		ctx.beginPath()
+		// A small smile under the eye, toward the front; a chattering mouth while it talks.
 		const mx = head.x + fwd.x * hr * 0.55
 		const my = head.y + hr * 0.42
-		ctx.arc(mx, my - 1.6 * scale, 2.2 * scale, Math.PI * 0.2, Math.PI * 0.8)
-		ctx.stroke()
+		if (worm.talk > 0.05) {
+			const flap = still ? 0.6 : 0.5 + 0.3 * Math.sin(now / 62 + worm.seed) + 0.2 * Math.sin(now / 37)
+			ctx.fillStyle = dark
+			ellipse(ctx, mx, my, 2.4 * scale, (0.5 + 2.1 * flap) * worm.talk * scale)
+		} else {
+			ctx.strokeStyle = dark
+			ctx.lineWidth = 1.2 * scale
+			ctx.beginPath()
+			ctx.arc(mx, my - 1.6 * scale, 2.2 * scale, Math.PI * 0.2, Math.PI * 0.8)
+			ctx.stroke()
+		}
 	}
 }
 

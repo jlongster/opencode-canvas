@@ -433,9 +433,9 @@ class ItemTitles {
 	update(items: Record<string, Item>, displayed: Map<string, Displayed>, view: Box, editor: Editor) {
 		const z = editor.camera.peek().z
 		const strip = LAYOUT.titleHeight
-		const fontSize = 18 * z
+		const fontSize = 13 * z
 		const seen = new Set<string>()
-		if (fontSize >= 6) {
+		if (fontSize >= 5) {
 			for (const [id, d] of displayed) {
 				const title = items[id]?.title
 				if (!title || !Box.intersects({ x: d.x, y: d.y - strip, w: d.w, h: strip }, view)) continue

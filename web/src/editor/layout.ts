@@ -42,7 +42,7 @@ export const LAYOUT = {
 	rowHeight: 320,
 	gap: 16,
 	/** space reserved above a row that has a titled item (the text scales with zoom) */
-	titleHeight: 40,
+	titleHeight: 26,
 	framePadding: 40,
 	/** the session title strip at the top of a frame */
 	frameHeaderHeight: 96,

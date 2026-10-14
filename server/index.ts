@@ -590,9 +590,9 @@ async function handle(req: Request): Promise<Response> {
 	if (method === 'GET' && existsSync(WEB_DIST) && !p.startsWith('/api/')) {
 		const path = join(WEB_DIST, p === '/' ? 'index.html' : p)
 		if (path.startsWith(WEB_DIST) && existsSync(path) && Bun.file(path).size > 0) {
-			return serveFile(req, path, 'no-cache')
+			return serveFile(req, path, path.includes('/assets/') ? 'public, max-age=31536000, immutable' : 'no-store')
 		}
-		return serveFile(req, join(WEB_DIST, 'index.html'), 'no-cache')
+		return serveFile(req, join(WEB_DIST, 'index.html'), 'no-store')
 	}
 
 	throw new HttpError(404, p.startsWith('/api') ? `no route ${method} ${p}; GET /api lists the endpoints` : 'not found')

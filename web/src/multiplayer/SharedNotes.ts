@@ -71,7 +71,7 @@ export class SharedNotes {
 	}
 
 	create(point: Vec) {
-		const id = crypto.randomUUID().slice(0, 12)
+		const id = noteId()
 		const note = new Y.Map<unknown>()
 		this.doc.transact(() => {
 			note.set('x', point.x - NOTE_W / 2)
@@ -402,4 +402,11 @@ function tiltFromId(id: string) {
 	let h = 0
 	for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0
 	return ((((h % 1000) + 1000) % 1000) / 1000 * 2 - 1) * MAX_TILT
+}
+
+/** crypto.randomUUID only exists in secure contexts (and Safari 15.4+); fall back to getRandomValues. */
+function noteId() {
+	if (typeof crypto.randomUUID === 'function') return crypto.randomUUID().slice(0, 12)
+	const bytes = crypto.getRandomValues(new Uint8Array(6))
+	return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }

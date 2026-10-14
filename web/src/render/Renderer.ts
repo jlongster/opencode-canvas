@@ -38,6 +38,8 @@ export interface RendererOptions {
 	getRemoteSelections?: () => { ids: string[]; color: string }[]
 	/** Called when the user removes a section with its close button. */
 	onCloseSection?: (sectionId: string) => void
+	/** Called when the GPU device is lost other than by destroy() (iOS drops it in background tabs, GPU resets). */
+	onDeviceLost?: (message: string) => void
 }
 
 interface Displayed {
@@ -63,6 +65,11 @@ export class Renderer {
 	private imagePipeline: GPURenderPipeline
 	private videoPipeline: GPURenderPipeline
 	private videoLayout: GPUBindGroupLayout
+	private imageLayout: GPUBindGroupLayout
+	/** Zero-copy video via importExternalTexture; false once it's missing or has failed, then frames are copied. */
+	private externalVideo: boolean
+	private videoCopies = new Map<string, { texture: GPUTexture; bindGroup: GPUBindGroup; w: number; h: number }>()
+	private maxCanvasPx: number
 	private rectBuffer: GPUBuffer | null = null
 	private rectData = new Float32Array(RECT_FLOATS * 256) as Float32Array<ArrayBuffer>
 	private imageBuffer: GPUBuffer | null = null
@@ -81,34 +88,68 @@ export class Renderer {
 	private pixelSize = { w: 0, h: 0 }
 	private dpr = window.devicePixelRatio || 1
 	private disposers: (() => void)[] = []
+	private destroyed = false
 	frameTimes: number[] = []
 
+	/**
+	 * Every step names itself in the error it throws, and WebGPU validation errors (which are
+	 * reported asynchronously, not thrown) are collected with an error scope, so a failure on some
+	 * browser says what failed and why instead of a bare "TypeError".
+	 */
 	static async create(canvas: HTMLCanvasElement, overlay: HTMLElement, editor: Editor, options: RendererOptions = {}) {
 		if (!navigator.gpu) throw new Error('WebGPU is not available in this browser.')
-		const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
+		const adapter = await step('requesting a WebGPU adapter', async () => {
+			// Some implementations reject options they don't know rather than ignoring them.
+			try {
+				return await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
+			} catch {
+				return await navigator.gpu.requestAdapter()
+			}
+		})
 		if (!adapter) throw new Error('No WebGPU adapter found.')
-		const device = await adapter.requestDevice()
-		return new Renderer(device, canvas, overlay, editor, options)
+		const device = await step('requesting a WebGPU device', () => adapter.requestDevice())
+		device.addEventListener?.('uncapturederror', (e) => console.error('WebGPU error:', (e as GPUUncapturedErrorEvent).error?.message))
+
+		try {
+			const sampler = await createSampler(device)
+			const context = step('getting the canvas WebGPU context', () => {
+				const ctx = canvas.getContext('webgpu')
+				if (!ctx) throw new Error('canvas.getContext("webgpu") returned null')
+				return ctx
+			})
+			const format = step('configuring the canvas', () => configureContext(context, device))
+			device.pushErrorScope('validation')
+			const renderer = step('creating pipelines', () => new Renderer(device, context, format, sampler, canvas, overlay, editor, options))
+			// Chrome rejects popErrorScope once the device is lost; onDeviceLost deals with that.
+			const error = await device.popErrorScope().catch(() => null)
+			if (error) {
+				renderer.destroy()
+				throw new Error(`WebGPU validation failed while creating pipelines: ${error.message}`)
+			}
+			return renderer
+		} catch (e) {
+			device.destroy()
+			throw e
+		}
 	}
 
 	private constructor(
 		private device: GPUDevice,
+		context: GPUCanvasContext,
+		format: GPUTextureFormat,
+		sampler: GPUSampler,
 		private canvas: HTMLCanvasElement,
 		overlay: HTMLElement,
 		private editor: Editor,
 		private options: RendererOptions,
 	) {
-		this.context = canvas.getContext('webgpu')!
-		this.format = navigator.gpu.getPreferredCanvasFormat()
-		this.context.configure({ device, format: this.format, alphaMode: 'opaque' })
+		this.context = context
+		this.format = format
+		this.maxCanvasPx = device.limits.maxTextureDimension2D
+		this.externalVideo = typeof device.importExternalTexture === 'function'
 
 		this.globals = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
-		this.sampler = device.createSampler({
-			magFilter: 'linear',
-			minFilter: 'linear',
-			mipmapFilter: 'linear',
-			maxAnisotropy: 8,
-		})
+		this.sampler = sampler
 
 		const globalsLayout = device.createBindGroupLayout({
 			entries: [
@@ -152,6 +193,7 @@ export class Renderer {
 		this.imagePipeline = pipeline(imageShader, [globalsLayout, imageLayout], [0, 1].map(vec4), IMAGE_FLOATS * 4)
 		this.videoPipeline = pipeline(videoShader, [globalsLayout, this.videoLayout], [0, 1].map(vec4), IMAGE_FLOATS * 4)
 
+		this.imageLayout = imageLayout
 		this.textures = new TextureCache(device, imageLayout)
 		this.videos = new VideoPool(overlay)
 		this.html = new HtmlItems(overlay)
@@ -162,16 +204,42 @@ export class Renderer {
 		const ro = new ResizeObserver(([entry]) => {
 			const size = entry.devicePixelContentBoxSize?.[0]
 			this.dpr = window.devicePixelRatio || 1
-			this.pixelSize = size
-				? { w: size.inlineSize, h: size.blockSize }
-				: { w: Math.round(entry.contentRect.width * this.dpr), h: Math.round(entry.contentRect.height * this.dpr) }
+			const w = size ? size.inlineSize : Math.round(entry.contentRect.width * this.dpr)
+			const h = size ? size.blockSize : Math.round(entry.contentRect.height * this.dpr)
+			this.pixelSize = { w: Math.min(w, this.maxCanvasPx), h: Math.min(h, this.maxCanvasPx) }
 			this.lastEpoch = -1
 		})
-		ro.observe(canvas, { box: 'device-pixel-content-box' })
+		// Safari has no device-pixel-content-box and throws a TypeError for it; the callback then
+		// works from contentRect × devicePixelRatio.
+		let devicePixelBox = true
+		try {
+			ro.observe(canvas, { box: 'device-pixel-content-box' })
+		} catch {
+			devicePixelBox = false
+			ro.observe(canvas)
+		}
 		this.disposers.push(() => ro.disconnect())
+		// content-box doesn't report devicePixelRatio changes (browser zoom, moving between screens).
+		const onResize = () => {
+			const dpr = window.devicePixelRatio || 1
+			if (devicePixelBox || dpr === this.dpr) return
+			this.dpr = dpr
+			const rect = canvas.getBoundingClientRect()
+			this.pixelSize = {
+				w: Math.min(Math.round(rect.width * dpr), this.maxCanvasPx),
+				h: Math.min(Math.round(rect.height * dpr), this.maxCanvasPx),
+			}
+			this.lastEpoch = -1
+		}
+		window.addEventListener('resize', onResize)
+		this.disposers.push(() => window.removeEventListener('resize', onResize))
 		this.disposers.push(editor.onFrame((now, elapsed) => this.frame(now, elapsed)))
 
-		device.lost.then((info) => console.error('WebGPU device lost:', info.message))
+		device.lost.then((info) => {
+			if (info.reason === 'destroyed' || this.destroyed) return
+			console.error('WebGPU device lost:', info.message)
+			options.onDeviceLost?.(info.message)
+		})
 	}
 
 	private frame(now: number, elapsed: number) {
@@ -250,8 +318,9 @@ export class Renderer {
 		}
 
 		let images = 0
-		const imageDraws: { kind: 'image'; bindGroup: GPUBindGroup }[] = []
-		const videoDraws: { index: number; video: HTMLVideoElement }[] = []
+		// One per image instance, in instance order.
+		const imageDraws: { video: boolean; bindGroup: GPUBindGroup }[] = []
+		const drawnVideos = new Set<string>()
 		const pushImage = (b: Box, opacity: number) => {
 			this.imageData = ensure(this.imageData, (images + 1) * IMAGE_FLOATS)
 			const o = images++ * IMAGE_FLOATS
@@ -277,11 +346,14 @@ export class Renderer {
 			if (!item) continue
 
 			const video = item.kind === 'video' ? this.videos.getReady(id) : undefined
+			const videoDraw = video ? this.videoBindGroup(id, video) : null
 			let texAlpha = 0
 			if (item.kind === 'html') {
 				// No texture: the placeholder shows under the iframe while it loads.
-			} else if (video) {
-				videoDraws.push({ index: pushImage(d, d.opacity), video })
+			} else if (videoDraw) {
+				drawnVideos.add(id)
+				pushImage(d, d.opacity)
+				imageDraws.push(videoDraw)
 				texAlpha = 1
 			} else {
 				const entry = this.pickTexture(item, Math.max(d.w, d.h) * pxRatio)
@@ -289,7 +361,7 @@ export class Renderer {
 					texAlpha = Math.min(1, (now - entry.readyAt) / FADE_MS)
 					if (texAlpha < 1) this.animating = true
 					pushImage(d, d.opacity * texAlpha)
-					imageDraws.push({ kind: 'image', bindGroup: entry.bindGroup! })
+					imageDraws.push({ video: false, bindGroup: entry.bindGroup! })
 				}
 			}
 			if (texAlpha < 1) pushRect(d, withAlpha(PLACEHOLDER, d.opacity * (1 - texAlpha)), NONE, 0, ITEM_RADIUS, false)
@@ -336,26 +408,20 @@ export class Renderer {
 		}
 
 		if (images) {
-			let imageIndex = 0
-			pass.setPipeline(this.imagePipeline)
 			pass.setVertexBuffer(0, this.imageBuffer)
-			const videoIndexes = new Set(videoDraws.map((v) => v.index))
+			let current: GPURenderPipeline | null = null
 			for (let i = 0; i < images; i++) {
-				if (videoIndexes.has(i)) continue
-				pass.setBindGroup(1, imageDraws[imageIndex++].bindGroup)
+				const draw = imageDraws[i]
+				const pipeline = draw.video ? this.videoPipeline : this.imagePipeline
+				if (pipeline !== current) pass.setPipeline((current = pipeline))
+				pass.setBindGroup(1, draw.bindGroup)
 				pass.draw(6, 1, 0, i)
 			}
-			if (videoDraws.length) {
-				pass.setPipeline(this.videoPipeline)
-				for (const { index, video } of videoDraws) {
-					const bindGroup = this.device.createBindGroup({
-						layout: this.videoLayout,
-						entries: [{ binding: 0, resource: this.device.importExternalTexture({ source: video }) }],
-					})
-					pass.setBindGroup(1, bindGroup)
-					pass.draw(6, 1, 0, index)
-				}
-			}
+		}
+		for (const [id, copy] of this.videoCopies) {
+			if (drawnVideos.has(id)) continue
+			copy.texture.destroy()
+			this.videoCopies.delete(id)
 		}
 
 		if (rects > backgroundRects) {
@@ -374,6 +440,58 @@ export class Renderer {
 
 		this.frameTimes.push(performance.now() - t0)
 		if (this.frameTimes.length > 120) this.frameTimes.shift()
+	}
+
+	/**
+	 * The current frame of a playing video: imported zero-copy where importExternalTexture works,
+	 * otherwise copied into a texture of its own each frame. Null means draw the poster instead.
+	 */
+	private videoBindGroup(id: string, video: HTMLVideoElement): { video: boolean; bindGroup: GPUBindGroup } | null {
+		if (this.externalVideo) {
+			try {
+				this.device.pushErrorScope('validation')
+				const bindGroup = this.device.createBindGroup({
+					layout: this.videoLayout,
+					entries: [{ binding: 0, resource: this.device.importExternalTexture({ source: video }) }],
+				})
+				this.device.popErrorScope().then((error) => {
+					if (!error) return
+					console.warn('importExternalTexture failed, copying video frames instead:', error.message)
+					this.externalVideo = false
+				})
+				return { video: true, bindGroup }
+			} catch (e) {
+				this.device.popErrorScope().catch(() => {})
+				console.warn('importExternalTexture failed, copying video frames instead:', e)
+				this.externalVideo = false
+			}
+		}
+
+		const w = video.videoWidth
+		const h = video.videoHeight
+		if (!w || !h || w > this.maxCanvasPx || h > this.maxCanvasPx) return null
+		let copy = this.videoCopies.get(id)
+		if (copy && (copy.w !== w || copy.h !== h)) {
+			copy.texture.destroy()
+			copy = undefined
+		}
+		if (!copy) {
+			const texture = this.device.createTexture({
+				size: { width: w, height: h },
+				format: 'rgba8unorm',
+				usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+			})
+			const bindGroup = this.device.createBindGroup({ layout: this.imageLayout, entries: [{ binding: 0, resource: texture.createView() }] })
+			copy = { texture, bindGroup, w, h }
+			this.videoCopies.set(id, copy)
+		}
+		try {
+			this.device.queue.copyExternalImageToTexture({ source: video }, { texture: copy.texture, premultipliedAlpha: true }, { width: w, height: h })
+		} catch (e) {
+			console.warn('copying a video frame failed', e)
+			return null
+		}
+		return { video: false, bindGroup: copy.bindGroup }
 	}
 
 	/** Thumbnail first; full resolution only once the item is bigger on screen than the thumbnail. */
@@ -434,8 +552,11 @@ export class Renderer {
 	}
 
 	destroy() {
+		this.destroyed = true
 		for (const d of this.disposers.splice(0)) d()
 		this.textures.destroy()
+		for (const copy of this.videoCopies.values()) copy.texture.destroy()
+		this.videoCopies.clear()
 		this.videos.destroy()
 		this.labels.destroy()
 		this.actions.destroy()
@@ -767,6 +888,59 @@ class SectionLabels {
 	destroy() {
 		this.host.remove()
 	}
+}
+
+/** Runs one startup step, prefixing any error with what was being done and the error's name. */
+function step<T>(what: string, fn: () => T): T {
+	const fail = (e: unknown): never => {
+		throw new Error(`Failed ${what}: ${describeError(e)}`, { cause: e })
+	}
+	try {
+		const result = fn()
+		return (result instanceof Promise ? result.catch(fail) : result) as T
+	} catch (e) {
+		return fail(e)
+	}
+}
+
+export function describeError(e: unknown): string {
+	if (e instanceof Error) return e.name && e.name !== 'Error' ? `${e.name}: ${e.message}` : e.message
+	return String(e)
+}
+
+/** Trilinear + anisotropic, or without anisotropy where that isn't accepted. */
+async function createSampler(device: GPUDevice) {
+	const base: GPUSamplerDescriptor = { magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' }
+	try {
+		device.pushErrorScope('validation')
+		const sampler = device.createSampler({ ...base, maxAnisotropy: 8 })
+		if (!(await device.popErrorScope())) return sampler
+	} catch {}
+	return step('creating a sampler', () => device.createSampler(base))
+}
+
+/** The preferred format and opaque alpha, falling back to the formats every implementation must accept. */
+function configureContext(context: GPUCanvasContext, device: GPUDevice): GPUTextureFormat {
+	let preferred: GPUTextureFormat = 'bgra8unorm'
+	try {
+		preferred = navigator.gpu.getPreferredCanvasFormat()
+	} catch {}
+	const attempts: GPUCanvasConfiguration[] = [
+		{ device, format: preferred, alphaMode: 'opaque' },
+		{ device, format: preferred, alphaMode: 'premultiplied' },
+		{ device, format: 'bgra8unorm' },
+		{ device, format: 'rgba8unorm' },
+	]
+	let error: unknown
+	for (const config of attempts) {
+		try {
+			context.configure(config)
+			return config.format
+		} catch (e) {
+			error = e
+		}
+	}
+	throw error
 }
 
 function approach(a: number, b: number, k: number) {

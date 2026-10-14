@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
 import { Editor, type ToolId } from '../editor/Editor'
-import { Renderer } from '../render/Renderer'
+import { describeError, Renderer } from '../render/Renderer'
 import { react } from '../state/signals'
 import type { Canvas } from '../../../shared/types'
 import { frameKey } from '../editor/selection'
@@ -52,6 +52,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 	const overlayRef = useRef<HTMLDivElement>(null)
 	const [editor] = useState(() => new Editor())
 	const [error, setError] = useState<string | null>(null)
+	const [rendererError, setRendererError] = useState<string | null>(null)
 	const [canvas, setCanvas] = useState<Canvas | null>(null)
 	const [presence, setPresence] = useState<Presence | null>(null)
 	const role = link.role
@@ -82,17 +83,39 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 		const deepLink = new DeepLink(editor)
 		disposers.push(() => deepLink.destroy())
 
-		Renderer.create(canvasRef.current!, overlayRef.current!, editor, {
-			readOnly: link.role === 'view',
-			onCloseSection: (id) => editor.deletions.delete([frameKey(id)]),
-			getRemoteSelections: () => live?.peers.get().map((p) => ({ ids: p.selection ?? [], color: p.user.color })) ?? [],
-		})
-			.then((r) => {
-				if (disposed) return r.destroy()
-				renderer = r
-				;(window as any).renderer = r
+		// The renderer restarts when its GPU device is lost (iOS drops it in background tabs), but
+		// gives up if that keeps happening straight after starting.
+		let restarts = 0
+		let startedAt = 0
+		const startRenderer = () => {
+			startedAt = performance.now()
+			let lost = false
+			Renderer.create(canvasRef.current!, overlayRef.current!, editor, {
+				readOnly: link.role === 'view',
+				onCloseSection: (id) => editor.deletions.delete([frameKey(id)]),
+				getRemoteSelections: () => live?.peers.get().map((p) => ({ ids: p.selection ?? [], color: p.user.color })) ?? [],
+				onDeviceLost: (message) => {
+					// May be lost before create() resolved; then .then() below cleans up.
+					lost = true
+					renderer?.destroy()
+					renderer = null
+					if (disposed) return
+					if (performance.now() - startedAt > 30_000) restarts = 0
+					if (++restarts > 3) return setRendererError(`WebGPU device lost: ${message}`)
+					setTimeout(() => !disposed && startRenderer(), 250 * restarts)
+				},
 			})
-			.catch((e) => setError(String(e.message ?? e)))
+				.then((r) => {
+					if (disposed || lost) return r.destroy()
+					renderer = r
+					;(window as any).renderer = r
+				})
+				.catch((e) => {
+					console.error('Renderer failed to start', e)
+					if (!disposed) setRendererError(describeError(e))
+				})
+		}
+		startRenderer()
 
 		disposers.push(
 			connectCanvas(editor, link, {
@@ -141,33 +164,35 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 				<canvas ref={canvasRef} className="canvas" />
 				<div ref={overlayRef} className="overlay" />
 			</div>
-			<TitleBar canvas={canvas} canRename={role === 'edit'} onRenamed={setCanvas} />
 			<ToolPicker editor={editor} withNotes={!!presence && role === 'edit'} />
 			{presence && <FollowIndicator presence={presence} />}
 			{presence && <CursorChat editor={editor} presence={presence} />}
-			<div className="top-right">
-				{role === 'view' && (
-					<div className="view-only-badge" title="This is a view-only link. You can look around, chat (/) and follow people, but editing tools are disabled.">
-						<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-							<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
-							<circle cx="12" cy="12" r="3" />
-						</svg>
-						<span>
-							<strong>View only</strong>
-							<small>Editing tools disabled</small>
-						</span>
-					</div>
-				)}
-				{presence && <PresenceBar presence={presence} />}
-				<Toolbar editor={editor} canvas={role === 'edit' ? canvas : null} />
+			<div className="top-bar">
+				<TitleBar canvas={canvas} canRename={role === 'edit'} onRenamed={setCanvas} />
+				<div className="top-right">
+					{role === 'view' && (
+						<div className="view-only-badge" title="This is a view-only link. You can look around, chat (/) and follow people, but editing tools are disabled.">
+							<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+								<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+								<circle cx="12" cy="12" r="3" />
+							</svg>
+							<span>
+								<strong>View only</strong>
+								<small>Editing tools disabled</small>
+							</span>
+						</div>
+					)}
+					{presence && <PresenceBar presence={presence} />}
+					<Toolbar editor={editor} canvas={role === 'edit' ? canvas : null} />
+				</div>
 			</div>
 			<StatusBar editor={editor} />
 			<UndoToast editor={editor} />
 			{canvas && <EmptyState editor={editor} canvas={canvas} role={role} />}
-			{error && (
+			{(rendererError || error) && (
 				<div className="error">
-					<strong>{canvas ? "Can't start the renderer." : "Can't open this canvas."}</strong>
-					<span>{error}</span>
+					<strong>{rendererError ? "Can't start the renderer." : "Can't open this canvas."}</strong>
+					<span>{rendererError ?? error}</span>
 				</div>
 			)}
 		</div>
@@ -295,14 +320,15 @@ function Toolbar({ editor, canvas }: { editor: Editor; canvas: Canvas | null }) 
 
 	return (
 		<div className="toolbar" onPointerDown={(e) => e.stopPropagation()}>
-			<button title="Zoom out (−)" onClick={() => editor.zoomOut()}>−</button>
-			<button title="Reset to 100% (Shift+0)" className="zoom" onClick={() => editor.resetZoom()}>
+			{/* wide-only: hidden on narrow screens, where pinch zooms */}
+			<button className="wide-only" title="Zoom out (−)" onClick={() => editor.zoomOut()}>−</button>
+			<button title="Reset to 100% (Shift+0)" className="zoom wide-only" onClick={() => editor.resetZoom()}>
 				{zoom}%
 			</button>
-			<button title="Zoom in (+)" onClick={() => editor.zoomIn()}>+</button>
-			<div className="sep" />
+			<button className="wide-only" title="Zoom in (+)" onClick={() => editor.zoomIn()}>+</button>
+			<div className="sep wide-only" />
 			<button title="Zoom to fit (Shift+1)" onClick={() => editor.zoomToFit()}>Fit</button>
-			<button title="Zoom to selection (Shift+2)" disabled={!hasSelection} onClick={() => editor.zoomToSelection()}>
+			<button className="wide-only" title="Zoom to selection (Shift+2)" disabled={!hasSelection} onClick={() => editor.zoomToSelection()}>
 				Selection
 			</button>
 			{(selectedCount === 1 || canvas) && <div className="sep" />}
@@ -340,7 +366,14 @@ function CopySelectionLink({ editor }: { editor: Editor }) {
 		})
 	return (
 		<button title="Copy link to selection" onClick={copy}>
-			{copied ? 'Copied' : 'Copy link'}
+			{copied ? (
+				'Copied'
+			) : (
+				<>
+					<span className="wide-only">Copy link</span>
+					<span className="narrow-only">Link</span>
+				</>
+			)}
 		</button>
 	)
 }
@@ -385,7 +418,7 @@ function StatusBar({ editor }: { editor: Editor }) {
 	return (
 		<div className="status">
 			<span className={`dot ${connection}`} title={connection} />
-			<span>
+			<span className="counts">
 				{sessions} sessions · {items} items{selected !== '0' && ` · ${selected} selected`}
 			</span>
 			{hovered && <span className="hovered">{hovered}</span>}

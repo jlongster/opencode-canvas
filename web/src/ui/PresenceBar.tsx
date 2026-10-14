@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { COLORS, initials, type Presence } from '../multiplayer/Presence'
+import { NARROW_QUERY, useMediaQuery } from './useMediaQuery'
 import { useValue } from './useValue'
 
 const MAX_SHOWN = 6
+/** On phones the rest collapse into the "+N" count, leaving room for the title and toolbar. */
+const MAX_SHOWN_NARROW = 1
 
 /** Overlapping avatars of everyone here. Click someone to follow them; click yourself to rename. */
 export function PresenceBar({ presence }: { presence: Presence }) {
@@ -14,8 +17,9 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 	const following = useValue(() => presence.followingId.get(), [presence])
 	const status = useValue(() => presence.status.get(), [presence])
 	const [editing, setEditing] = useState(false)
+	const narrow = useMediaQuery(NARROW_QUERY)
 
-	const shown = peers.slice(0, MAX_SHOWN)
+	const shown = peers.slice(0, narrow ? MAX_SHOWN_NARROW : MAX_SHOWN)
 	const hidden = peers.length - shown.length
 	const activity = peers.filter((p) => p.agent && p.chat)
 

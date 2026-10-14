@@ -20,6 +20,11 @@ const MIN_ZOOM = 0.02
 const MAX_ZOOM = 8
 const ZOOM_STEPS = [0.05, 0.1, 0.25, 0.5, 1, 2, 4, 8]
 const DRAG_DISTANCE = 4
+/** Screen px a finger moves before a touch counts as a pan rather than a tap */
+const TOUCH_SLOP = 8
+/** Two taps this close in time (ms) and space (px) are a double-tap */
+const DOUBLE_TAP_MS = 300
+const DOUBLE_TAP_DISTANCE = 30
 const ANIMATION_MS = 320
 const PAN_FRICTION = 0.0045 // per ms
 const ZOOM_TO_PADDING = 48
@@ -110,6 +115,12 @@ export class Editor {
 	private lastFrame = 0
 	private disposers: (() => void)[] = []
 	private container: HTMLElement | null = null
+	/** Fingers on the canvas (screen points), see the touch handlers. */
+	private touches = new Map<number, Vec>()
+	private touchMode: 'pending' | 'pan' | 'pinch' | null = null
+	private pinch: { startDistance: number; startZoom: number; pagePoint: Vec } | null = null
+	private lastTap: { time: number; point: Vec } | null = null
+	private lastPointerType = 'mouse'
 
 	constructor() {
 		this.root = new Root(this)
@@ -511,6 +522,8 @@ export class Editor {
 	}
 
 	private handlePointerDown = (e: PointerEvent) => {
+		this.lastPointerType = e.pointerType
+		if (e.pointerType === 'touch') return this.handleTouchDown(e)
 		if (e.button === 2) return
 		const { point, modifiers } = this.pointerInfo(e)
 		const { inputs } = this
@@ -536,6 +549,7 @@ export class Editor {
 	}
 
 	private handlePointerMove = (e: PointerEvent) => {
+		if (e.pointerType === 'touch') return this.handleTouchMove(e)
 		const { point, modifiers } = this.pointerInfo(e)
 		const { inputs } = this
 		const now = performance.now()
@@ -564,6 +578,7 @@ export class Editor {
 	}
 
 	private handlePointerUp = (e: PointerEvent) => {
+		if (e.pointerType === 'touch') return this.handleTouchUp(e)
 		const { point, modifiers } = this.pointerInfo(e)
 		const { inputs } = this
 		this.updateModifiers(modifiers)
@@ -590,9 +605,135 @@ export class Editor {
 	}
 
 	private handleDoubleClick = (e: MouseEvent) => {
-		if (this.inputs.isSpaceDown) return
+		// Touch double-taps are recognised in handleTouchUp; ignore any dblclick the browser adds.
+		if (this.inputs.isSpaceDown || this.lastPointerType === 'touch') return
 		const { point, modifiers } = this.pointerInfo(e)
 		this.dispatch({ name: 'double_click', point, target: this.getTargetAt(this.screenToPage(point)), ...modifiers })
+	}
+
+	// ---------- touch ----------
+	// One finger: a tap is a click (two quick taps a double-click), a drag pans in every tool.
+	// Two fingers: pinch to zoom around their midpoint while panning with it. The state chart only
+	// ever sees taps, as a pointer_down/pointer_up pair, so mouse and pen behave exactly as before.
+
+	private handleTouchDown(e: PointerEvent) {
+		const { point, modifiers } = this.pointerInfo(e)
+		const { inputs } = this
+		try {
+			this.container!.setPointerCapture(e.pointerId)
+		} catch {}
+		this.touches.set(e.pointerId, point)
+		this.stopCameraMotion()
+		if (this.touches.size === 1) {
+			this.updateModifiers(modifiers)
+			this.touchMode = 'pending'
+			inputs.originScreenPoint = inputs.currentScreenPoint = inputs.previousScreenPoint = point
+			inputs.originPagePoint = inputs.currentPagePoint = this.screenToPage(point)
+			inputs.isPointing = true
+			inputs.isDragging = false
+			inputs.isPanning = false
+			inputs.velocity = { x: 0, y: 0 }
+			inputs.lastMoveTime = performance.now()
+			return
+		}
+		this.lastTap = null
+		this.startPinch()
+	}
+
+	private startPinch() {
+		const [a, b] = this.touches.values()
+		const center = midpoint(a, b)
+		this.touchMode = 'pinch'
+		this.pinch = { startDistance: Math.max(1, Vec.dist(a, b)), startZoom: this.camera.peek().z, pagePoint: this.screenToPage(center) }
+		this.inputs.isPanning = true
+		this.inputs.isDragging = true
+		this.setHovered(null)
+	}
+
+	private handleTouchMove(e: PointerEvent) {
+		if (!this.touches.has(e.pointerId)) return
+		const { point } = this.pointerInfo(e)
+		this.touches.set(e.pointerId, point)
+		const { inputs } = this
+
+		if (this.touchMode === 'pinch' && this.pinch) {
+			const [a, b] = this.touches.values()
+			const center = midpoint(a, b)
+			const { startDistance, startZoom, pagePoint } = this.pinch
+			const z = clamp((startZoom * Vec.dist(a, b)) / startDistance, MIN_ZOOM, MAX_ZOOM)
+			inputs.currentScreenPoint = center
+			// Keep the page point that started under the fingers' midpoint under it.
+			this.setCamera({ x: center.x / z - pagePoint.x, y: center.y / z - pagePoint.y, z })
+			return
+		}
+
+		const now = performance.now()
+		const dt = Math.max(1, now - inputs.lastMoveTime)
+		const delta = Vec.sub(point, inputs.currentScreenPoint)
+		inputs.velocity = { x: lerp(inputs.velocity.x, delta.x / dt, 0.5), y: lerp(inputs.velocity.y, delta.y / dt, 0.5) }
+		inputs.lastMoveTime = now
+		inputs.previousScreenPoint = inputs.currentScreenPoint
+		inputs.currentScreenPoint = point
+
+		if (this.touchMode === 'pending' && Vec.dist(point, inputs.originScreenPoint) > TOUCH_SLOP) {
+			this.touchMode = 'pan'
+			inputs.isPanning = true
+			inputs.isDragging = true
+			this.lastTap = null
+			// Catch up on the slop the finger moved before it counted as a pan.
+			this.panBy(point.x - inputs.originScreenPoint.x, point.y - inputs.originScreenPoint.y)
+			return
+		}
+		if (this.touchMode === 'pan') this.panBy(delta.x, delta.y)
+	}
+
+	private handleTouchUp(e: PointerEvent) {
+		if (!this.touches.has(e.pointerId)) return
+		const { modifiers } = this.pointerInfo(e)
+		const { inputs } = this
+		this.touches.delete(e.pointerId)
+		if (this.container!.hasPointerCapture(e.pointerId)) this.container!.releasePointerCapture(e.pointerId)
+		const mode = this.touchMode
+
+		if (this.touches.size > 0) {
+			if (mode !== 'pinch') return
+			if (this.touches.size >= 2) return this.startPinch()
+			// Lifting one finger of a pinch carries on as a one-finger pan.
+			const [rest] = this.touches.values()
+			this.touchMode = 'pan'
+			this.pinch = null
+			inputs.currentScreenPoint = inputs.previousScreenPoint = rest
+			inputs.velocity = { x: 0, y: 0 }
+			inputs.lastMoveTime = performance.now()
+			return
+		}
+
+		this.touchMode = null
+		this.pinch = null
+		inputs.isPointing = false
+		inputs.isDragging = false
+		inputs.isPanning = false
+		if (mode === 'pan') return this.flingCamera()
+		if (mode !== 'pending' || e.type === 'pointercancel') return
+
+		// A tap: the state chart gets a click at the point the finger went down.
+		const point = inputs.originScreenPoint
+		inputs.currentScreenPoint = point
+		inputs.currentPagePoint = inputs.originPagePoint = this.screenToPage(point)
+		const target = this.getTargetAt(inputs.currentPagePoint)
+		inputs.isPointing = true
+		this.dispatch({ name: 'pointer_down', point, button: 0, target, ...modifiers })
+		inputs.isPointing = false
+		this.dispatch({ name: 'pointer_up', point, button: 0, target, ...modifiers })
+
+		const now = performance.now()
+		const last = this.lastTap
+		if (last && now - last.time < DOUBLE_TAP_MS && Vec.dist(point, last.point) < DOUBLE_TAP_DISTANCE) {
+			this.lastTap = null
+			this.dispatch({ name: 'double_click', point, target, ...modifiers })
+		} else {
+			this.lastTap = { time: now, point }
+		}
 	}
 
 	private handleWheel = (e: WheelEvent) => {
@@ -673,6 +814,9 @@ export class Editor {
 
 	private handleBlur = () => {
 		this.inputs.isSpaceDown = false
+		this.touches.clear()
+		this.touchMode = null
+		this.pinch = null
 		this.updateModifiers({ shiftKey: false, altKey: false, ctrlKey: false, metaKey: false })
 		if (this.inputs.isPointing) {
 			this.inputs.isPointing = this.inputs.isDragging = this.inputs.isPanning = false
@@ -787,4 +931,8 @@ function arrayEquals(a: string[], b: string[]) {
 function isEditable(target: EventTarget | null) {
 	const el = target as HTMLElement | null
 	return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
+}
+
+function midpoint(a: Vec, b: Vec): Vec {
+	return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
 }

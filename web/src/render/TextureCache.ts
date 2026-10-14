@@ -14,7 +14,10 @@ export interface TextureEntry {
 const MAX_CONCURRENT_LOADS = 6
 const MAX_UPLOADS_PER_FRAME = 4
 const UPLOAD_BUDGET_MS = 6
-const MEMORY_BUDGET = 768 * 1024 * 1024
+/** Phones and tablets get far less GPU memory before the browser kills the page. */
+const IS_MOBILE = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
+const MEMORY_BUDGET = (IS_MOBILE ? 256 : 768) * 1024 * 1024
+const MAX_DIMENSION = IS_MOBILE ? 4096 : 8192
 const FORMAT: GPUTextureFormat = 'rgba8unorm'
 
 /**
@@ -38,7 +41,7 @@ export class TextureCache {
 		private device: GPUDevice,
 		private layout: GPUBindGroupLayout,
 	) {
-		this.maxDim = Math.min(device.limits.maxTextureDimension2D, 8192)
+		this.maxDim = Math.min(device.limits.maxTextureDimension2D, MAX_DIMENSION)
 		const module = device.createShaderModule({ code: mipShader })
 		this.mipPipeline = device.createRenderPipeline({
 			layout: 'auto',
@@ -105,10 +108,10 @@ export class TextureCache {
 			const res = await fetch(withBase(entry.url))
 			if (!res.ok) throw new Error(`${res.status}`)
 			const blob = await res.blob()
-			let bitmap = await createImageBitmap(blob, { premultiplyAlpha: 'premultiply', colorSpaceConversion: 'default' })
+			let bitmap = await decode(blob, { premultiplyAlpha: 'premultiply', colorSpaceConversion: 'default' })
 			if (bitmap.width > this.maxDim || bitmap.height > this.maxDim) {
 				const s = this.maxDim / Math.max(bitmap.width, bitmap.height)
-				const resized = await createImageBitmap(bitmap, {
+				const resized = await decode(bitmap, {
 					resizeWidth: Math.floor(bitmap.width * s),
 					resizeHeight: Math.floor(bitmap.height * s),
 					resizeQuality: 'high',
@@ -144,7 +147,15 @@ export class TextureCache {
 				mipLevelCount,
 				usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
 			})
-			this.device.queue.copyExternalImageToTexture({ source: bitmap }, { texture, premultipliedAlpha: true }, { width, height })
+			try {
+				this.device.queue.copyExternalImageToTexture({ source: bitmap }, { texture, premultipliedAlpha: true }, { width, height })
+			} catch (e) {
+				console.warn('texture upload failed', entry.url, e)
+				texture.destroy()
+				bitmap.close()
+				entry.state = 'error'
+				continue
+			}
 			bitmap.close()
 			this.generateMips(texture, mipLevelCount)
 			entry.texture = texture
@@ -209,4 +220,37 @@ export class TextureCache {
 		this.entries.clear()
 		this.decoded = []
 	}
+}
+
+/**
+ * createImageBitmap with options, retrying with fewer of them: older engines reject options (or
+ * option values) they don't support with a TypeError instead of ignoring them.
+ */
+async function decode(source: ImageBitmapSource, options: ImageBitmapOptions): Promise<ImageBitmap> {
+	try {
+		return await createImageBitmap(source, options)
+	} catch (e) {
+		if (!(e instanceof TypeError)) throw e
+	}
+	const { resizeWidth, resizeHeight } = options
+	if (resizeWidth && resizeHeight) {
+		try {
+			return await createImageBitmap(source, { resizeWidth, resizeHeight })
+		} catch (e) {
+			if (!(e instanceof TypeError)) throw e
+		}
+		return downscale(source as ImageBitmap, resizeWidth, resizeHeight)
+	}
+	return createImageBitmap(source)
+}
+
+/** Resizing through a 2D canvas, for engines whose createImageBitmap can't resize. */
+async function downscale(bitmap: ImageBitmap, w: number, h: number) {
+	const canvas = document.createElement('canvas')
+	canvas.width = w
+	canvas.height = h
+	const ctx = canvas.getContext('2d')!
+	ctx.imageSmoothingQuality = 'high'
+	ctx.drawImage(bitmap, 0, 0, w, h)
+	return createImageBitmap(canvas)
 }

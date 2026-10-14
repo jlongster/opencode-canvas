@@ -7,10 +7,15 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var samp: sampler;
 
-const QUAD = array<vec2f, 6>(
-  vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0),
-  vec2f(0.0, 1.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0),
-);
+// A function-scope var rather than a module-scope const array: dynamically indexing a const
+// array is not handled by every WGSL compiler (WebKit's in particular).
+fn quadCorner(vi: u32) -> vec2f {
+  var quad = array<vec2f, 6>(
+    vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0),
+    vec2f(0.0, 1.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0)
+  );
+  return quad[vi];
+}
 
 fn pageToScreen(p: vec2f) -> vec2f {
   return (p + g.camera.xy) * g.camera.z;
@@ -59,7 +64,7 @@ struct RectOut {
   let halfSize = size * 0.5;
   radius = min(radius, min(halfSize.x, halfSize.y));
   let margin = r.params.x + 1.0;
-  let corner = QUAD[vi];
+  let corner = quadCorner(vi);
   let local = (corner * 2.0 - 1.0) * (halfSize + vec2f(margin));
   var out: RectOut;
   out.pos = screenToClip(origin + halfSize + local);
@@ -97,7 +102,7 @@ struct ImageOut {
   let origin = pageToScreen(r.rect.xy);
   let size = r.rect.zw * g.camera.z;
   let halfSize = size * 0.5;
-  let corner = QUAD[vi];
+  let corner = quadCorner(vi);
   var out: ImageOut;
   out.pos = screenToClip(origin + corner * size);
   out.uv = corner;
@@ -143,7 +148,8 @@ export const mipShader = /* wgsl */ `
 struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 
 @vertex fn vs(@builtin(vertex_index) vi: u32) -> Out {
-  let p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0))[vi];
+  var tri = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+  let p = tri[vi];
   var o: Out;
   o.pos = vec4f(p, 0.0, 1.0);
   o.uv = vec2f(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);

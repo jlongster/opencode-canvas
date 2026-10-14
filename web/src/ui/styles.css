@@ -208,10 +208,35 @@ body,
 	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
 }
 
-.top-right {
+:root {
+	--safe-top: env(safe-area-inset-top, 0px);
+	--safe-right: env(safe-area-inset-right, 0px);
+	--safe-bottom: env(safe-area-inset-bottom, 0px);
+	--safe-left: env(safe-area-inset-left, 0px);
+}
+
+/* The title (left) and the presence + toolbar (right) share a row, so they can never overlap:
+   the title shrinks (ellipsis) to whatever room the right side leaves. */
+.top-bar {
 	position: absolute;
-	right: 12px;
-	top: 12px;
+	top: calc(12px + var(--safe-top));
+	left: calc(12px + var(--safe-left));
+	right: calc(12px + var(--safe-right));
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 8px;
+	pointer-events: none;
+}
+
+.top-bar > * {
+	pointer-events: auto;
+}
+
+.top-right {
+	position: relative;
+	flex: none;
+	margin-left: auto;
 	display: flex;
 	align-items: center;
 	gap: 10px;
@@ -656,6 +681,13 @@ body,
 	font: inherit;
 }
 
+/* No field-sizing (older Safari, Firefox): a fixed width instead of growing with the text. */
+@supports not (field-sizing: content) {
+	.cursor-chat input {
+		width: 200px;
+	}
+}
+
 .cursor-chat input::placeholder {
 	color: rgba(0, 0, 0, 0.45);
 }
@@ -808,7 +840,7 @@ body,
 .follow-tag {
 	position: absolute;
 	left: 50%;
-	bottom: 12px;
+	bottom: calc(12px + var(--safe-bottom));
 	transform: translateX(-50%);
 	display: flex;
 	align-items: center;
@@ -854,7 +886,7 @@ body,
 }
 
 .toolbar.tools {
-	top: 12px;
+	top: calc(12px + var(--safe-top));
 	left: 50%;
 	right: auto;
 	transform: translateX(-50%);
@@ -996,20 +1028,20 @@ body,
 }
 
 .status {
-	left: 12px;
-	bottom: 12px;
+	left: calc(12px + var(--safe-left));
+	bottom: calc(12px + var(--safe-bottom));
 	gap: 10px;
 	padding: 6px 12px;
 	color: #a1a1aa;
 	pointer-events: none;
-	max-width: calc(100% - 24px);
+	max-width: calc(100% - 24px - var(--safe-left) - var(--safe-right));
 }
 
 /* "Deleted 3 items · Undo", bottom centre */
 .toast {
 	position: absolute;
 	left: 50%;
-	bottom: 16px;
+	bottom: calc(16px + var(--safe-bottom));
 	transform: translateX(-50%);
 	display: flex;
 	align-items: center;
@@ -1122,8 +1154,8 @@ body,
 /* ---------- canvas title ---------- */
 
 .toolbar.title-bar {
-	left: 12px;
-	top: 12px;
+	position: relative;
+	min-width: 0;
 	max-width: calc(50% - 140px);
 }
 
@@ -1174,6 +1206,93 @@ body,
 @media (max-width: 720px) {
 	.title-bar .back span {
 		display: none;
+	}
+}
+
+/* ---------- phones (keep in sync with NARROW_QUERY in useMediaQuery.ts) ---------- */
+
+@media (min-width: 641px) {
+	.narrow-only {
+		display: none !important;
+	}
+}
+
+@media (max-width: 640px) {
+	.wide-only {
+		display: none !important;
+	}
+
+	/* Shrinks to fit beside the right side, but keeps the back link and a few letters of the title. */
+	.toolbar.title-bar {
+		max-width: none;
+		min-width: 88px;
+	}
+
+	.title-bar .sep {
+		flex: none;
+	}
+
+	/* The tool picker moves to the bottom centre, out of the crowded top row. */
+	.toolbar.tools {
+		top: auto;
+		bottom: calc(12px + var(--safe-bottom));
+	}
+
+	/* Just the connection dot, so it clears the tool picker. */
+	.status {
+		padding: 10px;
+	}
+
+	.status .counts,
+	.status .hovered {
+		display: none;
+	}
+
+	.toast,
+	.follow-tag {
+		bottom: calc(64px + var(--safe-bottom));
+	}
+
+	.view-only-badge {
+		padding: 0 10px;
+	}
+
+	.view-only-badge small {
+		display: none;
+	}
+
+	.share-popover.links {
+		width: calc(100vw - 24px - var(--safe-left) - var(--safe-right));
+		white-space: normal;
+	}
+
+	.share-row {
+		flex-wrap: wrap;
+	}
+
+	.share-row-label {
+		width: 100%;
+	}
+
+	.share-popover input {
+		flex: 1;
+		width: auto;
+		min-width: 0;
+	}
+
+	.agent-activity-line {
+		max-width: calc(100vw - 24px);
+	}
+
+	.empty,
+	.error {
+		width: calc(100% - 32px);
+		overflow-wrap: anywhere;
+	}
+
+	.empty pre {
+		white-space: pre-wrap;
+		word-break: break-all;
 	}
 }
 

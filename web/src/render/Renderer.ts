@@ -1,7 +1,7 @@
 import type { Item } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { Box } from '../editor/geometry'
-import { LAYOUT } from '../editor/layout'
+import { LAYOUT, type SectionLayout } from '../editor/layout'
 import { imageShader, rectShader, videoShader } from './shaders'
 import { TextureCache } from './TextureCache'
 import { VideoPool } from './VideoPool'
@@ -514,6 +514,12 @@ function downloadName(item: Item) {
 }
 
 /** Section titles as DOM text, positioned in screen space so they stay crisp and readable at any zoom. */
+/** Page-space font sizes (see .section-label / .group-heading in styles.css) */
+const FRAME_TITLE_PX = 40
+const GROUP_HEADING_PX = 22
+/** Session titles stay at least this big on screen */
+const MIN_TITLE_PX = 13
+
 class SectionLabels {
 	private els = new Map<string, HTMLDivElement>()
 	private host: HTMLDivElement
@@ -531,7 +537,7 @@ class SectionLabels {
 	private createLabel(id: string) {
 		const el = document.createElement('div')
 		el.className = 'section-label'
-		el.innerHTML = '<span class="title"></span><span class="count"></span>'
+		el.innerHTML = '<span class="title"></span>'
 		const onClose = this.onClose
 		if (!onClose) return el
 		const button = document.createElement('button')
@@ -563,12 +569,30 @@ class SectionLabels {
 		return el
 	}
 
-	update(sections: { id: string; title: string; itemIds: string[] }[], displayed: Map<string, Displayed>, editor: Editor) {
+	/**
+	 * Session titles sit inside the top of each frame and group headings above each group. Both are
+	 * page-space text that scales with zoom like the images. Session titles never shrink below a
+	 * readable size; when zoomed far out they grow upward out of the frame instead.
+	 */
+	update(sections: SectionLayout[], displayed: Map<string, Displayed>, editor: Editor) {
 		const seen = new Set<string>()
 		const z = editor.camera.peek().z
+		const place = (el: HTMLElement, box: Box, scale: number) => {
+			// Anchor at the bottom-left of the box, scaling up from there.
+			const b = editor.pageToScreen({ x: box.x, y: box.y + box.h })
+			el.style.width = `${(box.w * z) / scale}px`
+			el.style.height = `${box.h}px`
+			el.style.transform = `translate(${b.x}px, ${b.y - box.h}px) scale(${scale})`
+		}
+
 		for (const s of sections) {
 			const d = displayed.get(s.id)
 			if (!d) continue
+			// Follow the frame's eased position while the layout animates.
+			const dx = d.x - s.box.x
+			const dy = d.y - s.box.y
+			const shift = (b: Box): Box => ({ x: b.x + dx, y: b.y + dy, w: b.w, h: b.h })
+
 			seen.add(s.id)
 			let el = this.els.get(s.id)
 			if (!el) {
@@ -577,15 +601,27 @@ class SectionLabels {
 				this.els.set(s.id, el)
 			}
 			const title = el.children[0] as HTMLElement
-			const count = el.children[1] as HTMLElement
 			if (title.textContent !== s.title) title.textContent = s.title
-			const countText = `${s.itemIds.length}`
-			if (count.textContent !== countText) count.textContent = countText
-			const p = editor.pageToScreen(d)
-			const width = d.w * z
-			el.style.transform = `translate(${p.x}px, ${p.y - 26}px)`
-			el.style.width = `${width}px`
-			el.style.opacity = width < 80 ? '0' : String(d.opacity)
+			place(el, shift(s.header), Math.max(z, MIN_TITLE_PX / FRAME_TITLE_PX))
+			el.style.opacity = d.w * z < 60 ? '0' : String(d.opacity)
+
+			for (const g of s.groups) {
+				if (!g.heading) continue
+				const key = `g:${g.id}`
+				seen.add(key)
+				let h = this.els.get(key)
+				if (!h) {
+					h = document.createElement('div')
+					h.className = 'group-heading'
+					h.innerHTML = '<span class="name"></span>'
+					this.host.appendChild(h)
+					this.els.set(key, h)
+				}
+				const name = h.children[0] as HTMLElement
+				if (name.textContent !== g.name) name.textContent = g.name
+				place(h, shift(g.heading), z)
+				h.style.opacity = GROUP_HEADING_PX * z < 7 ? '0' : String(d.opacity)
+			}
 		}
 		for (const [id, el] of this.els) {
 			if (seen.has(id)) continue

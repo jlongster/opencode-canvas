@@ -16,11 +16,22 @@ export interface Item {
 	thumb: string
 	width: number
 	height: number
+	/**
+	 * Which group the item belongs to within its session. Groups are just names: items with the
+	 * same name are laid out together under that heading, groups in the order they first appeared.
+	 * Items without a group go in an untitled group at the top of the session.
+	 */
+	group?: string
 	/** Shown above the item on the canvas */
 	title?: string
 	/** Longer description, shown when hovering */
 	caption?: string
 	createdAt: number
+}
+
+/** A session as the API presents it to agents: its groups, in order, each with its items. */
+export interface SessionView extends Session {
+	groups: { name: string | null; items: Item[] }[]
 }
 
 export interface Snapshot {

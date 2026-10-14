@@ -337,10 +337,9 @@ export class Editor {
 	}
 
 	/**
-	 * Select the neighbouring item and bring it into view: left/right steps through the
-	 * section in order, up/down moves to the nearest item in the row above/below (crossing
-	 * into other sections). With nothing selected, starts from the item nearest the middle of
-	 * the screen.
+	 * Select the neighbouring item and bring it into view: left/right steps through the item's
+	 * group, up/down moves to the nearest item in the row above/below within the same session
+	 * frame. With nothing selected, starts from the item nearest the middle of the screen.
 	 */
 	selectAdjacent(direction: 'up' | 'down' | 'left' | 'right') {
 		const layout = this.layout.get()
@@ -350,17 +349,21 @@ export class Editor {
 		let next: string | undefined
 
 		if (sectionId && (direction === 'left' || direction === 'right')) {
-			const ids = layout.sections.find((s) => s.id === sectionId)!.itemIds
+			// Step through the group's items in order; stop at either end.
+			const groupId = layout.groupOf.get(anchor)
+			const ids = layout.groups.find((g) => g.id === groupId)?.itemIds ?? []
 			next = ids[ids.indexOf(anchor) + (direction === 'right' ? 1 : -1)]
 			if (!next) return
 		} else if (sectionId) {
-			// The nearest row above/below (possibly in another section), then the item in it
-			// closest horizontally.
+			// The nearest row above/below within the same session frame (crossing groups), then the
+			// item in it closest horizontally. Never jumps to another frame.
 			const from = layout.items.get(anchor)!
 			const cx = from.x + from.w / 2
 			let rowGap = Infinity
 			let best = Infinity
-			for (const [id, b] of layout.items) {
+			const ids = layout.sections.find((s) => s.id === sectionId)!.itemIds
+			for (const id of ids) {
+				const b = layout.items.get(id)!
 				const gap = direction === 'down' ? b.y - (from.y + from.h) : from.y - (b.y + b.h)
 				if (gap < 0) continue
 				const dx = Math.max(b.x - cx, 0, cx - (b.x + b.w))

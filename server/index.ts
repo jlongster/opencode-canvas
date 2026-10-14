@@ -1,7 +1,7 @@
 import { copyFile, link, mkdir, rename, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { extname, join, resolve } from 'node:path'
-import type { Item, MediaKind, OpenedShare, ServerEvent, Session, Share, Snapshot } from '../shared/types'
+import type { Item, MediaKind, OpenedShare, ServerEvent, Session, SessionView, Share, Snapshot } from '../shared/types'
 import { roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
 import { readdir } from 'node:fs/promises'
 import type { ServerWebSocket } from 'bun'
@@ -131,13 +131,73 @@ function extFromMime(mime: string) {
 }
 
 // Sessions are keyed by the real OpenCode session id, so one session can only ever be one column.
-const SESSION_ID = /^ses_[A-Za-z0-9]{8,}$/
+// Exactly the shape of a real OpenCode session id: "ses_" + 26 characters. Anything longer (like a
+// real id with a suffix) is rejected; use groups to organise items within a session instead.
+const SESSION_ID = /^ses_[A-Za-z0-9]{26}$/
 
 function assertSessionId(id: string | undefined): string {
 	if (!id || !SESSION_ID.test(id)) {
-		throw new HttpError(400, `session id must be the OpenCode session id ($OPENCODE_SESSION_ID, like "ses_…"), got ${JSON.stringify(id ?? null)}`)
+		throw new HttpError(
+			400,
+			`session id must be your exact OpenCode session id ($OPENCODE_SESSION_ID: "ses_" + 26 characters), got ${JSON.stringify(id ?? null)}. ` +
+				'Use "group" on items to organise them within one session.',
+		)
 	}
 	return id
+}
+
+const GROUP_MAX = 120
+
+/** A group name from the request: trimmed; "" or null means no group. */
+function groupField(value: unknown): string | null | undefined {
+	if (value === undefined) return undefined
+	if (value === null) return null
+	if (typeof value !== 'string') throw new HttpError(400, '"group" must be a string or null')
+	const name = value.trim()
+	if (name.length > GROUP_MAX) throw new HttpError(400, `"group" is longer than ${GROUP_MAX} characters`)
+	return name || null
+}
+
+/** A session with its items arranged into groups, in the order the canvas shows them. */
+function sessionView(session: Session): SessionView {
+	const items = [...db.items.values()]
+		.filter((i) => i.sessionId === session.id)
+		.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+	const groups = new Map<string | null, Item[]>()
+	for (const item of items) {
+		const key = item.group ?? null
+		if (!groups.has(key)) groups.set(key, [])
+		groups.get(key)!.push(item)
+	}
+	// The untitled group always comes first; named groups in order of their first item.
+	const ordered = [...groups.entries()].sort(([a], [b]) => (a === null ? -1 : b === null ? 1 : 0))
+	return { ...session, groups: ordered.map(([name, items]) => ({ name, items })) }
+}
+
+function getSession(id: string): Session {
+	const session = db.sessions.get(id)
+	if (!session) throw new HttpError(404, `no session ${id}`)
+	return session
+}
+
+function getItem(id: string): Item {
+	const item = db.items.get(id)
+	if (!item) throw new HttpError(404, `no item ${id}`)
+	return item
+}
+
+function updateItem(item: Item, changes: Partial<Pick<Item, 'group' | 'title' | 'caption'>>): Item {
+	const next: Item = { ...item }
+	for (const key of ['group', 'title', 'caption'] as const) {
+		if (!(key in changes)) continue
+		const value = changes[key]
+		if (value === undefined || value === null) delete next[key]
+		else next[key] = value
+	}
+	db.items.set(next.id, next)
+	save()
+	broadcast({ type: 'item', item: next })
+	return next
 }
 
 function textField(value: unknown): string | undefined {
@@ -152,7 +212,7 @@ function newId() {
 async function addItem(
 	sessionId: string,
 	data: Blob,
-	opts: { filename?: string; title?: string; caption?: string; id?: string },
+	opts: { filename?: string; group?: string | null; title?: string; caption?: string; id?: string },
 ): Promise<Item> {
 	const ext = (extname(opts.filename ?? '').toLowerCase() || extFromMime(data.type)).toLowerCase()
 	const kind = kindOf(ext, data.type)
@@ -176,6 +236,7 @@ async function addItem(
 			thumb: `/media/${thumbFile}`,
 			width,
 			height,
+			...(opts.group ? { group: opts.group } : {}),
 			title: opts.title,
 			caption: opts.caption,
 			createdAt: Date.now(),
@@ -291,6 +352,30 @@ async function createShare(body: { sessionIds?: string[]; view?: Share['view'] }
 
 // ---------- http ----------
 
+/** GET /api: a short, self-describing map of the API for agents. */
+const API_INDEX = {
+	about:
+		'Review canvas. Each OpenCode session is one frame on the canvas; inside it, items (images/videos) are ' +
+		'organised into named groups. Use your exact $OPENCODE_SESSION_ID as the session id.',
+	endpoints: {
+		'GET /api/sessions': 'All sessions, each with its groups and their items, in canvas order',
+		'GET /api/sessions/:sessionId': 'One session with its groups and items',
+		'PUT /api/sessions/:sessionId': 'Create or rename a session. Body: {"title"}',
+		'DELETE /api/sessions/:sessionId': 'Delete a session and all its items',
+		'POST /api/sessions/:sessionId/items':
+			'Add an image or video. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
+			'plus optional "group", "title", "caption". Creates the session if needed.',
+		'GET /api/items/:itemId': 'One item',
+		'PATCH /api/items/:itemId': 'Change an item\'s "group", "title" or "caption" (null clears)',
+		'DELETE /api/items/:itemId': 'Delete an item',
+		'PATCH /api/sessions/:sessionId/groups/:group': 'Rename a group. Body: {"name"} (null ungroups its items)',
+		'DELETE /api/sessions/:sessionId/groups/:group': 'Delete a group and all its items',
+	},
+	layout:
+		'Sessions sit side by side, newest on the right. In a session, the untitled group comes first, then named ' +
+		'groups in the order they were first posted to; each group\'s items flow left to right in rows, in posting order.',
+}
+
 class HttpError extends Error {
 	constructor(public status: number, message: string) {
 		super(message)
@@ -348,21 +433,56 @@ async function handle(req: Request): Promise<Response> {
 	// The exe.dev proxy adds this header for visitors who are logged in to exe.dev.
 	if (p === '/api/me' && method === 'GET') return json({ email: req.headers.get('x-exedev-email') || null })
 
-	if (p === '/api/sessions' && method === 'POST') {
-		const body = (await req.json().catch(() => ({}))) as { id?: string; title?: string }
-		return json(ensureSession(assertSessionId(body.id), body.title), 201)
+	if (p === '/api' && method === 'GET') return json(API_INDEX)
+
+	// ---- sessions ----
+
+	if (p === '/api/sessions' && method === 'GET') {
+		return json([...db.sessions.values()].sort((a, b) => a.createdAt - b.createdAt).map(sessionView))
 	}
 
 	let m = /^\/api\/sessions\/([^/]+)$/.exec(p)
-	if (m && method === 'DELETE') {
+	if (m) {
 		const id = decodeURIComponent(m[1])
-		if (!db.sessions.has(id)) throw new HttpError(404, 'session not found')
-		for (const item of [...db.items.values()]) if (item.sessionId === id) await deleteItem(item.id)
-		db.sessions.delete(id)
-		save()
-		broadcast({ type: 'session_deleted', id })
-		return json({ ok: true })
+		if (method === 'GET') return json(sessionView(getSession(id)))
+		if (method === 'PUT') {
+			const body = (await req.json().catch(() => ({}))) as { title?: unknown }
+			const existed = db.sessions.has(id)
+			const session = ensureSession(assertSessionId(id), textField(body.title))
+			return json(sessionView(session), existed ? 200 : 201)
+		}
+		if (method === 'DELETE') {
+			getSession(id)
+			for (const item of [...db.items.values()]) if (item.sessionId === id) await deleteItem(item.id)
+			db.sessions.delete(id)
+			save()
+			broadcast({ type: 'session_deleted', id })
+			return json({ ok: true })
+		}
 	}
+
+	// ---- groups (named sets of items within a session) ----
+
+	m = /^\/api\/sessions\/([^/]+)\/groups\/([^/]+)$/.exec(p)
+	if (m) {
+		const session = getSession(decodeURIComponent(m[1]))
+		const name = decodeURIComponent(m[2])
+		const items = [...db.items.values()].filter((i) => i.sessionId === session.id && i.group === name)
+		if (!items.length) throw new HttpError(404, `no group ${JSON.stringify(name)} in ${session.id}`)
+		if (method === 'PATCH') {
+			const body = (await req.json().catch(() => ({}))) as { name?: unknown }
+			const next = groupField(body.name)
+			if (next === undefined) throw new HttpError(400, 'send {"name": "<new name>"} (or null to ungroup)')
+			for (const item of items) updateItem(item, { group: next ?? undefined })
+			return json(sessionView(session))
+		}
+		if (method === 'DELETE') {
+			for (const item of items) await deleteItem(item.id)
+			return json({ ok: true, deleted: items.length })
+		}
+	}
+
+	// ---- items ----
 
 	m = /^\/api\/sessions\/([^/]+)\/items$/.exec(p)
 	if (m && method === 'POST') {
@@ -372,14 +492,18 @@ async function handle(req: Request): Promise<Response> {
 			const form = await req.formData()
 			const file = form.get('file')
 			if (!(file instanceof Blob)) throw new HttpError(400, 'missing "file" field')
-			const meta = { title: textField(form.get('title')), caption: textField(form.get('caption')) }
+			const meta = {
+				group: groupField(form.get('group') ?? undefined),
+				title: textField(form.get('title')),
+				caption: textField(form.get('caption')),
+			}
 			const filename = file instanceof File ? file.name : undefined
 			return json(await addItem(sessionId, file, { filename, ...meta }), 201)
 		}
 		const body = (await req.json().catch(() => null)) as
-			| { path?: string; url?: string; title?: string; caption?: string }
+			| { path?: string; url?: string; group?: unknown; title?: string; caption?: string }
 			| null
-		const meta = { title: textField(body?.title), caption: textField(body?.caption) }
+		const meta = { group: groupField(body?.group), title: textField(body?.title), caption: textField(body?.caption) }
 		if (body?.path) {
 			const f = Bun.file(body.path)
 			if (!(await f.exists())) throw new HttpError(404, `no file at ${body.path}`)
@@ -395,9 +519,22 @@ async function handle(req: Request): Promise<Response> {
 	}
 
 	m = /^\/api\/items\/([^/]+)$/.exec(p)
-	if (m && method === 'DELETE') {
-		if (!(await deleteItem(decodeURIComponent(m[1])))) throw new HttpError(404, 'item not found')
-		return json({ ok: true })
+	if (m) {
+		const item = getItem(decodeURIComponent(m[1]))
+		if (method === 'GET') return json(item)
+		if (method === 'PATCH') {
+			const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
+			const changes: Partial<Pick<Item, 'group' | 'title' | 'caption'>> = {}
+			if ('group' in body) changes.group = groupField(body.group) ?? undefined
+			if ('title' in body) changes.title = body.title === null ? undefined : textField(body.title)
+			if ('caption' in body) changes.caption = body.caption === null ? undefined : textField(body.caption)
+			if (!Object.keys(changes).length) throw new HttpError(400, 'send any of {"group", "title", "caption"} (null clears)')
+			return json(updateItem(item, changes))
+		}
+		if (method === 'DELETE') {
+			await deleteItem(item.id)
+			return json({ ok: true })
+		}
 	}
 
 	if (p === '/api/shares' && method === 'POST') {
@@ -458,7 +595,7 @@ async function handle(req: Request): Promise<Response> {
 		return serveFile(req, join(WEB_DIST, 'index.html'), 'no-cache')
 	}
 
-	throw new HttpError(404, 'not found')
+	throw new HttpError(404, p.startsWith('/api') ? `no route ${method} ${p}; GET /api lists the endpoints` : 'not found')
 }
 
 Bun.serve<SocketData, never>({

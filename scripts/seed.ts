@@ -10,12 +10,12 @@ const { join, basename } = await import('node:path')
 for (const dir of dirs.length ? dirs : ['/root/imagegen']) {
 	const files = (await readdir(dir)).filter((f) => MEDIA.test(f)).sort()
 	if (!files.length) continue
-	// The server only accepts OpenCode-style session ids.
-	const sessionId = `ses_seed${basename(dir).replace(/[^A-Za-z0-9]/g, '')}`.padEnd(12, '0')
-	await fetch(`${base}/api/sessions`, {
-		method: 'POST',
+	// The server only accepts OpenCode-shaped session ids: "ses_" + 26 characters.
+	const sessionId = `ses_seed${basename(dir).replace(/[^A-Za-z0-9]/g, '')}`.padEnd(30, '0').slice(0, 30)
+	await fetch(`${base}/api/sessions/${sessionId}`, {
+		method: 'PUT',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ id: sessionId, title: basename(dir) }),
+		body: JSON.stringify({ title: basename(dir) }),
 	})
 	for (const f of files) {
 		const res = await fetch(`${base}/api/sessions/${sessionId}/items`, {

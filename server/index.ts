@@ -1,45 +1,55 @@
-import { copyFile, link, mkdir, rename, rm } from 'node:fs/promises'
+import { mkdir, rename, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { extname, join, resolve } from 'node:path'
-import type { Item, MediaKind, OpenedShare, ServerEvent, Session, SessionView, Share, Snapshot } from '../shared/types'
-import { roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
-import { readdir } from 'node:fs/promises'
+import type { Canvas, CanvasData, CanvasSummary, Item, MediaKind, ServerEvent, Session, SessionView } from '../shared/types'
+import { discardRoom, roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
 import type { ServerWebSocket } from 'bun'
 
 const PORT = Number(process.env.PORT ?? 4410)
 const DATA_DIR = resolve(process.env.CANVAS_DATA ?? join(import.meta.dir, '../data'))
 const MEDIA_DIR = join(DATA_DIR, 'media')
 const INDEX_FILE = join(DATA_DIR, 'index.json')
-const SHARES_DIR = join(DATA_DIR, 'shares')
+const ROOMS_DIR = join(DATA_DIR, 'rooms')
 const WEB_DIST = resolve(import.meta.dir, '../web/dist')
 const THUMB_SIZE = 512
 const BASE_PATH = '/canvas'
-/** Where share links point: the public, port-less address that proxies to this server */
-const PUBLIC_URL = (process.env.CANVAS_PUBLIC_URL ?? 'https://jamesbox.exe.xyz/canvas').replace(/\/$/, '')
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.bmp'])
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.mkv'])
 
 await mkdir(MEDIA_DIR, { recursive: true })
-await mkdir(SHARES_DIR, { recursive: true })
-// Each share's room document (sticky notes etc.) is saved next to the share.
-const SHARE_ROOM = /^share-([A-Za-z0-9]{10})$/
+await mkdir(ROOMS_DIR, { recursive: true })
+// One room per canvas ("canvas-<id>"); its document (sticky notes etc.) is saved in data/rooms.
+const CANVAS_ROOM = /^canvas-([A-Za-z0-9]{10})$/
+const roomFile = (canvasId: string) => join(ROOMS_DIR, `${canvasId}.ydoc`)
 setRoomPersistence((room) => {
-	const m = SHARE_ROOM.exec(room)
-	return m ? join(SHARES_DIR, `${m[1]}.ydoc`) : null
+	const m = CANVAS_ROOM.exec(room)
+	return m ? roomFile(m[1]) : null
 })
 
 // ---------- persistence ----------
 
-const db: { sessions: Map<string, Session>; items: Map<string, Item> } = {
+/** data/index.json */
+interface StoredIndex {
+	canvases: Canvas[]
+	sessions: Session[]
+	items: Item[]
+}
+
+/** Sessions are keyed by canvas and session id: one OpenCode session can post to several canvases. */
+const sessionKey = (canvasId: string, sessionId: string) => `${canvasId}/${sessionId}`
+
+const db: { canvases: Map<string, Canvas>; sessions: Map<string, Session>; items: Map<string, Item> } = {
+	canvases: new Map(),
 	sessions: new Map(),
 	items: new Map(),
 }
 
 if (existsSync(INDEX_FILE)) {
-	const snap = (await Bun.file(INDEX_FILE).json()) as Snapshot
-	for (const s of snap.sessions) db.sessions.set(s.id, s)
-	for (const i of snap.items) db.items.set(i.id, i)
+	const stored = (await Bun.file(INDEX_FILE).json()) as StoredIndex
+	for (const c of stored.canvases) db.canvases.set(c.id, c)
+	for (const s of stored.sessions) db.sessions.set(sessionKey(s.canvasId, s.id), s)
+	for (const i of stored.items) db.items.set(i.id, i)
 }
 
 // Saves run one at a time; changes made during a save are picked up by one more pass.
@@ -56,7 +66,7 @@ async function flush() {
 		while (dirty) {
 			dirty = false
 			const tmp = INDEX_FILE + '.tmp'
-			await Bun.write(tmp, JSON.stringify(snapshot()))
+			await Bun.write(tmp, JSON.stringify(storedIndex()))
 			await rename(tmp, INDEX_FILE)
 		}
 	} catch (e) {
@@ -66,22 +76,42 @@ async function flush() {
 	}
 }
 
-function snapshot(): Snapshot {
-	return { sessions: [...db.sessions.values()], items: [...db.items.values()] }
+function storedIndex(): StoredIndex {
+	return { canvases: [...db.canvases.values()], sessions: [...db.sessions.values()], items: [...db.items.values()] }
 }
 
 // ---------- live events (WebSocket) ----------
 // Every change is pushed to open canvases over /api/live. (This used to be server-sent events,
 // but long-lived HTTP responses stall unpredictably behind exe.dev's proxy; WebSockets don't.)
 
-type LiveSocketData = { kind: 'live' }
+/** canvasId: only that canvas's events; null: every event (for the canvas list) */
+type LiveSocketData = { kind: 'live'; canvasId: string | null }
 type SocketData = LiveSocketData | ({ kind: 'room' } & RoomSocketData)
 
 const liveSockets = new Set<ServerWebSocket<SocketData>>()
 
 function broadcast(event: ServerEvent) {
 	const message = JSON.stringify(event)
-	for (const ws of liveSockets) ws.send(message)
+	const canvasId = eventCanvas(event)
+	for (const ws of liveSockets) {
+		const data = ws.data as LiveSocketData
+		if (data.canvasId === null || data.canvasId === canvasId) ws.send(message)
+	}
+}
+
+function eventCanvas(event: ServerEvent): string {
+	switch (event.type) {
+		case 'canvas':
+			return event.canvas.id
+		case 'canvas_deleted':
+			return event.id
+		case 'session':
+			return event.session.canvasId
+		case 'item':
+			return event.item.canvasId
+		default:
+			return event.canvasId
+	}
 }
 
 // ---------- media processing ----------
@@ -130,7 +160,7 @@ function extFromMime(mime: string) {
 	return sub === 'jpeg' ? '.jpg' : sub === 'quicktime' ? '.mov' : sub ? `.${sub}` : ''
 }
 
-// Sessions are keyed by the real OpenCode session id, so one session can only ever be one column.
+// Sessions are keyed by the real OpenCode session id, so one session is one column per canvas.
 // Exactly the shape of a real OpenCode session id: "ses_" + 26 characters. Anything longer (like a
 // real id with a suffix) is rejected; use groups to organise items within a session instead.
 const SESSION_ID = /^ses_[A-Za-z0-9]{26}$/
@@ -161,7 +191,7 @@ function groupField(value: unknown): string | null | undefined {
 /** A session with its items arranged into groups, in the order the canvas shows them. */
 function sessionView(session: Session): SessionView {
 	const items = [...db.items.values()]
-		.filter((i) => i.sessionId === session.id)
+		.filter((i) => i.canvasId === session.canvasId && i.sessionId === session.id)
 		.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
 	const groups = new Map<string | null, Item[]>()
 	for (const item of items) {
@@ -174,9 +204,38 @@ function sessionView(session: Session): SessionView {
 	return { ...session, groups: ordered.map(([name, items]) => ({ name, items })) }
 }
 
-function getSession(id: string): Session {
-	const session = db.sessions.get(id)
-	if (!session) throw new HttpError(404, `no session ${id}`)
+const CANVAS_ID = /^[A-Za-z0-9]{10}$/
+
+function getCanvas(id: string): Canvas {
+	const canvas = CANVAS_ID.test(id) ? db.canvases.get(id) : undefined
+	if (!canvas) throw new HttpError(404, `no canvas ${id}`)
+	return canvas
+}
+
+function canvasData(canvas: Canvas): CanvasData {
+	return {
+		canvas,
+		sessions: [...db.sessions.values()].filter((s) => s.canvasId === canvas.id),
+		items: [...db.items.values()].filter((i) => i.canvasId === canvas.id),
+	}
+}
+
+function canvasSummary(canvas: Canvas): CanvasSummary {
+	const { sessions, items } = canvasData(canvas)
+	const previews = items
+		.sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
+		.slice(0, 4)
+		.map((i) => i.thumb)
+	return { ...canvas, sessionCount: sessions.length, itemCount: items.length, previews }
+}
+
+function canvasSessions(canvasId: string): Session[] {
+	return [...db.sessions.values()].filter((s) => s.canvasId === canvasId)
+}
+
+function getSession(canvasId: string, id: string): Session {
+	const session = db.sessions.get(sessionKey(canvasId, id))
+	if (!session) throw new HttpError(404, `no session ${id} in canvas ${canvasId}`)
 	return session
 }
 
@@ -210,6 +269,7 @@ function newId() {
 }
 
 async function addItem(
+	canvasId: string,
 	sessionId: string,
 	data: Blob,
 	opts: { filename?: string; group?: string | null; title?: string; caption?: string; id?: string },
@@ -227,9 +287,12 @@ async function addItem(
 	try {
 		const { width, height } = await probe(path)
 		await makeThumb(path, join(MEDIA_DIR, thumbFile))
-		ensureSession(sessionId)
+		// The canvas may have been deleted while the media was processed.
+		getCanvas(canvasId)
+		ensureSession(canvasId, sessionId)
 		const item: Item = {
 			id,
+			canvasId,
 			sessionId,
 			kind,
 			src: `/media/${file}`,
@@ -251,13 +314,14 @@ async function addItem(
 	}
 }
 
-function ensureSession(id: string, title?: string): Session {
-	const existing = db.sessions.get(id)
+function ensureSession(canvasId: string, id: string, title?: string): Session {
+	const key = sessionKey(canvasId, id)
+	const existing = db.sessions.get(key)
 	if (existing && (title === undefined || existing.title === title)) return existing
 	const session: Session = existing
 		? { ...existing, title: title! }
-		: { id, title: title ?? id, createdAt: Date.now() }
-	db.sessions.set(id, session)
+		: { id, canvasId, title: title ?? id, createdAt: Date.now() }
+	db.sessions.set(key, session)
 	save()
 	broadcast({ type: 'session', session })
 	return session
@@ -270,17 +334,20 @@ async function deleteItem(id: string) {
 	await rm(join(MEDIA_DIR, item.src.replace('/media/', '')), { force: true })
 	await rm(join(MEDIA_DIR, item.thumb.replace('/media/', '')), { force: true })
 	save()
-	broadcast({ type: 'item_deleted', id })
+	broadcast({ type: 'item_deleted', canvasId: item.canvasId, id })
 	return true
 }
 
-// ---------- shares ----------
+async function deleteSession(session: Session) {
+	for (const item of [...db.items.values()]) {
+		if (item.canvasId === session.canvasId && item.sessionId === session.id) await deleteItem(item.id)
+	}
+	db.sessions.delete(sessionKey(session.canvasId, session.id))
+	save()
+	broadcast({ type: 'session_deleted', canvasId: session.canvasId, id: session.id })
+}
 
-const SHARE_ID = /^[A-Za-z0-9]{10}$/
-const EDIT_KEY = /^[A-Za-z0-9]{20}$/
-
-/** A share as stored on disk. The edit key is secret: it's never sent with the view-only share. */
-type StoredShare = Share & { editKey: string }
+// ---------- canvases ----------
 
 function randomId(length: number) {
 	const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
@@ -288,66 +355,35 @@ function randomId(length: number) {
 	return [...bytes].map((b) => alphabet[b % alphabet.length]).join('')
 }
 
-const shares = new Map<string, StoredShare>()
-const shareByEditKey = new Map<string, string>()
+const TITLE_MAX = 200
 
-async function writeShare(share: StoredShare) {
-	shares.set(share.id, share)
-	shareByEditKey.set(share.editKey, share.id)
-	await Bun.write(join(SHARES_DIR, `${share.id}.json`), JSON.stringify(share))
+function canvasTitle(value: unknown): string | undefined {
+	if (value === undefined) return undefined
+	if (typeof value !== 'string') throw new HttpError(400, '"title" must be a string')
+	const title = value.trim()
+	if (title.length > TITLE_MAX) throw new HttpError(400, `"title" is longer than ${TITLE_MAX} characters`)
+	return title || undefined
 }
 
-// Load every share, giving older ones (made before edit links existed) an edit key.
-for (const file of await readdir(SHARES_DIR)) {
-	const id = file.endsWith('.json') ? file.slice(0, -5) : null
-	if (!id || !SHARE_ID.test(id)) continue
-	const share = (await Bun.file(join(SHARES_DIR, file)).json()) as Partial<StoredShare> & Share
-	if (share.editKey) {
-		shares.set(id, share as StoredShare)
-		shareByEditKey.set(share.editKey, id)
-	} else {
-		await writeShare({ ...share, editKey: randomId(20) })
-	}
+function createCanvas(title?: string): Canvas {
+	let id = randomId(10)
+	while (db.canvases.has(id)) id = randomId(10)
+	const canvas: Canvas = { id, title: title ?? 'Untitled canvas', createdAt: Date.now(), viewKey: randomId(16) }
+	db.canvases.set(id, canvas)
+	save()
+	broadcast({ type: 'canvas', canvas })
+	return canvas
 }
 
-function openShare(share: StoredShare, role: OpenedShare['role']): OpenedShare {
-	const { editKey, ...rest } = share
-	return role === 'edit' ? { ...rest, role, editKey } : { ...rest, role }
-}
-
-function shareLinks(share: StoredShare) {
-	return { id: share.id, viewUrl: `${PUBLIC_URL}/s/${share.id}`, editUrl: `${PUBLIC_URL}/e/${share.editKey}` }
-}
-
-/**
- * Freezes the given sessions (default: all) into a share. Media files are hard-linked into the
- * share's own folder, so the share keeps working after the originals are deleted, without
- * using extra disk space.
- */
-async function createShare(body: { sessionIds?: string[]; view?: Share['view'] }): Promise<StoredShare> {
-	const wanted = body.sessionIds ? new Set(body.sessionIds) : null
-	const sessions = [...db.sessions.values()].filter((s) => !wanted || wanted.has(s.id))
-	if (!sessions.length) throw new HttpError(400, 'nothing to share')
-	const sessionIds = new Set(sessions.map((s) => s.id))
-
-	const id = randomId(10)
-	const dir = join(SHARES_DIR, id)
-	await mkdir(dir, { recursive: true })
-	const keep = async (url: string) => {
-		const file = url.replace('/media/', '')
-		const dest = join(dir, file)
-		await link(join(MEDIA_DIR, file), dest).catch(() => copyFile(join(MEDIA_DIR, file), dest))
-		return `/shares/${id}/${file}`
-	}
-
-	const items: Item[] = []
-	for (const item of db.items.values()) {
-		if (!sessionIds.has(item.sessionId)) continue
-		items.push({ ...item, src: await keep(item.src), thumb: await keep(item.thumb) })
-	}
-	const share: StoredShare = { id, createdAt: Date.now(), view: body.view, sessions, items, editKey: randomId(20) }
-	await writeShare(share)
-	return share
+async function deleteCanvas(canvas: Canvas) {
+	db.canvases.delete(canvas.id)
+	for (const session of canvasSessions(canvas.id)) await deleteSession(session)
+	// items whose session record is missing, just in case
+	for (const item of [...db.items.values()]) if (item.canvasId === canvas.id) await deleteItem(item.id)
+	await discardRoom(`canvas-${canvas.id}`)
+	await rm(roomFile(canvas.id), { force: true })
+	save()
+	broadcast({ type: 'canvas_deleted', id: canvas.id })
 }
 
 // ---------- http ----------
@@ -355,21 +391,28 @@ async function createShare(body: { sessionIds?: string[]; view?: Share['view'] }
 /** GET /api: a short, self-describing map of the API for agents. */
 const API_INDEX = {
 	about:
-		'Review canvas. Each OpenCode session is one frame on the canvas; inside it, items (images/videos) are ' +
-		'organised into named groups. Use your exact $OPENCODE_SESSION_ID as the session id.',
+		'Review canvases. There are several canvases, each with its own id (:cid). On a canvas, each OpenCode ' +
+		'session is one frame; inside it, items (images/videos) are organised into named groups. Use your exact ' +
+		'$OPENCODE_SESSION_ID as the session id; the same session can post to several canvases.',
 	endpoints: {
-		'GET /api/sessions': 'All sessions, each with its groups and their items, in canvas order',
-		'GET /api/sessions/:sessionId': 'One session with its groups and items',
-		'PUT /api/sessions/:sessionId': 'Create or rename a session. Body: {"title"}',
-		'DELETE /api/sessions/:sessionId': 'Delete a session and all its items',
-		'POST /api/sessions/:sessionId/items':
+		'GET /api/canvases': 'All canvases, newest first, with session/item counts and preview thumbnails',
+		'POST /api/canvases': 'Create a canvas. Body: {"title"} (optional). Returns it, with its id and viewKey',
+		'GET /api/canvases/:cid': 'One canvas with all its sessions and items',
+		'PATCH /api/canvases/:cid': 'Rename a canvas. Body: {"title"}',
+		'DELETE /api/canvases/:cid': 'Delete a canvas with all its sessions, items and notes',
+		'GET /api/view/:viewKey': 'A canvas by its view-only key (same body as GET /api/canvases/:cid)',
+		'GET /api/canvases/:cid/sessions': 'The canvas\'s sessions, each with its groups and their items, in canvas order',
+		'GET /api/canvases/:cid/sessions/:sessionId': 'One session with its groups and items',
+		'PUT /api/canvases/:cid/sessions/:sessionId': 'Create or rename a session. Body: {"title"}',
+		'DELETE /api/canvases/:cid/sessions/:sessionId': 'Delete a session and all its items',
+		'POST /api/canvases/:cid/sessions/:sessionId/items':
 			'Add an image or video. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
 			'plus optional "group", "title", "caption". Creates the session if needed.',
 		'GET /api/items/:itemId': 'One item',
 		'PATCH /api/items/:itemId': 'Change an item\'s "group", "title" or "caption" (null clears)',
 		'DELETE /api/items/:itemId': 'Delete an item',
-		'PATCH /api/sessions/:sessionId/groups/:group': 'Rename a group. Body: {"name"} (null ungroups its items)',
-		'DELETE /api/sessions/:sessionId/groups/:group': 'Delete a group and all its items',
+		'PATCH /api/canvases/:cid/sessions/:sessionId/groups/:group': 'Rename a group. Body: {"name"} (null ungroups its items)',
+		'DELETE /api/canvases/:cid/sessions/:sessionId/groups/:group': 'Delete a group and all its items',
 	},
 	layout:
 		'Sessions sit side by side, newest on the right. In a session, the untitled group comes first, then named ' +
@@ -429,45 +472,84 @@ async function handle(req: Request): Promise<Response> {
 	const p = stripBase(url.pathname)
 	const method = req.method
 
-	if (p === '/api/state' && method === 'GET') return json(snapshot())
 	// The exe.dev proxy adds this header for visitors who are logged in to exe.dev.
 	if (p === '/api/me' && method === 'GET') return json({ email: req.headers.get('x-exedev-email') || null })
 
 	if (p === '/api' && method === 'GET') return json(API_INDEX)
 
-	// ---- sessions ----
+	// ---- canvases ----
 
-	if (p === '/api/sessions' && method === 'GET') {
-		return json([...db.sessions.values()].sort((a, b) => a.createdAt - b.createdAt).map(sessionView))
+	if (p === '/api/canvases' && method === 'GET') {
+		return json([...db.canvases.values()].sort((a, b) => b.createdAt - a.createdAt).map(canvasSummary))
+	}
+	if (p === '/api/canvases' && method === 'POST') {
+		const body = (await req.json().catch(() => ({}))) as { title?: unknown }
+		return json(createCanvas(canvasTitle(body?.title)), 201)
 	}
 
-	let m = /^\/api\/sessions\/([^/]+)$/.exec(p)
+	let m = /^\/api\/canvases\/([^/]+)$/.exec(p)
 	if (m) {
-		const id = decodeURIComponent(m[1])
-		if (method === 'GET') return json(sessionView(getSession(id)))
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		if (method === 'GET') return json(canvasData(canvas))
+		if (method === 'PATCH') {
+			const body = (await req.json().catch(() => ({}))) as { title?: unknown }
+			const title = canvasTitle(body?.title)
+			if (!title) throw new HttpError(400, 'send {"title": "<new title>"}')
+			const next: Canvas = { ...canvas, title }
+			db.canvases.set(next.id, next)
+			save()
+			broadcast({ type: 'canvas', canvas: next })
+			return json(next)
+		}
+		if (method === 'DELETE') {
+			await deleteCanvas(canvas)
+			return json({ ok: true })
+		}
+	}
+
+	m = /^\/api\/view\/([^/]+)$/.exec(p)
+	if (m && method === 'GET') {
+		const key = decodeURIComponent(m[1])
+		const canvas = [...db.canvases.values()].find((c) => c.viewKey === key)
+		if (!canvas) throw new HttpError(404, 'canvas not found')
+		return json(canvasData(canvas))
+	}
+
+	// ---- sessions ----
+
+	m = /^\/api\/canvases\/([^/]+)\/sessions$/.exec(p)
+	if (m && method === 'GET') {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		return json(canvasSessions(canvas.id).sort((a, b) => a.createdAt - b.createdAt).map(sessionView))
+	}
+
+	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)$/.exec(p)
+	if (m) {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		const id = decodeURIComponent(m[2])
+		if (method === 'GET') return json(sessionView(getSession(canvas.id, id)))
 		if (method === 'PUT') {
 			const body = (await req.json().catch(() => ({}))) as { title?: unknown }
-			const existed = db.sessions.has(id)
-			const session = ensureSession(assertSessionId(id), textField(body.title))
+			const existed = db.sessions.has(sessionKey(canvas.id, id))
+			const session = ensureSession(canvas.id, assertSessionId(id), textField(body?.title))
 			return json(sessionView(session), existed ? 200 : 201)
 		}
 		if (method === 'DELETE') {
-			getSession(id)
-			for (const item of [...db.items.values()]) if (item.sessionId === id) await deleteItem(item.id)
-			db.sessions.delete(id)
-			save()
-			broadcast({ type: 'session_deleted', id })
+			await deleteSession(getSession(canvas.id, id))
 			return json({ ok: true })
 		}
 	}
 
 	// ---- groups (named sets of items within a session) ----
 
-	m = /^\/api\/sessions\/([^/]+)\/groups\/([^/]+)$/.exec(p)
+	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/groups\/([^/]+)$/.exec(p)
 	if (m) {
-		const session = getSession(decodeURIComponent(m[1]))
-		const name = decodeURIComponent(m[2])
-		const items = [...db.items.values()].filter((i) => i.sessionId === session.id && i.group === name)
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		const session = getSession(canvas.id, decodeURIComponent(m[2]))
+		const name = decodeURIComponent(m[3])
+		const items = [...db.items.values()].filter(
+			(i) => i.canvasId === canvas.id && i.sessionId === session.id && i.group === name,
+		)
 		if (!items.length) throw new HttpError(404, `no group ${JSON.stringify(name)} in ${session.id}`)
 		if (method === 'PATCH') {
 			const body = (await req.json().catch(() => ({}))) as { name?: unknown }
@@ -484,9 +566,10 @@ async function handle(req: Request): Promise<Response> {
 
 	// ---- items ----
 
-	m = /^\/api\/sessions\/([^/]+)\/items$/.exec(p)
+	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/items$/.exec(p)
 	if (m && method === 'POST') {
-		const sessionId = assertSessionId(decodeURIComponent(m[1]))
+		const canvasId = getCanvas(decodeURIComponent(m[1])).id
+		const sessionId = assertSessionId(decodeURIComponent(m[2]))
 		const type = req.headers.get('content-type') ?? ''
 		if (type.includes('multipart/form-data')) {
 			const form = await req.formData()
@@ -498,7 +581,7 @@ async function handle(req: Request): Promise<Response> {
 				caption: textField(form.get('caption')),
 			}
 			const filename = file instanceof File ? file.name : undefined
-			return json(await addItem(sessionId, file, { filename, ...meta }), 201)
+			return json(await addItem(canvasId, sessionId, file, { filename, ...meta }), 201)
 		}
 		const body = (await req.json().catch(() => null)) as
 			| { path?: string; url?: string; group?: unknown; title?: string; caption?: string }
@@ -507,13 +590,13 @@ async function handle(req: Request): Promise<Response> {
 		if (body?.path) {
 			const f = Bun.file(body.path)
 			if (!(await f.exists())) throw new HttpError(404, `no file at ${body.path}`)
-			return json(await addItem(sessionId, f, { filename: body.path, ...meta }), 201)
+			return json(await addItem(canvasId, sessionId, f, { filename: body.path, ...meta }), 201)
 		}
 		if (body?.url) {
 			const res = await fetch(body.url)
 			if (!res.ok) throw new HttpError(502, `fetch ${body.url} failed: ${res.status}`)
 			const blob = await res.blob()
-			return json(await addItem(sessionId, blob, { filename: new URL(body.url).pathname, ...meta }), 201)
+			return json(await addItem(canvasId, sessionId, blob, { filename: new URL(body.url).pathname, ...meta }), 201)
 		}
 		throw new HttpError(400, 'send multipart "file", or JSON {"path"} or {"url"}')
 	}
@@ -535,49 +618,6 @@ async function handle(req: Request): Promise<Response> {
 			await deleteItem(item.id)
 			return json({ ok: true })
 		}
-	}
-
-	if (p === '/api/shares' && method === 'POST') {
-		const body = (await req.json().catch(() => ({}))) as { sessionIds?: string[]; view?: Share['view'] }
-		const share = await createShare(body)
-		return json(shareLinks(share), 201)
-	}
-
-	// Edit links: /e/<editKey> in the browser, /api/edit/<editKey> for the data.
-	m = /^\/api\/edit\/([^/]+)$/.exec(p)
-	if (m && method === 'GET') {
-		const share = EDIT_KEY.test(m[1]) ? shares.get(shareByEditKey.get(m[1]) ?? '') : undefined
-		if (!share) throw new HttpError(404, 'share not found')
-		return json(openShare(share, 'edit'))
-	}
-
-	m = /^\/api\/shares\/([^/]+)\/links$/.exec(p)
-	if (m && method === 'GET') {
-		const share = shares.get(m[1])
-		if (!share) throw new HttpError(404, 'share not found')
-		return json(shareLinks(share))
-	}
-
-	m = /^\/api\/shares\/([^/]+)$/.exec(p)
-	if (m && SHARE_ID.test(m[1])) {
-		const share = shares.get(m[1])
-		if (!share) throw new HttpError(404, 'share not found')
-		if (method === 'GET') return json(openShare(share, 'view'))
-		if (method === 'DELETE') {
-			shares.delete(share.id)
-			shareByEditKey.delete(share.editKey)
-			await rm(join(SHARES_DIR, `${m[1]}.json`), { force: true })
-			await rm(join(SHARES_DIR, `${m[1]}.ydoc`), { force: true })
-			await rm(join(SHARES_DIR, m[1]), { recursive: true, force: true })
-			return json({ ok: true })
-		}
-	}
-
-	m = /^\/shares\/([A-Za-z0-9]{10})\/([\w.-]+)$/.exec(p)
-	if (m && method === 'GET') {
-		const path = join(SHARES_DIR, m[1], m[2])
-		if (!existsSync(path)) throw new HttpError(404, 'not found')
-		return serveFile(req, path, 'public, max-age=31536000, immutable')
 	}
 
 	m = /^\/media\/([\w.-]+)$/.exec(p)
@@ -620,17 +660,18 @@ Bun.serve<SocketData, never>({
 	async fetch(req, server) {
 		const reqUrl = new URL(req.url)
 		if (stripBase(reqUrl.pathname) === '/api/live') {
-			if (server.upgrade(req, { data: { kind: 'live' } })) return
+			const canvasId = reqUrl.searchParams.get('canvas')
+			if (canvasId !== null && !db.canvases.has(canvasId)) return json({ error: `no canvas ${canvasId}` }, 404)
+			if (server.upgrade(req, { data: { kind: 'live', canvasId } })) return
 			return json({ error: 'expected a websocket upgrade' }, 426)
 		}
 		const room = /^\/api\/rooms\/([^/]+)$/.exec(stripBase(reqUrl.pathname))?.[1]
 		if (room !== undefined) {
-			// One room per share: "share-<id>". Without the edit key the connection is read-only:
-			// view links get live notes and presence, but can't change anything.
-			const m = SHARE_ROOM.exec(room)
-			const share = shares.get(m?.[1] ?? '')
-			if (!share) return json({ error: 'no such room' }, 404)
-			const readOnly = reqUrl.searchParams.get('key') !== share.editKey
+			// One room per canvas: "canvas-<id>". View links join with ?view=1 and are read-only:
+			// they get live notes and presence, but can't change anything.
+			const canvasId = CANVAS_ROOM.exec(room)?.[1]
+			if (!canvasId || !db.canvases.has(canvasId)) return json({ error: 'no such room' }, 404)
+			const readOnly = reqUrl.searchParams.get('view') === '1'
 			if (server.upgrade(req, { data: { kind: 'room', room, readOnly } })) return
 			return json({ error: 'expected a websocket upgrade' }, 426)
 		}

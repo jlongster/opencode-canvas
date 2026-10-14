@@ -1,13 +1,41 @@
 export type MediaKind = 'image' | 'video'
 
+/** One canvas: a board of sessions, with an edit link (/c/:id) and a view-only link (/v/:viewKey). */
+export interface Canvas {
+	/** 10 characters [A-Za-z0-9] */
+	id: string
+	title: string
+	createdAt: number
+	/** secret for the view-only link; 16 characters [A-Za-z0-9] */
+	viewKey: string
+}
+
+/** A canvas as the list page shows it. */
+export interface CanvasSummary extends Canvas {
+	sessionCount: number
+	itemCount: number
+	/** up to 4 thumbnail URLs, newest first */
+	previews: string[]
+}
+
+/** What GET /api/canvases/:id and GET /api/view/:viewKey return. */
+export interface CanvasData {
+	canvas: Canvas
+	sessions: Session[]
+	items: Item[]
+}
+
+/** Sessions belong to a canvas; the same OpenCode session id may appear in several canvases. */
 export interface Session {
 	id: string
+	canvasId: string
 	title: string
 	createdAt: number
 }
 
 export interface Item {
 	id: string
+	canvasId: string
 	sessionId: string
 	kind: MediaKind
 	/** URL of the original file */
@@ -34,33 +62,10 @@ export interface SessionView extends Session {
 	groups: { name: string | null; items: Item[] }[]
 }
 
-export interface Snapshot {
-	sessions: Session[]
-	items: Item[]
-}
-
-/** A frozen, read-only copy of the canvas that can be opened at /s/:id */
-export interface Share {
-	id: string
-	createdAt: number
-	/** The part of the canvas that was on screen when it was shared (page coordinates) */
-	view?: { x: number; y: number; w: number; h: number }
-	sessions: Session[]
-	/** Items whose src/thumb point at the share's own copies of the media */
-	items: Item[]
-}
-
-export type ShareRole = 'edit' | 'view'
-
-/** What the browser gets when it opens a share link: the share plus what this link may do. */
-export interface OpenedShare extends Share {
-	role: ShareRole
-	/** only present on edit links; needed to join the room with edit rights */
-	editKey?: string
-}
-
 export type ServerEvent =
+	| { type: 'canvas'; canvas: Canvas }
+	| { type: 'canvas_deleted'; id: string }
 	| { type: 'session'; session: Session }
-	| { type: 'session_deleted'; id: string }
+	| { type: 'session_deleted'; canvasId: string; id: string }
 	| { type: 'item'; item: Item }
-	| { type: 'item_deleted'; id: string }
+	| { type: 'item_deleted'; canvasId: string; id: string }

@@ -9,5 +9,5 @@ export function url(path: string) {
 	return path.startsWith('/') ? BASE + path : path
 }
 
-/** The path within the app, without the base (e.g. "/s/abc123"). */
+/** The path within the app, without the base (e.g. "/c/abc123"). */
 export const APP_PATH = location.pathname.slice(BASE.length) || '/'

@@ -52,7 +52,7 @@ export class Presence {
 	readonly chatOpen = atom<boolean>('chatOpen', false)
 	private chatTimer = 0
 
-	/** The share's document: notes (and later drawings). Read-only on view links. */
+	/** The canvas's document: notes (and later drawings). Read-only on view links. */
 	readonly doc = new Y.Doc()
 	private provider: WebsocketProvider
 	private disposers: (() => void)[] = []
@@ -62,11 +62,11 @@ export class Presence {
 	constructor(
 		private editor: Editor,
 		room: string,
-		/** edit links pass their key so the server grants edit rights in the room */
-		editKey?: string,
+		/** view links join read-only */
+		viewOnly = false,
 	) {
 		const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${BASE}/api/rooms`
-		const params: Record<string, string> = editKey ? { key: editKey } : {}
+		const params: Record<string, string> = viewOnly ? { view: '1' } : {}
 		this.provider = new WebsocketProvider(url, room, this.doc, { disableBc: true, params })
 		const awareness = this.provider.awareness
 

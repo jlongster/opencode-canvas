@@ -185,6 +185,24 @@ export const roomSockets = {
 	},
 }
 
+/**
+ * Throws a room away without saving it (its canvas was deleted): disconnects everyone, cancels
+ * pending saves, and waits for any final save already under way so the caller can then delete
+ * the file.
+ */
+export async function discardRoom(name: string) {
+	clearTimeout(saveTimers.get(name))
+	saveTimers.delete(name)
+	const room = rooms.get(name) ?? (await loading.get(name)?.catch(() => undefined))
+	if (room && rooms.get(name) === room) {
+		rooms.delete(name)
+		for (const ws of room.conns.keys()) ws.close(4404, 'room deleted')
+		room.awareness.destroy()
+		room.doc.destroy()
+	}
+	await flushing.get(name)
+}
+
 function handleMessage(room: Room, ws: Socket, bytes: Uint8Array) {
 	try {
 		const decoder = decoding.createDecoder(bytes)

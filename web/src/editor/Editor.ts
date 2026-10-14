@@ -91,7 +91,7 @@ export class Editor {
 	})
 
 	readonly inputs = new Inputs()
-	/** Set when sticky notes are available (shared pages); the note tool calls it to drop a note. */
+	/** Set when sticky notes are available (edit role); the note tool calls it to drop a note. */
 	createNote: ((point: Vec) => void) | null = null
 	readonly root: Root
 

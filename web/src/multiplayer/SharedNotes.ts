@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import type { ShareRole } from '../../../shared/types'
+import type { Role } from '../sync/client'
 import type { Editor } from '../editor/Editor'
 import type { Vec } from '../editor/geometry'
 import { react } from '../state/signals'
@@ -15,7 +15,7 @@ const MAX_TILT = 2.5
 const LOCAL_EDIT = Symbol('local-note-edit')
 
 /**
- * Sticky notes stored in the room's Y.Doc, so everyone on a shared page sees them live and editors
+ * Sticky notes stored in the room's Y.Doc, so everyone on a canvas sees them live and editors
  * can type into them together. Each note is a Y.Map { x, y, color, rotation, author, createdAt,
  * text: Y.Text }. View links see notes read-only and can't create them.
  */
@@ -30,7 +30,7 @@ export class SharedNotes {
 		private parent: HTMLElement,
 		private editor: Editor,
 		private presence: Presence,
-		private role: ShareRole,
+		private role: Role,
 	) {
 		this.doc = presence.doc
 		this.notes = presence.doc.getMap('notes')

@@ -15,9 +15,9 @@ export default defineConfig({
 		allowedHosts: ['jamesbox.exe.xyz', '.exe.xyz'],
 		proxy: {
 			'/canvas/api/rooms': { target: api, ws: true },
+			'/canvas/api/live': { target: api, ws: true },
 			'/canvas/api': api,
 			'/canvas/media': api,
-			'/canvas/shares': api,
 		},
 	},
 	build: { outDir: 'dist', emptyOutDir: true },

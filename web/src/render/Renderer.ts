@@ -25,7 +25,7 @@ const PLACEHOLDER: RGBA = [1, 1, 1, 0.06]
 const NONE: RGBA = [0, 0, 0, 0]
 
 export interface RendererOptions {
-	/** Hide editing controls, e.g. when viewing a share */
+	/** Hide editing controls (view-only links) */
 	readOnly?: boolean
 	/** Other people's selections, outlined in their colour (multiplayer). */
 	getRemoteSelections?: () => { ids: string[]; color: string }[]

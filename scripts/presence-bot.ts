@@ -1,18 +1,18 @@
-// A fake visitor for testing multiplayer: joins a share's room, circles its cursor around the
+// A fake visitor for testing multiplayer: joins a canvas's room, circles its cursor around the
 // first item, selects it, and broadcasts a view.
-// Usage: bun scripts/presence-bot.ts <shareId> [seconds] [name]
+// Usage: bun scripts/presence-bot.ts <canvasId> [seconds] [name]
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
 
-const [shareId, seconds = '60', name = 'Test Bot'] = process.argv.slice(2)
-if (!shareId) throw new Error('usage: bun scripts/presence-bot.ts <shareId> [seconds] [name]')
+const [canvasId, seconds = '60', name = 'Test Bot'] = process.argv.slice(2)
+if (!canvasId) throw new Error('usage: bun scripts/presence-bot.ts <canvasId> [seconds] [name]')
 const base = process.env.CANVAS_URL ?? 'http://localhost:4410'
 
-const share = await (await fetch(`${base}/api/shares/${shareId}`)).json()
-const first = share.items[0]
+const data = await (await fetch(`${base}/api/canvases/${canvasId}`)).json()
+const first = data.items[0]
 
 const doc = new Y.Doc()
-const provider = new WebsocketProvider(base.replace(/^http/, 'ws') + '/api/rooms', `share-${shareId}`, doc, {
+const provider = new WebsocketProvider(base.replace(/^http/, 'ws') + '/api/rooms', `canvas-${canvasId}`, doc, {
 	disableBc: true,
 	WebSocketPolyfill: WebSocket as any,
 })

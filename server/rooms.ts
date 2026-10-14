@@ -203,6 +203,36 @@ export async function discardRoom(name: string) {
 	await flushing.get(name)
 }
 
+/**
+ * A loaded room's document and presence states, or null when nobody has the room open. For
+ * reading only: changes to the doc would sync to everyone.
+ */
+export function getRoomSnapshot(name: string): { doc: Y.Doc; states: Map<number, Record<string, unknown>> } | null {
+	const room = rooms.get(name)
+	return room ? { doc: room.doc, states: room.awareness.getStates() as Map<number, Record<string, unknown>> } : null
+}
+
+/**
+ * Reads a room's document: the live one if the room is loaded, otherwise a throwaway copy of the
+ * saved file (never kept in memory or written back).
+ */
+export async function readRoomDoc<T>(name: string, read: (doc: Y.Doc) => T): Promise<T> {
+	const room = rooms.get(name) ?? (await loading.get(name)?.catch(() => undefined))
+	if (room && rooms.get(name) === room) return read(room.doc)
+	await flushing.get(name)
+	const doc = new Y.Doc()
+	try {
+		const path = persistPath(name)
+		if (path) {
+			const file = Bun.file(path)
+			if (await file.exists()) Y.applyUpdate(doc, new Uint8Array(await file.arrayBuffer()))
+		}
+		return read(doc)
+	} finally {
+		doc.destroy()
+	}
+}
+
 function handleMessage(room: Room, ws: Socket, bytes: Uint8Array) {
 	try {
 		const decoder = decoding.createDecoder(bytes)

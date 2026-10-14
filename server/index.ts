@@ -1,8 +1,11 @@
 import { mkdir, rename, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { extname, join, resolve } from 'node:path'
-import type { Canvas, CanvasData, CanvasSummary, Item, MediaKind, ServerEvent, Session, SessionView } from '../shared/types'
-import { discardRoom, roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
+import { basename, extname, join, resolve } from 'node:path'
+import * as Y from 'yjs'
+import type {
+	Canvas, CanvasData, CanvasSummary, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, ServerEvent, Session, SessionView,
+} from '../shared/types'
+import { discardRoom, getRoomSnapshot, readRoomDoc, roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
 import type { ServerWebSocket } from 'bun'
 
 const PORT = Number(process.env.PORT ?? 4410)
@@ -13,6 +16,8 @@ const ROOMS_DIR = join(DATA_DIR, 'rooms')
 const WEB_DIST = resolve(import.meta.dir, '../web/dist')
 const THUMB_SIZE = 512
 const BASE_PATH = '/canvas'
+/** Where selection results point their absolute media URLs. */
+const MEDIA_ORIGIN = `http://localhost:${PORT}`
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.bmp'])
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.mkv'])
@@ -71,8 +76,16 @@ if (existsSync(INDEX_FILE)) {
 	const stored = (await Bun.file(INDEX_FILE).json()) as StoredIndex
 	for (const c of stored.canvases) db.canvases.set(c.id, c)
 	for (const s of stored.sessions) db.sessions.set(sessionKey(s.canvasId, s.id), s)
-	for (const i of stored.items) db.items.set(i.id, i)
-	for (const t of stored.trash ?? []) trash.set(trashKey(t), t)
+	for (const i of stored.items) db.items.set(i.id, withName(i))
+	for (const t of stored.trash ?? []) trash.set(trashKey(t), t.kind === 'item' ? { ...t, item: withName(t.item) } : t)
+}
+
+/** Items saved before they had names get one: their title (or id) plus the file's extension. */
+function withName(item: Item): Item {
+	if (item.name) return item
+	const ext = extname(item.src)
+	const base = item.title?.replaceAll('/', '-') || item.id
+	return { ...item, name: base.toLowerCase().endsWith(ext.toLowerCase()) ? base : base + ext }
 }
 
 // Saves run one at a time; changes made during a save are picked up by one more pass.
@@ -276,7 +289,7 @@ function getItem(id: string): Item {
 	return item
 }
 
-function updateItem(item: Item, changes: Partial<Pick<Item, 'group' | 'title' | 'caption'>>): Item {
+function updateItem(item: Item, changes: Partial<Pick<Item, 'group' | 'title' | 'caption' | 'name'>>): Item {
 	const next: Item = { ...item }
 	for (const key of ['group', 'title', 'caption'] as const) {
 		if (!(key in changes)) continue
@@ -284,6 +297,7 @@ function updateItem(item: Item, changes: Partial<Pick<Item, 'group' | 'title' | 
 		if (value === undefined || value === null) delete next[key]
 		else next[key] = value
 	}
+	if (changes.name) next.name = changes.name
 	db.items.set(next.id, next)
 	save()
 	broadcast({ type: 'item', item: next })
@@ -295,12 +309,25 @@ function textField(value: unknown): string | undefined {
 	return text || undefined
 }
 
+const NAME_MAX = 200
+
+/** An item's "name" (file name) from the request; undefined when not given. */
+function nameField(value: unknown): string | undefined {
+	if (value === undefined || value === null) return undefined
+	if (typeof value !== 'string') throw new HttpError(400, '"name" must be a string')
+	const name = basename(value.trim())
+	if (name.length > NAME_MAX) throw new HttpError(400, `"name" is longer than ${NAME_MAX} characters`)
+	return name || undefined
+}
+
 function newId() {
 	return crypto.randomUUID().replaceAll('-', '').slice(0, 16)
 }
 
 interface ItemOptions {
+	/** original file name or path: gives the extension, and the item's name unless `name` is set */
 	filename?: string
+	name?: string
 	group?: string | null
 	title?: string
 	caption?: string
@@ -314,9 +341,10 @@ async function addItem(canvasId: string, sessionId: string, data: Blob, opts: It
 	const ext = (extname(opts.filename ?? '').toLowerCase() || extFromMime(data.type)).toLowerCase()
 	const kind = kindOf(ext, data.type)
 	if (!kind) throw new HttpError(415, `unsupported media type (${ext || data.type || 'unknown'})`)
+	const name = opts.name ?? (opts.filename ? basename(opts.filename) || undefined : undefined)
 	if (kind === 'html') {
 		if (data.size > HTML_MAX_BYTES) throw new HttpError(413, `HTML is larger than ${HTML_MAX_BYTES / 1024 / 1024} MB`)
-		return addHtmlItem(canvasId, sessionId, await data.text(), opts)
+		return addHtmlItem(canvasId, sessionId, await data.text(), { ...opts, name })
 	}
 
 	const id = opts.id ?? newId()
@@ -336,6 +364,7 @@ async function addItem(canvasId: string, sessionId: string, data: Blob, opts: It
 			canvasId,
 			sessionId,
 			kind,
+			name: name ?? file,
 			src: `/media/${file}`,
 			thumb: `/media/${thumbFile}`,
 			width,
@@ -369,6 +398,7 @@ async function addHtmlItem(canvasId: string, sessionId: string, html: string, op
 		canvasId,
 		sessionId,
 		kind: 'html',
+		name: opts.name ?? `${opts.title?.replaceAll('/', '-') ?? id}.html`,
 		src: `/media/${file}`,
 		thumb: `/media/${file}`,
 		width: opts.width ?? HTML_DEFAULT_SIZE.width,
@@ -558,6 +588,74 @@ async function deleteCanvas(canvas: Canvas) {
 	broadcast({ type: 'canvas_deleted', id: canvas.id })
 }
 
+// ---------- room state (presence, notes) ----------
+
+/** Who's on a canvas right now: the awareness states of its room. Empty when nobody has it open. */
+function presence(canvasId: string): PresenceEntry[] {
+	const snapshot = getRoomSnapshot(`canvas-${canvasId}`)
+	if (!snapshot) return []
+	const entries: PresenceEntry[] = []
+	for (const [clientId, state] of snapshot.states) {
+		const user = state?.user as Partial<PresenceEntry['user']> | undefined
+		if (!user || typeof user !== 'object') continue
+		entries.push({
+			clientId,
+			user: { name: String(user.name ?? ''), color: String(user.color ?? '') },
+			selection: Array.isArray(state.selection) ? state.selection.filter((s): s is string => typeof s === 'string') : [],
+			cursor: (state.cursor as PresenceEntry['cursor']) ?? null,
+			view: (state.view as PresenceEntry['view']) ?? null,
+			chat: typeof state.chat === 'string' ? state.chat : null,
+		})
+	}
+	return entries.sort((a, b) => a.clientId - b.clientId)
+}
+
+/** Sticky notes in a room document (map "notes": id -> Y.Map {x, y, color, author, createdAt, text: Y.Text}). */
+function readNotes(doc: Y.Doc): Note[] {
+	const notes: Note[] = []
+	for (const [id, note] of doc.getMap<Y.Map<unknown>>('notes')) {
+		if (!(note instanceof Y.Map)) continue
+		const text = note.get('text')
+		notes.push({
+			id,
+			text: text instanceof Y.Text ? text.toString() : typeof text === 'string' ? text : '',
+			author: String(note.get('author') ?? ''),
+			color: String(note.get('color') ?? ''),
+			x: Number(note.get('x') ?? 0),
+			y: Number(note.get('y') ?? 0),
+			createdAt: Number(note.get('createdAt') ?? 0),
+		})
+	}
+	return notes.sort((a, b) => a.createdAt - b.createdAt)
+}
+
+/** Everyone's selection on a canvas, resolved into items, session frames and notes. */
+async function resolveSelections(canvasId: string): Promise<ResolvedSelection[]> {
+	const people = presence(canvasId)
+	if (!people.length) return []
+	const notes = new Map((await readRoomDoc(`canvas-${canvasId}`, readNotes)).map((n) => [n.id, n]))
+	return people.map(({ clientId, user, selection }) => {
+		const resolved: ResolvedSelection = { clientId, user, selection, items: [], sessions: [], notes: [], missing: [] }
+		for (const key of selection) {
+			if (key.startsWith('frame:')) {
+				const session = db.sessions.get(sessionKey(canvasId, key.slice(6)))
+				if (session) resolved.sessions.push({ ...session, itemCount: sessionItems(canvasId, session.id).length })
+				else resolved.missing.push(key)
+			} else if (key.startsWith('note:')) {
+				const note = notes.get(key.slice(5))
+				if (note) resolved.notes.push(note)
+				else resolved.missing.push(key)
+			} else {
+				const item = db.items.get(key)
+				if (item?.canvasId === canvasId) {
+					resolved.items.push({ ...item, url: MEDIA_ORIGIN + item.src, thumbUrl: MEDIA_ORIGIN + item.thumb })
+				} else resolved.missing.push(key)
+			}
+		}
+		return resolved
+	})
+}
+
 // ---------- http ----------
 
 /** GET /api: a short, self-describing map of the API for agents. */
@@ -579,10 +677,10 @@ const API_INDEX = {
 		'DELETE /api/canvases/:cid/sessions/:sessionId': 'Delete a session and all its items (restorable for an hour, see restore)',
 		'POST /api/canvases/:cid/sessions/:sessionId/items':
 			'Add an image, video or HTML page. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
-			'or JSON {"html": "<html source>"} for an HTML item. Plus optional "group", "title", "caption". ' +
+			'or JSON {"html": "<html source>"} for an HTML item. Plus optional "group", "title", "caption", "name". ' +
 			'Creates the session if needed.',
 		'GET /api/items/:itemId': 'One item',
-		'PATCH /api/items/:itemId': 'Change an item\'s "group", "title" or "caption" (null clears)',
+		'PATCH /api/items/:itemId': 'Change an item\'s "group", "title", "caption" (null clears) or "name"',
 		'DELETE /api/items/:itemId':
 			'Delete an item (restorable for an hour). Deleting a session\'s last item deletes the session too ' +
 			'(the response says {"sessionDeleted": true})',
@@ -592,7 +690,20 @@ const API_INDEX = {
 			'deleted too. Returns {"sessions", "items"}: what was restored',
 		'PATCH /api/canvases/:cid/sessions/:sessionId/groups/:group': 'Rename a group. Body: {"name"} (null ungroups its items)',
 		'DELETE /api/canvases/:cid/sessions/:sessionId/groups/:group': 'Delete a group and all its items (restorable for an hour)',
+		'GET /api/canvases/:cid/presence':
+			'Who has the canvas open right now: [{"clientId", "user": {"name", "color"}, "selection", "cursor", "view", "chat"}]. ' +
+			'selection holds item ids as they are, "frame:<sessionId>" for session frames and "note:<noteId>" for sticky notes; ' +
+			'cursor and view are in page coordinates. [] when nobody is there',
+		'GET /api/canvases/:cid/notes': 'The canvas\'s sticky notes: [{"id", "text", "author", "color", "x", "y", "createdAt"}]',
+		'GET /api/canvases/:cid/selection':
+			'What each person on the canvas has selected, resolved: {"users": [{"user", "selection", "items" (full items ' +
+			'with absolute "url"/"thumbUrl"), "sessions" (with "itemCount"), "notes", "missing"}]}. Use this to answer ' +
+			'"what have I selected?"',
 	},
+	items:
+		'Every item has a "name": its file name. On upload it is the original file name (the path\'s basename, the ' +
+		'URL\'s last path segment or the multipart file name); inline {"html"} items get "<title or id>.html". Send ' +
+		'"name" to choose it yourself.',
 	html:
 		'HTML items are for diagrams, charts, SVG drawings and annotated explanations. Send {"html", "width", ' +
 		'"height"} (or a .html/.htm file by path, url or multipart, with "width"/"height" as fields). width/height ' +
@@ -738,6 +849,16 @@ async function handle(req: Request): Promise<Response> {
 		return json(restore(canvas.id, sessionIds, itemIds))
 	}
 
+	// ---- live room state: presence, notes, selections ----
+
+	m = /^\/api\/canvases\/([^/]+)\/(presence|notes|selection)$/.exec(p)
+	if (m && method === 'GET') {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		if (m[2] === 'presence') return json(presence(canvas.id))
+		if (m[2] === 'notes') return json(await readRoomDoc(`canvas-${canvas.id}`, readNotes))
+		return json({ canvasId: canvas.id, users: await resolveSelections(canvas.id) })
+	}
+
 	// ---- groups (named sets of items within a session) ----
 
 	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/groups\/([^/]+)$/.exec(p)
@@ -778,6 +899,7 @@ async function handle(req: Request): Promise<Response> {
 				group: groupField(form.get('group') ?? undefined),
 				title: textField(form.get('title')),
 				caption: textField(form.get('caption')),
+				name: nameField(form.get('name') ?? undefined),
 				width: sizeField(form.get('width') ?? undefined, 'width'),
 				height: sizeField(form.get('height') ?? undefined, 'height'),
 			}
@@ -785,12 +907,23 @@ async function handle(req: Request): Promise<Response> {
 			return json(await addItem(canvasId, sessionId, file, { filename, ...meta }), 201)
 		}
 		const body = (await req.json().catch(() => null)) as
-			| { path?: string; url?: string; html?: unknown; width?: unknown; height?: unknown; group?: unknown; title?: string; caption?: string }
+			| {
+					path?: string
+					url?: string
+					html?: unknown
+					width?: unknown
+					height?: unknown
+					group?: unknown
+					title?: string
+					caption?: string
+					name?: unknown
+			  }
 			| null
 		const meta = {
 			group: groupField(body?.group),
 			title: textField(body?.title),
 			caption: textField(body?.caption),
+			name: nameField(body?.name),
 			width: sizeField(body?.width, 'width'),
 			height: sizeField(body?.height, 'height'),
 		}
@@ -807,7 +940,12 @@ async function handle(req: Request): Promise<Response> {
 			const res = await fetch(body.url)
 			if (!res.ok) throw new HttpError(502, `fetch ${body.url} failed: ${res.status}`)
 			const blob = await res.blob()
-			return json(await addItem(canvasId, sessionId, blob, { filename: new URL(body.url).pathname, ...meta }), 201)
+			const pathname = new URL(body.url).pathname
+			let filename = pathname
+			try {
+				filename = decodeURIComponent(pathname)
+			} catch {}
+			return json(await addItem(canvasId, sessionId, blob, { filename, ...meta }), 201)
 		}
 		throw new HttpError(400, 'send multipart "file", or JSON {"path"}, {"url"} or {"html"}')
 	}
@@ -818,11 +956,15 @@ async function handle(req: Request): Promise<Response> {
 		if (method === 'GET') return json(item)
 		if (method === 'PATCH') {
 			const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
-			const changes: Partial<Pick<Item, 'group' | 'title' | 'caption'>> = {}
+			const changes: Partial<Pick<Item, 'group' | 'title' | 'caption' | 'name'>> = {}
 			if ('group' in body) changes.group = groupField(body.group) ?? undefined
 			if ('title' in body) changes.title = body.title === null ? undefined : textField(body.title)
 			if ('caption' in body) changes.caption = body.caption === null ? undefined : textField(body.caption)
-			if (!Object.keys(changes).length) throw new HttpError(400, 'send any of {"group", "title", "caption"} (null clears)')
+			if ('name' in body) {
+				changes.name = nameField(body.name)
+				if (!changes.name) throw new HttpError(400, '"name" can\'t be empty')
+			}
+			if (!Object.keys(changes).length) throw new HttpError(400, 'send any of {"group", "title", "caption", "name"} (null clears, except name)')
 			return json(updateItem(item, changes))
 		}
 		if (method === 'DELETE') {

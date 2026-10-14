@@ -38,6 +38,11 @@ export interface Item {
 	canvasId: string
 	sessionId: string
 	kind: MediaKind
+	/**
+	 * File name: the uploaded file's original name (or the URL's last path segment); inline HTML
+	 * gets "<title or id>.html". Can be set explicitly when posting or with PATCH.
+	 */
+	name: string
 	/** URL of the original file */
 	src: string
 	/** URL of a small preview (for video, the poster frame; for html, the page itself: there is no image) */
@@ -61,6 +66,44 @@ export interface Item {
 /** A session as the API presents it to agents: its groups, in order, each with its items. */
 export interface SessionView extends Session {
 	groups: { name: string | null; items: Item[] }[]
+}
+
+/** A sticky note from a canvas's room document, as GET /api/canvases/:cid/notes returns it. */
+export interface Note {
+	id: string
+	text: string
+	author: string
+	color: string
+	x: number
+	y: number
+	createdAt: number
+}
+
+/** Someone on a canvas right now, from the room's Yjs awareness (GET /api/canvases/:cid/presence). */
+export interface PresenceEntry {
+	clientId: number
+	user: { name: string; color: string }
+	/** item ids as they are, "frame:<sessionId>" for session frames, "note:<noteId>" for sticky notes */
+	selection: string[]
+	/** page coordinates, or null when their pointer is off the canvas */
+	cursor: { x: number; y: number } | null
+	/** the part of the page they're looking at */
+	view: { x: number; y: number; w: number; h: number } | null
+	chat: string | null
+}
+
+/** One person's selection, resolved into objects (GET /api/canvases/:cid/selection). */
+export interface ResolvedSelection {
+	clientId: number
+	user: { name: string; color: string }
+	selection: string[]
+	/** selected items, each with absolute URLs to its media */
+	items: (Item & { url: string; thumbUrl: string })[]
+	/** selected session frames */
+	sessions: (Session & { itemCount: number })[]
+	notes: Note[]
+	/** selection ids that no longer exist */
+	missing: string[]
 }
 
 export type ServerEvent =

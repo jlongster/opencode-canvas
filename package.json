@@ -9,15 +9,18 @@
     "build": "vite build --config web/vite.config.ts",
     "start": "bun server/index.ts",
     "seed": "bun scripts/seed.ts",
-    "typecheck": "tsc --noEmit -p ."
+    "typecheck": "tsc --noEmit -p .",
+    "mcp": "bun mcp/server.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "lib0": "^0.2.119",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "y-protocols": "^1.0.7",
     "y-websocket": "^3.1.0",
-    "yjs": "^13.6.33"
+    "yjs": "^13.6.33",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/bun": "latest",

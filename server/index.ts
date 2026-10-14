@@ -5,6 +5,7 @@ import * as Y from 'yjs'
 import type {
 	Canvas, CanvasData, CanvasSummary, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, ServerEvent, Session, SessionView,
 } from '../shared/types'
+import { createCanvasMcp } from './mcp'
 import { discardRoom, getRoomSnapshot, readRoomDoc, roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
 import type { ServerWebSocket } from 'bun'
 
@@ -18,6 +19,8 @@ const THUMB_SIZE = 512
 const BASE_PATH = '/canvas'
 /** Where selection results point their absolute media URLs. */
 const MEDIA_ORIGIN = `http://localhost:${PORT}`
+/** Where people open canvases in a browser, for links in MCP tool results. */
+const WEB_BASE = (process.env.CANVAS_WEB ?? 'https://jamesbox.exe.xyz/canvas').replace(/\/+$/, '')
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.bmp'])
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.mkv'])
@@ -304,6 +307,20 @@ function updateItem(item: Item, changes: Partial<Pick<Item, 'group' | 'title' | 
 	return next
 }
 
+/** The changes of PATCH /api/items/:itemId (also used by the MCP update_item tool). */
+function itemChanges(body: Record<string, unknown>): Partial<Pick<Item, 'group' | 'title' | 'caption' | 'name'>> {
+	const changes: Partial<Pick<Item, 'group' | 'title' | 'caption' | 'name'>> = {}
+	if ('group' in body) changes.group = groupField(body.group) ?? undefined
+	if ('title' in body) changes.title = body.title === null ? undefined : textField(body.title)
+	if ('caption' in body) changes.caption = body.caption === null ? undefined : textField(body.caption)
+	if ('name' in body) {
+		changes.name = nameField(body.name)
+		if (!changes.name) throw new HttpError(400, '"name" can\'t be empty')
+	}
+	if (!Object.keys(changes).length) throw new HttpError(400, 'send any of {"group", "title", "caption", "name"} (null clears, except name)')
+	return changes
+}
+
 function textField(value: unknown): string | undefined {
 	const text = typeof value === 'string' ? value.trim() : undefined
 	return text || undefined
@@ -382,6 +399,51 @@ async function addItem(canvasId: string, sessionId: string, data: Blob, opts: It
 		await rm(path, { force: true })
 		throw e instanceof HttpError ? e : new HttpError(422, (e as Error).message)
 	}
+}
+
+/** The JSON body of POST /api/canvases/:cid/sessions/:sessionId/items (also used by the MCP post_item tool). */
+interface ItemJson {
+	path?: string
+	url?: string
+	html?: unknown
+	width?: unknown
+	height?: unknown
+	group?: unknown
+	title?: string
+	caption?: string
+	name?: unknown
+}
+
+async function addItemFromJson(canvasId: string, sessionId: string, body: ItemJson | null): Promise<Item> {
+	const meta = {
+		group: groupField(body?.group),
+		title: textField(body?.title),
+		caption: textField(body?.caption),
+		name: nameField(body?.name),
+		width: sizeField(body?.width, 'width'),
+		height: sizeField(body?.height, 'height'),
+	}
+	if (body?.html !== undefined) {
+		if (typeof body.html !== 'string') throw new HttpError(400, '"html" must be a string')
+		return addHtmlItem(canvasId, sessionId, body.html, meta)
+	}
+	if (body?.path) {
+		const f = Bun.file(body.path)
+		if (!(await f.exists())) throw new HttpError(404, `no file at ${body.path}`)
+		return addItem(canvasId, sessionId, f, { filename: body.path, ...meta })
+	}
+	if (body?.url) {
+		const res = await fetch(body.url)
+		if (!res.ok) throw new HttpError(502, `fetch ${body.url} failed: ${res.status}`)
+		const blob = await res.blob()
+		const pathname = new URL(body.url).pathname
+		let filename = pathname
+		try {
+			filename = decodeURIComponent(pathname)
+		} catch {}
+		return addItem(canvasId, sessionId, blob, { filename, ...meta })
+	}
+	throw new HttpError(400, 'send multipart "file", or JSON {"path"}, {"url"} or {"html"}')
 }
 
 /** An HTML page, shown on the canvas in a sandboxed iframe at the size it was designed for. No thumbnail. */
@@ -664,6 +726,13 @@ const API_INDEX = {
 		'Review canvases. There are several canvases, each with its own id (:cid). On a canvas, each OpenCode ' +
 		'session is one frame; inside it, items (images, videos or HTML pages) are organised into named groups. Use your exact ' +
 		'$OPENCODE_SESSION_ID as the session id; the same session can post to several canvases.',
+	mcp:
+		'This server is also an MCP server (Streamable HTTP) at /mcp (or /canvas/mcp), with tools for everything ' +
+		'below: list_canvases, get_canvas, create_canvas, get_selection, get_presence, join_canvas, leave_canvas, ' +
+		'list_notes, find_items, get_item, post_item, update_item, delete_item, restore. OpenCode config: ' +
+		`{"mcp": {"canvas": {"type": "remote", "url": "http://localhost:${PORT}/mcp"}}}. Pass your $OPENCODE_SESSION_ID ` +
+		'as "sessionId" (required by post_item; elsewhere it names you on the canvas), or send it in an ' +
+		'x-opencode-session-id header. Agents using a canvas appear in its presence with "agent": true.',
 	endpoints: {
 		'GET /api/canvases': 'All canvases, newest first, with session/item counts and preview thumbnails',
 		'POST /api/canvases': 'Create a canvas. Body: {"title"} (optional). Returns it, with its id and viewKey',
@@ -906,48 +975,7 @@ async function handle(req: Request): Promise<Response> {
 			const filename = file instanceof File ? file.name : undefined
 			return json(await addItem(canvasId, sessionId, file, { filename, ...meta }), 201)
 		}
-		const body = (await req.json().catch(() => null)) as
-			| {
-					path?: string
-					url?: string
-					html?: unknown
-					width?: unknown
-					height?: unknown
-					group?: unknown
-					title?: string
-					caption?: string
-					name?: unknown
-			  }
-			| null
-		const meta = {
-			group: groupField(body?.group),
-			title: textField(body?.title),
-			caption: textField(body?.caption),
-			name: nameField(body?.name),
-			width: sizeField(body?.width, 'width'),
-			height: sizeField(body?.height, 'height'),
-		}
-		if (body?.html !== undefined) {
-			if (typeof body.html !== 'string') throw new HttpError(400, '"html" must be a string')
-			return json(await addHtmlItem(canvasId, sessionId, body.html, meta), 201)
-		}
-		if (body?.path) {
-			const f = Bun.file(body.path)
-			if (!(await f.exists())) throw new HttpError(404, `no file at ${body.path}`)
-			return json(await addItem(canvasId, sessionId, f, { filename: body.path, ...meta }), 201)
-		}
-		if (body?.url) {
-			const res = await fetch(body.url)
-			if (!res.ok) throw new HttpError(502, `fetch ${body.url} failed: ${res.status}`)
-			const blob = await res.blob()
-			const pathname = new URL(body.url).pathname
-			let filename = pathname
-			try {
-				filename = decodeURIComponent(pathname)
-			} catch {}
-			return json(await addItem(canvasId, sessionId, blob, { filename, ...meta }), 201)
-		}
-		throw new HttpError(400, 'send multipart "file", or JSON {"path"}, {"url"} or {"html"}')
+		return json(await addItemFromJson(canvasId, sessionId, (await req.json().catch(() => null)) as ItemJson | null), 201)
 	}
 
 	m = /^\/api\/items\/([^/]+)$/.exec(p)
@@ -956,16 +984,7 @@ async function handle(req: Request): Promise<Response> {
 		if (method === 'GET') return json(item)
 		if (method === 'PATCH') {
 			const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
-			const changes: Partial<Pick<Item, 'group' | 'title' | 'caption' | 'name'>> = {}
-			if ('group' in body) changes.group = groupField(body.group) ?? undefined
-			if ('title' in body) changes.title = body.title === null ? undefined : textField(body.title)
-			if ('caption' in body) changes.caption = body.caption === null ? undefined : textField(body.caption)
-			if ('name' in body) {
-				changes.name = nameField(body.name)
-				if (!changes.name) throw new HttpError(400, '"name" can\'t be empty')
-			}
-			if (!Object.keys(changes).length) throw new HttpError(400, 'send any of {"group", "title", "caption", "name"} (null clears, except name)')
-			return json(updateItem(item, changes))
+			return json(updateItem(item, itemChanges(body)))
 		}
 		if (method === 'DELETE') {
 			const { sessionDeleted } = deleteItem(item.id)
@@ -993,6 +1012,31 @@ async function handle(req: Request): Promise<Response> {
 
 	throw new HttpError(404, p.startsWith('/api') ? `no route ${method} ${p}; GET /api lists the endpoints` : 'not found')
 }
+
+const mcp = createCanvasMcp({
+	listCanvases: () => [...db.canvases.values()].sort((a, b) => b.createdAt - a.createdAt).map(canvasSummary),
+	getCanvas,
+	canvasByViewKey(key) {
+		const canvas = [...db.canvases.values()].find((c) => c.viewKey === key)
+		if (!canvas) throw new HttpError(404, 'canvas not found')
+		return canvas
+	},
+	canvasExists: (id) => db.canvases.has(id),
+	canvasData: (id) => canvasData(getCanvas(id)),
+	sessionViews: (canvasId) => canvasSessions(canvasId).sort((a, b) => a.createdAt - b.createdAt).map(sessionView),
+	notes: (canvasId) => readRoomDoc(`canvas-${canvasId}`, readNotes),
+	presence,
+	selections: resolveSelections,
+	createCanvas: (title) => createCanvas(canvasTitle(title)),
+	getItem,
+	addItem: (canvasId, sessionId, body) => addItemFromJson(getCanvas(canvasId).id, assertSessionId(sessionId), body as ItemJson),
+	updateItem: (id, changes) => updateItem(getItem(id), itemChanges(changes)),
+	deleteItem: (id) => deleteItem(getItem(id).id),
+	restore,
+	mediaFile: (src) => Bun.file(join(MEDIA_DIR, basename(src))),
+	mediaOrigin: MEDIA_ORIGIN,
+	webBase: WEB_BASE,
+})
 
 Bun.serve<SocketData, never>({
 	port: PORT,
@@ -1030,6 +1074,14 @@ Bun.serve<SocketData, never>({
 			const readOnly = reqUrl.searchParams.get('view') === '1'
 			if (server.upgrade(req, { data: { kind: 'room', room, readOnly } })) return
 			return json({ error: 'expected a websocket upgrade' }, 426)
+		}
+		if (stripBase(reqUrl.pathname) === '/mcp') {
+			try {
+				return await mcp.handle(req)
+			} catch (e) {
+				console.error('mcp request failed:', e)
+				return json({ jsonrpc: '2.0', error: { code: -32603, message: 'internal error' }, id: null }, 500)
+			}
 		}
 		try {
 			return await handle(req)

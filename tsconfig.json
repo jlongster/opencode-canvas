@@ -11,5 +11,5 @@
     "allowImportingTsExtensions": true,
     "types": ["@webgpu/types", "bun"]
   },
-  "include": ["web/src", "server", "shared", "scripts", "mcp"]
+  "include": ["web/src", "server", "shared", "scripts"]
 }

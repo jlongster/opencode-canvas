@@ -9,8 +9,7 @@
     "build": "vite build --config web/vite.config.ts",
     "start": "bun server/index.ts",
     "seed": "bun scripts/seed.ts",
-    "typecheck": "tsc --noEmit -p .",
-    "mcp": "bun mcp/server.ts"
+    "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",

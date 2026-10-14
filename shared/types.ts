@@ -95,7 +95,7 @@ export interface PresenceEntry {
 /** One person's selection, resolved into objects (GET /api/canvases/:cid/selection). */
 export interface ResolvedSelection {
 	clientId: number
-	user: { name: string; color: string }
+	user: PresenceEntry['user']
 	selection: string[]
 	/** selected items, each with absolute URLs to its media */
 	items: (Item & { url: string; thumbUrl: string })[]

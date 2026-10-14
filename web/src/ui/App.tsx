@@ -20,6 +20,24 @@ const SHARE_LINK: ShareLink | null = (() => {
 	return edit ? { kind: 'edit', key: edit } : null
 })()
 
+/** The last used select/hand tool is remembered across reloads; the one-shot note tool never is. */
+const TOOL_KEY = 'canvas.tool'
+
+function loadTool(): ToolId {
+	try {
+		return localStorage.getItem(TOOL_KEY) === 'hand' ? 'hand' : 'select'
+	} catch {
+		return 'select'
+	}
+}
+
+function saveTool(tool: ToolId) {
+	if (tool !== 'select' && tool !== 'hand') return
+	try {
+		localStorage.setItem(TOOL_KEY, tool)
+	} catch {}
+}
+
 export function App() {
 	const containerRef = useRef<HTMLDivElement>(null)
 	const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -37,6 +55,8 @@ export function App() {
 		const disposers: (() => void)[] = []
 
 		editor.mount(container)
+		editor.setCurrentTool(loadTool())
+		disposers.push(react(() => saveTool(editor.currentToolId.get())))
 
 		Renderer.create(canvasRef.current!, overlayRef.current!, editor, {
 			readOnly: !!SHARE_LINK,

@@ -433,7 +433,8 @@ class ItemTitles {
 	update(items: Record<string, Item>, displayed: Map<string, Displayed>, view: Box, editor: Editor) {
 		const z = editor.camera.peek().z
 		const strip = LAYOUT.titleHeight
-		const fontSize = 13 * z
+		// Scales with zoom, but never past MAX_ITEM_TITLE_PX on screen.
+		const fontSize = Math.min(13 * z, MAX_ITEM_TITLE_PX)
 		const seen = new Set<string>()
 		if (fontSize >= 5) {
 			for (const [id, d] of displayed) {
@@ -519,6 +520,7 @@ const FRAME_TITLE_PX = 40
 const GROUP_HEADING_PX = 22
 /** Session titles stay at least this big on screen */
 const MIN_TITLE_PX = 13
+const MAX_ITEM_TITLE_PX = 15
 
 class SectionLabels {
 	private els = new Map<string, HTMLDivElement>()

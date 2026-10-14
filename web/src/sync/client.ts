@@ -37,10 +37,17 @@ export async function deleteSession(id: string) {
 }
 
 /** Loads a snapshot, then applies live events. Re-syncs from a fresh snapshot after reconnects. */
+const HEARTBEAT_MS = 4_000
+const DEAD_AFTER_MS = 12_000
+
 export function connect(editor: Editor, onFirstLoad: () => void): () => void {
-	let source: EventSource | null = null
+	let socket: WebSocket | null = null
 	let loaded = false
 	let closed = false
+	let retryMs = 500
+	let retryTimer = 0
+	let heartbeat = 0
+	let lastHeard = 0
 
 	const loadSnapshot = async () => {
 		const res = await fetch(withBase('/api/state'))
@@ -53,14 +60,7 @@ export function connect(editor: Editor, onFirstLoad: () => void): () => void {
 		}
 	}
 
-	source = new EventSource(withBase('/api/events'))
-	source.onopen = () => {
-		editor.connection.set('open')
-		loadSnapshot().catch((e) => console.error('snapshot failed', e))
-	}
-	source.onerror = () => editor.connection.set(source?.readyState === EventSource.CLOSED ? 'closed' : 'connecting')
-	source.onmessage = (msg) => {
-		const event = JSON.parse(msg.data) as ServerEvent
+	const apply = (event: ServerEvent) => {
 		switch (event.type) {
 			case 'session':
 				return editor.putSession(event.session)
@@ -73,8 +73,70 @@ export function connect(editor: Editor, onFirstLoad: () => void): () => void {
 		}
 	}
 
+	// Live changes arrive over a WebSocket. Every (re)connect reloads the full state, so nothing
+	// that happened while disconnected is missed.
+	//
+	// Behind exe.dev's proxy a connection can die silently: no close event, nothing arrives. So we
+	// ping every HEARTBEAT_MS, and if nothing (not even a pong) comes back for DEAD_AFTER_MS we
+	// abandon the socket and reconnect right away. (Waiting for close() would hang: a close
+	// handshake can't complete on a dead connection.)
+	const reconnect = (delay: number) => {
+		clearInterval(heartbeat)
+		clearTimeout(retryTimer)
+		if (closed) return
+		editor.connection.set('connecting')
+		retryTimer = window.setTimeout(open, delay)
+	}
+
+	const open = () => {
+		const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${withBase('/api/live')}`)
+		socket = ws
+		ws.onopen = () => {
+			retryMs = 500
+			lastHeard = Date.now()
+			editor.connection.set('open')
+			loadSnapshot().catch((e) => console.error('snapshot failed', e))
+			clearInterval(heartbeat)
+			heartbeat = window.setInterval(() => {
+				if (Date.now() - lastHeard > DEAD_AFTER_MS) {
+					ws.onclose = ws.onmessage = null
+					ws.close()
+					return reconnect(0)
+				}
+				ws.send('ping')
+			}, HEARTBEAT_MS)
+		}
+		ws.onmessage = (msg) => {
+			lastHeard = Date.now()
+			if (msg.data === 'pong') return
+			apply(JSON.parse(msg.data) as ServerEvent)
+		}
+		ws.onclose = () => {
+			reconnect(retryMs)
+			retryMs = Math.min(retryMs * 2, 5000)
+		}
+	}
+	open()
+
+	// Background tabs get throttled or frozen, so a socket can go stale while hidden. When the tab
+	// comes back, reconnect straight away if we haven't heard from the server recently.
+	const onVisible = () => {
+		if (document.visibilityState !== 'visible' || closed) return
+		if (Date.now() - lastHeard > HEARTBEAT_MS * 1.5) {
+			if (socket) {
+				socket.onclose = socket.onmessage = null
+				socket.close()
+			}
+			reconnect(0)
+		}
+	}
+	document.addEventListener('visibilitychange', onVisible)
+
 	return () => {
 		closed = true
-		source?.close()
+		clearTimeout(retryTimer)
+		clearInterval(heartbeat)
+		document.removeEventListener('visibilitychange', onVisible)
+		socket?.close()
 	}
 }

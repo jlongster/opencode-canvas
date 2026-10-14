@@ -4,6 +4,7 @@ import { extname, join, resolve } from 'node:path'
 import type { Item, MediaKind, OpenedShare, ServerEvent, Session, Share, Snapshot } from '../shared/types'
 import { roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
 import { readdir } from 'node:fs/promises'
+import type { ServerWebSocket } from 'bun'
 
 const PORT = Number(process.env.PORT ?? 4410)
 const DATA_DIR = resolve(process.env.CANVAS_DATA ?? join(import.meta.dir, '../data'))
@@ -69,53 +70,18 @@ function snapshot(): Snapshot {
 	return { sessions: [...db.sessions.values()], items: [...db.items.values()] }
 }
 
-// ---------- live events (SSE) ----------
+// ---------- live events (WebSocket) ----------
+// Every change is pushed to open canvases over /api/live. (This used to be server-sent events,
+// but long-lived HTTP responses stall unpredictably behind exe.dev's proxy; WebSockets don't.)
 
-const clients = new Set<ReadableStreamDefaultController<Uint8Array>>()
-const encoder = new TextEncoder()
+type LiveSocketData = { kind: 'live' }
+type SocketData = LiveSocketData | ({ kind: 'room' } & RoomSocketData)
+
+const liveSockets = new Set<ServerWebSocket<SocketData>>()
 
 function broadcast(event: ServerEvent) {
-	const chunk = encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
-	for (const c of clients) {
-		try {
-			c.enqueue(chunk)
-		} catch {
-			clients.delete(c)
-		}
-	}
-}
-
-setInterval(() => {
-	const ping = encoder.encode(`: ping\n\n`)
-	for (const c of clients) {
-		try {
-			c.enqueue(ping)
-		} catch {
-			clients.delete(c)
-		}
-	}
-}, 15000)
-
-function events(req: Request) {
-	let ctrl: ReadableStreamDefaultController<Uint8Array>
-	const stream = new ReadableStream<Uint8Array>({
-		start(c) {
-			ctrl = c
-			clients.add(c)
-			c.enqueue(encoder.encode(`retry: 1000\n\n`))
-		},
-		cancel() {
-			clients.delete(ctrl)
-		},
-	})
-	req.signal.addEventListener('abort', () => clients.delete(ctrl))
-	return new Response(stream, {
-		headers: {
-			'content-type': 'text/event-stream',
-			'cache-control': 'no-cache',
-			connection: 'keep-alive',
-		},
-	})
+	const message = JSON.stringify(event)
+	for (const ws of liveSockets) ws.send(message)
 }
 
 // ---------- media processing ----------
@@ -381,7 +347,6 @@ async function handle(req: Request): Promise<Response> {
 	if (p === '/api/state' && method === 'GET') return json(snapshot())
 	// The exe.dev proxy adds this header for visitors who are logged in to exe.dev.
 	if (p === '/api/me' && method === 'GET') return json({ email: req.headers.get('x-exedev-email') || null })
-	if (p === '/api/events' && method === 'GET') return events(req)
 
 	if (p === '/api/sessions' && method === 'POST') {
 		const body = (await req.json().catch(() => ({}))) as { id?: string; title?: string }
@@ -497,13 +462,31 @@ async function handle(req: Request): Promise<Response> {
 	throw new HttpError(404, 'not found')
 }
 
-Bun.serve<RoomSocketData, never>({
+Bun.serve<SocketData, never>({
 	port: PORT,
 	idleTimeout: 0,
 	maxRequestBodySize: 1024 * 1024 * 1024,
-	websocket: roomSockets,
+	websocket: {
+		open(ws) {
+			if (ws.data.kind === 'live') liveSockets.add(ws)
+			else roomSockets.open(ws as ServerWebSocket<RoomSocketData & { kind: 'room' }>)
+		},
+		message(ws, message) {
+			if (ws.data.kind === 'room') roomSockets.message(ws as ServerWebSocket<RoomSocketData & { kind: 'room' }>, message)
+			// Live clients heartbeat so proxies don't drop the idle connection (see web/src/sync/client.ts).
+			else if (message === 'ping') ws.send('pong')
+		},
+		close(ws) {
+			if (ws.data.kind === 'live') liveSockets.delete(ws)
+			else roomSockets.close(ws as ServerWebSocket<RoomSocketData & { kind: 'room' }>)
+		},
+	},
 	async fetch(req, server) {
 		const reqUrl = new URL(req.url)
+		if (stripBase(reqUrl.pathname) === '/api/live') {
+			if (server.upgrade(req, { data: { kind: 'live' } })) return
+			return json({ error: 'expected a websocket upgrade' }, 426)
+		}
 		const room = /^\/api\/rooms\/([^/]+)$/.exec(stripBase(reqUrl.pathname))?.[1]
 		if (room !== undefined) {
 			// Each share has two rooms: "share-<id>" (editors write; view links are read-only) and
@@ -513,7 +496,7 @@ Bun.serve<RoomSocketData, never>({
 			if (!share) return json({ error: 'no such room' }, 404)
 			const canEdit = reqUrl.searchParams.get('key') === share.editKey
 			const readOnly = !m![2] && !canEdit
-			if (server.upgrade(req, { data: { room, readOnly } })) return
+			if (server.upgrade(req, { data: { kind: 'room', room, readOnly } })) return
 			return json({ error: 'expected a websocket upgrade' }, 426)
 		}
 		try {

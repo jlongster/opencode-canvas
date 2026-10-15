@@ -331,7 +331,7 @@ export class AgentWorms {
 			if (worm.leaving) this.revive(worm, now)
 			const placed = peer.user.sessionId ? this.conjure?.placing.get(peer.user.sessionId) : undefined
 			if (placed) {
-				// Summoned here (W): crawl over now rather than waiting for the record to come back.
+				// Summoned here (C): crawl over now rather than waiting for the record to come back.
 				this.conjure!.placing.delete(peer.user.sessionId!)
 				worm.pinned = { at: placed, until: now + PIN_MS }
 			}

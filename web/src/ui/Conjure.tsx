@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import type { OpenCodeSessionSummary } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
-import type { Conjure } from '../multiplayer/Conjure'
+import type { Conjure, PromptAttachment } from '../multiplayer/Conjure'
 import { ownerId } from '../opencode/pairings'
 import { conjure as conjureSession } from '../sync/client'
 import { PairForm, ServerList, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
@@ -172,11 +172,16 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 	const [error, setError] = useState<string | null>(null)
 	const [busy, setBusy] = useState(false)
 	const [replaying, setReplaying] = useState(false)
+	const [attachments, setAttachments] = useState<PromptAttachment[]>([])
+	const [dragging, setDragging] = useState(false)
 	const inputRef = useRef<HTMLTextAreaElement>(null)
+	const fileRef = useRef<HTMLInputElement>(null)
+	const dragDepth = useRef(0)
 
 	useEffect(() => {
 		setText('')
 		setError(null)
+		setAttachments([])
 		if (target) inputRef.current?.focus()
 	}, [target?.sessionId])
 	// The worm was banished: nothing to talk to. (Waking up or falling asleep changes its client id.)
@@ -190,13 +195,70 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 	if (!target || !info || info === 'gone') return null
 	const [x, y, thinking, asleep, block, color, ...name] = info.split('|')
 
+	const canAttach = !block
+
+	const attach = async (files: File[]) => {
+		if (!files.length) return
+		setError(null)
+		const problems: string[] = []
+		const images = files.filter((f) => {
+			if (!ATTACH_TYPES.includes(f.type)) problems.push(`${f.name || 'that file'} isn't a PNG, JPEG, GIF or WebP image`)
+			else if (f.size > ATTACH_MAX_BYTES) problems.push(`${f.name} is over ${ATTACH_MAX_BYTES / 1024 / 1024} MB`)
+			else return true
+			return false
+		})
+		const room = ATTACH_MAX - attachments.length
+		if (images.length > room) problems.push(`at most ${ATTACH_MAX} images per prompt`)
+		try {
+			const added = await Promise.all(images.slice(0, Math.max(0, room)).map(readAttachment))
+			setAttachments((prev) => [...prev, ...added].slice(0, ATTACH_MAX))
+		} catch (e) {
+			problems.push((e as Error).message)
+		}
+		if (problems.length) setError(problems.join('; '))
+		inputRef.current?.focus()
+	}
+
+	const isFileDrag = (e: DragEvent) => e.dataTransfer.types.includes('Files')
+	const dropHandlers = {
+		onDragEnter: (e: DragEvent) => {
+			if (!isFileDrag(e)) return
+			e.preventDefault()
+			e.stopPropagation()
+			dragDepth.current++
+			if (canAttach) setDragging(true)
+		},
+		onDragOver: (e: DragEvent) => {
+			if (!isFileDrag(e)) return
+			e.preventDefault()
+			e.stopPropagation()
+			e.dataTransfer.dropEffect = canAttach ? 'copy' : 'none'
+		},
+		onDragLeave: (e: DragEvent) => {
+			if (!isFileDrag(e)) return
+			e.stopPropagation()
+			dragDepth.current = Math.max(0, dragDepth.current - 1)
+			if (!dragDepth.current) setDragging(false)
+		},
+		onDrop: (e: DragEvent) => {
+			if (!isFileDrag(e)) return
+			// Swallowed even when we can't attach, so the browser doesn't navigate to the file.
+			e.preventDefault()
+			e.stopPropagation()
+			dragDepth.current = 0
+			setDragging(false)
+			if (canAttach) attach([...e.dataTransfer.files])
+		},
+	}
+
 	const send = async () => {
 		const prompt = text.trim()
-		if (!prompt || busy) return
+		if ((!prompt && !attachments.length) || busy) return
 		setBusy(true)
 		setError(null)
 		try {
-			await conjure.send(target, prompt)
+			await conjure.send(target, prompt, attachments)
+			setAttachments([])
 			conjure.close()
 		} catch (e) {
 			setError((e as Error).message)
@@ -232,7 +294,8 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 
 	return (
 		<div
-			className="conjure-prompt"
+			className={`conjure-prompt${dragging ? ' dragging' : ''}`}
+			{...dropHandlers}
 			style={{ left: Number(x) - 24, top: Number(y) + 44, ['--agent-color' as string]: color }}
 			onPointerDown={(e) => e.stopPropagation()}
 			onWheel={(e) => e.stopPropagation()}
@@ -265,21 +328,58 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 					)}
 				</div>
 			) : (
-			<textarea
-				ref={inputRef}
-				value={text}
-				rows={3}
-				placeholder={thinking === '1' ? 'Still thinking about the last one…' : 'Say something… (Enter sends, Shift+Enter for a new line)'}
-				onChange={(e) => setText(e.target.value)}
-				onKeyDown={(e) => {
-					e.stopPropagation()
-					if (e.key === 'Escape') conjure.close()
-					if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-						e.preventDefault()
-						send()
-					}
-				}}
-			/>
+				<>
+					<textarea
+						ref={inputRef}
+						value={text}
+						rows={3}
+						placeholder={thinking === '1' ? 'Still thinking about the last one…' : 'Say something… (Enter sends, Shift+Enter for a new line)'}
+						onChange={(e) => setText(e.target.value)}
+						onPaste={(e) => {
+							const files = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'))
+							if (!files.length) return
+							if (!e.clipboardData.getData('text/plain')) e.preventDefault()
+							attach(files)
+						}}
+						onKeyDown={(e) => {
+							e.stopPropagation()
+							if (e.key === 'Escape') conjure.close()
+							if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+								e.preventDefault()
+								send()
+							}
+						}}
+					/>
+					{attachments.length > 0 && (
+						<div className="conjure-attachments">
+							{attachments.map((a) => (
+								<div key={a.id} className="conjure-attachment" title={a.name}>
+									<img src={a.dataUrl} alt={a.name} />
+									<button
+										className="conjure-attachment-remove"
+										title={`Remove ${a.name}`}
+										disabled={busy}
+										onClick={() => setAttachments((prev) => prev.filter((p) => p.id !== a.id))}
+									>
+										×
+									</button>
+								</div>
+							))}
+						</div>
+					)}
+					<input
+						ref={fileRef}
+						type="file"
+						accept={ATTACH_TYPES.join(',')}
+						multiple
+						hidden
+						onChange={(e) => {
+							attach([...(e.target.files ?? [])])
+							e.target.value = ''
+						}}
+					/>
+					{dragging && <div className="conjure-drop-hint">Drop images to attach</div>}
+				</>
 			)}
 			{error && <div className="conjure-prompt-error">{error}</div>}
 			<div className="conjure-prompt-actions">
@@ -295,12 +395,45 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 					{replaying ? 'Loading…' : 'Show last reply'}
 				</button>
 				{!block && (
-					<button className="conjure-send" disabled={busy || !text.trim()} onClick={send}>
+					<button
+						className="conjure-attach"
+						title={`Attach images (or drop or paste them here; up to ${ATTACH_MAX})`}
+						disabled={busy || attachments.length >= ATTACH_MAX}
+						onClick={() => fileRef.current?.click()}
+					>
+						<PaperclipIcon />
+					</button>
+				)}
+				{!block && (
+					<button className="conjure-send" disabled={busy || (!text.trim() && !attachments.length)} onClick={send}>
 						{busy ? 'Sending…' : 'Send'}
 					</button>
 				)}
 			</div>
 		</div>
+	)
+}
+
+const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+const ATTACH_MAX = 8
+const ATTACH_MAX_BYTES = 20 * 1024 * 1024
+let attachmentIds = 0
+
+function readAttachment(file: File): Promise<PromptAttachment> {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader()
+		reader.onload = () =>
+			resolve({ id: String(++attachmentIds), name: file.name || `image.${file.type.split('/')[1]}`, mime: file.type, dataUrl: reader.result as string })
+		reader.onerror = () => reject(new Error(`couldn't read ${file.name || 'that image'}`))
+		reader.readAsDataURL(file)
+	})
+}
+
+function PaperclipIcon() {
+	return (
+		<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+			<path d="m21 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9" />
+		</svg>
 	)
 }
 

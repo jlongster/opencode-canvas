@@ -12,6 +12,14 @@ export interface PromptTarget {
 	sessionId: string
 }
 
+/** An image attached to a prompt in the owner's prompt box. */
+export interface PromptAttachment {
+	id: string
+	name: string
+	mime: string
+	dataUrl: string
+}
+
 /** Why this browser can't talk to a worm, or null when it can. */
 export type TalkBlock = 'not-yours' | 'not-paired' | null
 
@@ -117,8 +125,11 @@ export class Conjure {
 		return true
 	}
 
-	/** Prompts the worm's session, straight from this browser; whoever runs the worm shows the reply. */
-	async send(target: PromptTarget, text: string) {
+	/**
+	 * Prompts the worm's session, straight from this browser; whoever runs the worm shows the reply.
+	 * Attached images go along as data: URLs (they never touch the canvas server).
+	 */
+	async send(target: PromptTarget, text: string, attachments: PromptAttachment[] = []) {
 		const r = this.record(target.sessionId)
 		if (!r) throw new Error('that worm was banished')
 		const block = this.talkBlock(r.sessionId)
@@ -126,14 +137,18 @@ export class Conjure {
 		if (block) throw new Error(`its OpenCode isn't paired in this browser`)
 		const prompt = text.trim()
 		if (prompt.length > PROMPT_MAX) throw new Error(`that's longer than ${PROMPT_MAX} characters`)
+		if (!prompt && !attachments.length) throw new Error('say something or attach an image')
 		const from = this.presence.me.peek().name.trim().slice(0, 60)
 		const title = this.canvasTitle()
+		const images = attachments.length === 1 ? 'an image' : `${attachments.length} images`
+		const body = prompt || `(sent ${images})`
 		await withServer(r.serverKey, async (c) => {
 			const active = await c.session.active({ signal: AbortSignal.timeout(10_000) })
 			if (r.sessionId in active) throw new Error(`${wormName(r)} is busy right now (its session is already running); try again when it's done`)
 			await c.session.prompt({
 				sessionID: r.sessionId,
-				text: from ? `${from} (on the canvas "${title}"): ${prompt}` : prompt,
+				text: from ? `${from} (on the canvas "${title}"): ${body}` : body,
+				...(attachments.length ? { files: attachments.map((a) => ({ uri: a.dataUrl, name: a.name })) } : {}),
 				metadata: { source: 'canvas', canvasId: this.canvasId, ...(from ? { from } : {}) },
 			})
 		})

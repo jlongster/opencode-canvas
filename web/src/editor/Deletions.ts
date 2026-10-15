@@ -114,6 +114,11 @@ export class Deletions {
 		this.showToast(`Restored ${describe(batch.itemIds.length, batch.sessionIds.length, batch.notes.length)}`, false)
 	}
 
+	/** Shows a plain message in the toast (no Undo). */
+	notify(message: string) {
+		this.showToast(message, false)
+	}
+
 	hideToast() {
 		clearTimeout(this.toastTimer)
 		this.toast.set(null)

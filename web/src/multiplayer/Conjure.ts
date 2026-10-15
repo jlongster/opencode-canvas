@@ -1,11 +1,12 @@
 import type { ConjuredAgent } from '../../../shared/types'
-import { OPENCODE_ALLOWED } from '../base'
+import { OPENCODE_ALLOWED, OPENCODE_HINT } from '../base'
 import type { Editor } from '../editor/Editor'
+import type { Vec } from '../editor/geometry'
 import { ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { atom, computed, type Atom } from '../state/signals'
-import { banishConjured, updateConjured } from '../sync/client'
+import { banishConjured, conjure as conjureSession, updateConjured } from '../sync/client'
 import type { Peer, Presence } from './Presence'
-import { runsHere, WormHost, wormName } from './WormHost'
+import { lastAssistantText, runsHere, WormHost, wormName } from './WormHost'
 
 export interface PromptTarget {
 	clientId: number
@@ -16,6 +17,7 @@ export interface PromptTarget {
 export type TalkBlock = 'not-yours' | 'not-paired' | 'not-allowed' | null
 
 const PROMPT_MAX = 20_000
+const FIND_SESSION_MS = 8_000
 
 /**
  * Conjured worms on a canvas: OpenCode sessions brought onto it (records from the canvas server,
@@ -32,6 +34,13 @@ export class Conjure {
 	readonly prompting = atom<PromptTarget | null>('conjurePrompting', null)
 	/** when each worm was last startled (clicked or focused), by awareness client id */
 	readonly startled = new Map<number, number>()
+	/** where worms were just summoned to (W), by session id, for AgentWorms to crawl there right away */
+	readonly placing = new Map<string, Vec>()
+	/**
+	 * Replies reopened here with "Show last reply", by session id: shown pinned in the bubble until
+	 * the worm's own chat changes from what it was then (baseChat).
+	 */
+	readonly replays = new Map<string, { text: string; baseChat: string | null }>()
 	/** worms with no live presence (nobody runs them), as made-up peers to draw asleep */
 	readonly sleepers = computed<Peer[]>('conjureSleepers', () => {
 		const awake = new Set(this.presence.peers.get().filter((p) => p.user.conjured && p.user.sessionId).map((p) => p.user.sessionId))
@@ -133,6 +142,59 @@ export class Conjure {
 		})
 	}
 
+	/**
+	 * W over a session frame (or a long press): brings the session's worm to `at`. Conjures it when
+	 * it isn't here (from whichever paired OpenCode has the session); otherwise our own worm crawls
+	 * over. Resolves to a message for the user when it can't, else null.
+	 */
+	async summon(sessionId: string, at: Vec): Promise<string | null> {
+		if (!this.canEdit) return null
+		const spot = { x: Math.round(at.x), y: Math.round(at.y) }
+		const r = this.record(sessionId)
+		if (r) {
+			if (r.ownerId !== ownerId) return 'Owned by someone else'
+			this.placing.set(sessionId, spot)
+			this.close()
+			await this.move(sessionId, spot)
+			return null
+		}
+		if (!OPENCODE_ALLOWED) return OPENCODE_HINT
+		const found = await findSession(sessionId)
+		if (!found) return pairings.peek().length ? 'No paired OpenCode has this session' : 'Pair an OpenCode (Conjure) to summon its sessions'
+		try {
+			await conjureSession(this.canvasId, { sessionId, serverKey: found.serverKey, ownerId, title: found.title, ...spot })
+		} catch (e) {
+			// Someone conjured it meanwhile.
+			if ((e as { status?: number }).status === 409) return this.record(sessionId)?.ownerId === ownerId ? null : 'Owned by someone else'
+			throw e
+		}
+		return null
+	}
+
+	/**
+	 * The worm's most recent reply: what it last said in the room, or, for our own worm, its
+	 * session's last assistant message from OpenCode (there even after a reload or dismissing it).
+	 */
+	async lastReply(sessionId: string): Promise<string> {
+		const said = this.saying(sessionId)
+		if (said) return said
+		const r = this.record(sessionId)
+		if (!r || !this.ours(sessionId) || !OPENCODE_ALLOWED) return ''
+		return lastAssistantText(r.serverKey, sessionId)
+	}
+
+	/** What the worm is saying in the room right now (its reply, finished or not), or null. */
+	saying(sessionId: string): string | null {
+		const peer = this.presence.peers.get().find((p) => p.user.conjured && p.user.sessionId === sessionId)
+		return (peer?.speaking && peer.chat) || null
+	}
+
+	/** Reopens a reply in the worm's bubble, pinned (here only). */
+	showReply(sessionId: string, text: string) {
+		const peer = this.presence.peers.peek().find((p) => p.user.conjured && p.user.sessionId === sessionId)
+		this.replays.set(sessionId, { text, baseChat: peer?.chat ?? null })
+	}
+
 	/** Puts the worm down at a new page position, for everyone. */
 	async move(sessionId: string, at: { x: number; y: number }) {
 		if (!this.canEdit) return
@@ -160,6 +222,21 @@ export class Conjure {
 		this.host?.destroy()
 		this.host = null
 	}
+}
+
+/** Which paired OpenCode has the session, and its title, or null when none does. */
+async function findSession(sessionId: string): Promise<{ serverKey: string; title: string } | null> {
+	const all = pairings.peek()
+	const results = await Promise.allSettled(
+		all.map((p) =>
+			withServer(p.key, (c) => c.session.get({ sessionID: sessionId }, { signal: AbortSignal.timeout(FIND_SESSION_MS) })).then((s) => ({
+				serverKey: p.key,
+				title: s.title?.trim() || '',
+			})),
+		),
+	)
+	for (const r of results) if (r.status === 'fulfilled') return r.value
+	return null
 }
 
 /** A stable made-up awareness id for a sleeping worm (negative, so it never clashes with real ones). */

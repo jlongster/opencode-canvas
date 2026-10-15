@@ -1,4 +1,5 @@
 import type { Editor } from '../editor/Editor'
+import { markdownToHtml } from '../ui/markdown'
 import type { Box, Vec } from '../editor/geometry'
 import type { Conjure } from './Conjure'
 import type { Peer } from './Presence'
@@ -32,6 +33,8 @@ const DRAG_PX = 5
 const PIN_MS = 5000
 /** pull on a carried worm's body, in screen px/s², so it dangles and swings */
 const GRAVITY = 2600
+/** a conjured worm's finished reply puts itself away (locally) after this long, unless it's pinned */
+const REPLY_HIDE_MS = 7000
 
 interface Trip {
 	from: Vec
@@ -79,7 +82,7 @@ interface Worm {
 	nameText: string
 	/** speech bubble from the agent's say tool, while it's showing */
 	bubble: HTMLDivElement | null
-	bubbleText: HTMLSpanElement | null
+	bubbleText: HTMLDivElement | null
 	/** what has arrived so far, by character, and whether it's complete */
 	speech: string[]
 	speechDone: boolean
@@ -108,6 +111,10 @@ interface Worm {
 	dismissed: string | null
 	/** the full chat text behind the bubble, and whether it's finished */
 	speechText: string | null
+	/** conjured: the bubble stays up until × (the pointer went over it, or it was reopened) */
+	speechPinned: boolean
+	/** conjured: when the reply finished (typed out, nothing more coming), 0 while it isn't */
+	speechDoneAt: number
 	/** screen-space discs covering the body as last drawn, for clicks */
 	hit: { x: number; y: number; r: number }[]
 	/** where it's being dragged to (page space), while someone here carries it */
@@ -192,6 +199,12 @@ export class AgentWorms {
 				this.worms.set(peer.clientId, worm)
 			}
 			if (worm.leaving) this.revive(worm, now)
+			const placed = peer.user.sessionId ? this.conjure?.placing.get(peer.user.sessionId) : undefined
+			if (placed) {
+				// Summoned here (W): crawl over now rather than waiting for the record to come back.
+				this.conjure!.placing.delete(peer.user.sessionId!)
+				worm.pinned = { at: placed, until: now + PIN_MS }
+			}
 			if (worm.pinned && (now > worm.pinned.until || (peer.cursor && near(peer.cursor, worm.pinned.at)))) worm.pinned = null
 			if (target) {
 				worm.goal = worm.carried ?? worm.pinned?.at ?? target.point
@@ -403,6 +416,8 @@ export class AgentWorms {
 			bubbleScroll: null,
 			dismissed: null,
 			speechText: null,
+			speechPinned: false,
+			speechDoneAt: 0,
 			hit: [],
 			carried: null,
 			carry: 0,
@@ -455,6 +470,9 @@ export class AgentWorms {
 			worm.name.textContent = worm.nameText
 		}
 		const speaking = !!peer.speaking && !!peer.chat
+		let speech = speaking ? peer.chat! : null
+		let speechSent = !!peer.chatSent
+		let replayed = false
 		if (worm.conjured) {
 			if (worm.asleep !== !!peer.user.asleep) {
 				worm.asleep = !!peer.user.asleep
@@ -465,11 +483,22 @@ export class AgentWorms {
 			worm.startledAt = this.conjure?.startled.get(worm.id) ?? worm.startledAt
 			worm.listening = this.conjure?.prompting.peek()?.clientId === worm.id
 			worm.el.classList.toggle('thinking', worm.thinking && !worm.bubble)
-			// A dismissed reply stays hidden until the worm says something else.
-			if (worm.dismissed !== null && (!speaking || peer.chat !== worm.dismissed)) worm.dismissed = null
+			// A reply reopened from the prompt box ("Show last reply"), until the worm moves on.
+			const sessionId = peer.user.sessionId
+			const replay = sessionId ? this.conjure?.replays.get(sessionId) : undefined
+			if (replay && (peer.chat ?? null) !== replay.baseChat) this.conjure!.replays.delete(sessionId!)
+			else if (replay) {
+				speech = replay.text
+				speechSent = true
+				replayed = true
+				worm.dismissed = null
+			}
+			// A dismissed (or auto-hidden) reply stays hidden until the worm says something else.
+			if (worm.dismissed !== null && speech !== worm.dismissed) worm.dismissed = null
 		}
 		const hidden = worm.dismissed !== null
-		this.syncSpeech(worm, speaking && !hidden ? peer.chat! : null, !!peer.chatSent)
+		this.syncSpeech(worm, hidden ? null : speech, speechSent)
+		if (replayed) worm.speechPinned = true
 		const chat = (!speaking && peer.chat) || null
 		if (worm.chat !== chat) {
 			worm.chat = chat
@@ -500,6 +529,8 @@ export class AgentWorms {
 				worm.bubble = worm.bubbleText = worm.bubbleScroll = null
 				worm.speech = []
 				worm.speechText = null
+				worm.speechPinned = false
+				worm.speechDoneAt = 0
 			}
 			return
 		}
@@ -510,21 +541,30 @@ export class AgentWorms {
 			worm.bubble.className = 'agent-worm-speech'
 			worm.bubbleScroll = document.createElement('div')
 			worm.bubbleScroll.className = 'agent-worm-speech-scroll'
-			worm.bubbleText = document.createElement('span')
+			worm.bubbleText = document.createElement('div')
 			worm.bubbleText.className = 'agent-worm-speech-text'
 			worm.bubbleScroll.appendChild(worm.bubbleText)
 			worm.bubble.appendChild(worm.bubbleScroll)
 			if (worm.conjured) this.makeDismissable(worm, worm.bubble)
+			// Links in it are for clicking, not for starting a selection on the canvas underneath.
+			else worm.bubble.addEventListener('pointerdown', (e) => (e.target as Element).closest?.('a') && e.stopPropagation())
 			worm.el.appendChild(worm.bubble)
 			worm.speech = []
 			// Arriving at a message that's already finished: show it whole.
 			worm.speechShown = sent ? chars.length : 0
 			worm.speechDrawn = -1
+			worm.speechPinned = false
+			worm.speechDoneAt = 0
 		} else if (chars.length < worm.speech.length || worm.speech.some((c, i) => chars[i] !== c)) {
 			// A new message replaced the one showing: type it from the start. (A long reply that only
 			// keeps its end drops characters off the front as it grows: keep showing it whole.)
-			worm.speechShown = chars[0] === '…' && worm.speech[0] === '…' ? chars.length : 0
+			const kept = chars[0] === '…' && worm.speech[0] === '…'
+			worm.speechShown = kept ? chars.length : 0
 			worm.speechDrawn = -1
+			if (!kept) {
+				worm.speechPinned = false
+				worm.speechDoneAt = 0
+			}
 		}
 		worm.speech = chars
 		worm.speechDone = sent
@@ -543,9 +583,16 @@ export class AgentWorms {
 			worm.dismissed = text
 			this.syncSpeech(worm, null, true)
 			const sessionId = this.conjure?.peer(worm.id)?.user.sessionId
-			if (sessionId) this.conjure?.dismiss(sessionId)
+			if (sessionId) {
+				this.conjure?.replays.delete(sessionId)
+				this.conjure?.dismiss(sessionId)
+			}
 		})
 		bubble.appendChild(close)
+		// Once the pointer has been over it, it stays until ×.
+		bubble.addEventListener('pointerenter', () => {
+			if (worm.bubble === bubble) worm.speechPinned = true
+		})
 		// Scrolling and clicking the bubble shouldn't pan or select on the canvas underneath.
 		for (const type of ['pointerdown', 'wheel', 'dblclick'] as const) bubble.addEventListener(type, (e) => e.stopPropagation())
 	}
@@ -564,12 +611,25 @@ export class AgentWorms {
 			// Follow the text as it types, unless someone scrolled up to read.
 			const atEnd = !scroll || scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 24
 			worm.speechDrawn = shown
-			worm.bubbleText.textContent = worm.speech.slice(0, shown).join('')
+			renderSpeech(worm.bubbleText, worm.speech.slice(0, shown).join(''))
 			if (scroll && atEnd) scroll.scrollTop = scroll.scrollHeight
 		}
 		const typing = shown < total || !worm.speechDone
 		worm.bubble?.classList.toggle('typing', typing)
 		return typing
+	}
+
+	/** A finished reply nobody pinned goes away after a while, here only; a new one shows again. */
+	private autoHide(worm: Worm, talking: boolean, now: number) {
+		if (talking || !worm.speechDone || worm.thinking || worm.speechPinned) {
+			worm.speechDoneAt = 0
+			return
+		}
+		if (!worm.speechDoneAt) worm.speechDoneAt = now
+		else if (now - worm.speechDoneAt > REPLY_HIDE_MS && worm.speechText !== null) {
+			worm.dismissed = worm.speechText
+			this.syncSpeech(worm, null, true)
+		}
 	}
 
 	private step(worm: Worm, now: number, elapsed: number) {
@@ -578,6 +638,7 @@ export class AgentWorms {
 		const dt = elapsed / 1000
 
 		const talking = worm.bubble ? this.typeSpeech(worm, elapsed) : false
+		if (worm.conjured && worm.bubble) this.autoHide(worm, talking, now)
 		worm.talk += ((talking ? 1 : 0) - worm.talk) * (1 - Math.exp(-elapsed / 90))
 		worm.think += ((worm.thinking && !talking ? 1 : 0) - worm.think) * (1 - Math.exp(-elapsed / 200))
 		worm.carry += ((worm.carried ? 1 : 0) - worm.carry) * (1 - Math.exp(-elapsed / 120))
@@ -959,6 +1020,18 @@ export class AgentWorms {
 			ctx.stroke()
 		}
 	}
+}
+
+/** Speech as Markdown, with the typing caret after its last character (shown while typing, see CSS). */
+function renderSpeech(el: HTMLElement, text: string) {
+	el.innerHTML = markdownToHtml(text)
+	const caret = document.createElement('span')
+	caret.className = 'agent-worm-caret'
+	const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+	let last: Node | null = null
+	for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.textContent!.trim()) last = n
+	if (last) last.parentNode!.insertBefore(caret, last.nextSibling)
+	else el.appendChild(caret)
 }
 
 /** Same spot, give or take the server rounding it to whole page units. */

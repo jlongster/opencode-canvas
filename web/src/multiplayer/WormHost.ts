@@ -55,6 +55,24 @@ const short = (text: string) => (text.length > ERROR_MAX ? text.slice(0, ERROR_M
 /** Whether this browser runs the worm: it's ours and its OpenCode is paired here. */
 export const runsHere = (r: ConjuredAgent) => r.ownerId === ownerId && !!pairing(r.serverKey)
 
+/**
+ * The text of the latest of the session's last `scan` assistant messages that has any (a turn's
+ * last steps may be only tool calls), capped like the worm's chat; "" when there's none.
+ */
+export async function lastAssistantText(serverKey: string, sessionId: string, scan = 10): Promise<string> {
+	const res = await withServer(serverKey, (c) => c.message.list({ sessionID: sessionId, limit: scan, order: 'desc', type: 'assistant' }))
+	for (const m of res.data as { type?: string; content?: { type: string; text?: string }[] }[]) {
+		if (m?.type !== 'assistant') continue
+		const text = (m.content ?? [])
+			.filter((p) => p.type === 'text')
+			.map((p) => p.text ?? '')
+			.join('\n\n')
+			.trim()
+		if (text) return capChat(text)
+	}
+	return ''
+}
+
 export class WormHost {
 	private running = new Map<string, { stop: AbortController; runtime: WormRuntime | null }>()
 	private disposers: (() => void)[] = []
@@ -291,7 +309,8 @@ class WormRuntime {
 		const error = this.error
 		this.error = null
 		let text = this.text()
-		if (!text) text = await this.lastReply().catch(() => '')
+		// just this turn's last message: an earlier one could be a previous turn's
+		if (!text) text = await lastAssistantText(this.record.serverKey, this.record.sessionId, 1).catch(() => '')
 		// Something new started meanwhile: that owns the worm now.
 		if (this.busy || this.destroyed) return
 		this.thinking = false
@@ -308,20 +327,6 @@ class WormRuntime {
 		const active = await withServer(this.record.serverKey, (c) => c.session.active({ signal: AbortSignal.timeout(10_000) })).catch(() => null)
 		if (!active || this.destroyed) return
 		this.setBusy(this.record.sessionId in active)
-	}
-
-	/** The text of the session's latest assistant message, for when the stream missed it. */
-	private async lastReply() {
-		const res = await withServer(this.record.serverKey, (c) =>
-			c.message.list({ sessionID: this.record.sessionId, limit: 1, order: 'desc', type: 'assistant' }),
-		)
-		const message = res.data[0] as { type?: string; content?: { type: string; text?: string }[] } | undefined
-		if (message?.type !== 'assistant') return ''
-		return (message.content ?? [])
-			.filter((p) => p.type === 'text')
-			.map((p) => p.text ?? '')
-			.join('\n\n')
-			.trim()
 	}
 
 	/** Sessions get their title after the first turn: keep the worm's name in step. */

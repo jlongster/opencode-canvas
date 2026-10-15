@@ -9,6 +9,7 @@ import { Conjure } from '../multiplayer/Conjure'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedNotes } from '../multiplayer/SharedNotes'
+import { Summon } from '../multiplayer/Summon'
 import { ConjureButton, ConjurePrompt } from './Conjure'
 import { CursorChat } from './CursorChat'
 import { DeepLink, urlForSelection } from './deepLink'
@@ -148,6 +149,10 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					const spells = new Conjure(editor, p, c.id, link.role === 'edit', conjured, () => canvasTitle)
 					const cursors = new PeerCursors(overlayRef.current!, editor, p, spells)
 					disposers.push(() => cursors.destroy(), () => spells.destroy(), () => notes.destroy(), () => p.destroy())
+					if (link.role === 'edit') {
+						const summon = new Summon(editor, spells, container)
+						disposers.push(() => summon.destroy())
+					}
 					setPresence(p)
 					setConjure(spells)
 					;(window as any).presence = p

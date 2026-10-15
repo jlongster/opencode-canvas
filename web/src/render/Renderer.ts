@@ -727,17 +727,38 @@ class HtmlItems {
 	}
 }
 
-/** A download button over the top-right corner of the hovered item, shown while shift is held. */
+const LINK_ICON =
+	'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5"/></svg>'
+const CHECK_ICON =
+	'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>'
+const COPIED_MS = 1400
+
+/**
+ * Buttons over the top-right corner of the hovered item, shown while shift is held: copy a link to
+ * its original file (the canvas server's public URL, even when this page is served elsewhere) and
+ * download it.
+ */
 class ItemActions {
-	private el: HTMLAnchorElement
+	private el: HTMLDivElement
+	private link: HTMLButtonElement
+	private download: HTMLAnchorElement
 	private itemId: string | null = null
+	private copiedTimer = 0
 
 	constructor(parent: HTMLElement) {
-		this.el = document.createElement('a')
-		this.el.className = 'item-download'
-		this.el.title = 'Download'
-		this.el.innerHTML =
+		this.el = document.createElement('div')
+		this.el.className = 'item-actions'
+		this.link = document.createElement('button')
+		this.link.className = 'item-action item-link'
+		this.link.title = 'Copy link to the file'
+		this.link.innerHTML = LINK_ICON
+		this.link.addEventListener('click', () => this.copyLink())
+		this.download = document.createElement('a')
+		this.download.className = 'item-action item-download'
+		this.download.title = 'Download'
+		this.download.innerHTML =
 			'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>'
+		this.el.append(this.link, this.download)
 		// Keep the click from reaching the canvas (which would select or start a brush).
 		this.el.addEventListener('pointerdown', (e) => e.stopPropagation())
 		this.el.addEventListener('dblclick', (e) => e.stopPropagation())
@@ -746,24 +767,62 @@ class ItemActions {
 
 	update(item: Item | undefined, box: Displayed | undefined, editor: Editor) {
 		const z = editor.camera.peek().z
-		if (!item || !box || box.w * z < 64 || box.h * z < 48) {
+		if (!item || !box || box.w * z < 96 || box.h * z < 48) {
 			this.el.style.display = 'none'
 			this.itemId = null
 			return
 		}
 		if (this.itemId !== item.id) {
 			this.itemId = item.id
-			this.el.href = withBase(item.src)
-			this.el.download = downloadName(item)
+			this.download.href = withBase(item.src)
+			this.download.download = downloadName(item)
+			this.showCopied(false)
 		}
 		const p = editor.pageToScreen({ x: box.x + box.w, y: box.y })
-		this.el.style.display = 'grid'
-		this.el.style.transform = `translate(${p.x - 8 - 28}px, ${p.y + 8}px)`
+		this.el.style.display = 'flex'
+		this.el.style.transform = `translate(calc(${p.x - 8}px - 100%), ${p.y + 8}px)`
+	}
+
+	private async copyLink() {
+		const href = new URL(withBase(this.download.getAttribute('href') ?? ''), location.href).href
+		try {
+			await copyText(href)
+			this.showCopied(true)
+			clearTimeout(this.copiedTimer)
+			this.copiedTimer = window.setTimeout(() => this.showCopied(false), COPIED_MS)
+		} catch (e) {
+			console.error('copying the link failed', e)
+			this.link.title = `Couldn't copy: ${href}`
+		}
+	}
+
+	private showCopied(copied: boolean) {
+		this.link.classList.toggle('copied', copied)
+		this.link.innerHTML = copied ? CHECK_ICON : LINK_ICON
+		this.link.title = copied ? 'Copied' : 'Copy link to the file'
 	}
 
 	destroy() {
+		clearTimeout(this.copiedTimer)
 		this.el.remove()
 	}
+}
+
+/** Puts text on the clipboard, falling back to execCommand where the Clipboard API isn't available. */
+async function copyText(text: string) {
+	if (navigator.clipboard?.writeText) {
+		try {
+			return await navigator.clipboard.writeText(text)
+		} catch {}
+	}
+	const area = document.createElement('textarea')
+	area.value = text
+	area.style.cssText = 'position:fixed;opacity:0;pointer-events:none'
+	document.body.appendChild(area)
+	area.select()
+	const ok = document.execCommand('copy')
+	area.remove()
+	if (!ok) throw new Error('the clipboard is not available')
 }
 
 function downloadName(item: Item) {

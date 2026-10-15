@@ -166,9 +166,15 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 		const block = conjure.talkBlock(t.sessionId) ?? ''
 		return `${Math.round(p.x)}|${Math.round(p.y)}|${peer.thinking ? 1 : 0}|${peer.user.asleep ? 1 : 0}|${block}|${peer.user.color}|${peer.user.name}`
 	}, [editor, conjure])
+	// A reply to reopen: one it's saying in the room, or (our own worm) its session's last one.
+	const canReplay = useValue(() => {
+		const t = conjure.prompting.get()
+		return !!t && (!!conjure.saying(t.sessionId) || conjure.talkBlock(t.sessionId) === null)
+	}, [conjure])
 	const [text, setText] = useState('')
 	const [error, setError] = useState<string | null>(null)
 	const [busy, setBusy] = useState(false)
+	const [replaying, setReplaying] = useState(false)
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 
 	useEffect(() => {
@@ -199,6 +205,20 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 			setError((e as Error).message)
 		} finally {
 			setBusy(false)
+		}
+	}
+
+	const showLastReply = async () => {
+		setReplaying(true)
+		setError(null)
+		try {
+			const reply = await conjure.lastReply(target.sessionId)
+			if (reply) conjure.showReply(target.sessionId, reply)
+			else setError('No reply yet')
+		} catch (e) {
+			setError((e as Error).message)
+		} finally {
+			setReplaying(false)
 		}
 	}
 
@@ -274,6 +294,14 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 			<div className="conjure-prompt-actions">
 				<button className="conjure-banish" title="Send this worm away for everyone (the session itself stays)" disabled={busy} onClick={banish}>
 					Banish
+				</button>
+				<button
+					className="conjure-replay"
+					title={canReplay ? 'Show its most recent reply again' : 'Nothing to show: only its owner can fetch earlier replies'}
+					disabled={!canReplay || replaying}
+					onClick={showLastReply}
+				>
+					{replaying ? 'Loading…' : 'Show last reply'}
 				</button>
 				{!block && (
 					<button className="conjure-send" disabled={busy || !text.trim()} onClick={send}>

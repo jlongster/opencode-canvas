@@ -1,4 +1,4 @@
-import type { Canvas, CanvasData, CanvasSummary, ConjuredAgent, OpenCodeSessionSummary, OpenCodeStatus, ServerEvent } from '../../../shared/types'
+import type { Canvas, CanvasData, CanvasSummary, ConjuredAgent, OpenCodeSessionSummary, OpenCodeStatus, SeedResult, ServerEvent } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { BASE, url as withBase } from '../base'
 
@@ -45,6 +45,13 @@ export const restoreDeleted = (canvasId: string, ids: { itemIds: string[]; sessi
 
 export const openCodeStatus = () => request<OpenCodeStatus>('/api/opencode/status')
 export const listOpenCodeSessions = () => request<OpenCodeSessionSummary[]>('/api/opencode/sessions')
+
+/** Fills a canvas with frames for these OpenCode sessions and the media they output in the last day. */
+export const seedCanvas = (canvasId: string, sessionIds: string[]) =>
+	request<{ results: SeedResult[] }>(
+		`/api/canvases/${encodeURIComponent(canvasId)}/seed`,
+		json('POST', { sessionIds, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+	)
 
 const conjuredPath = (canvasId: string, sessionId?: string) =>
 	`/api/canvases/${encodeURIComponent(canvasId)}/conjured${sessionId ? `/${encodeURIComponent(sessionId)}` : ''}`

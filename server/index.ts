@@ -3,11 +3,12 @@ import { existsSync } from 'node:fs'
 import { basename, extname, join, resolve } from 'node:path'
 import * as Y from 'yjs'
 import type {
-	Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, ServerEvent, Session, SessionView,
+	Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, SeedResult, ServerEvent, Session, SessionView,
 } from '../shared/types'
 import { ConjureError, createConjured } from './conjured'
 import { createCanvasMcp } from './mcp'
-import { listOpenCodeSessions, OpenCodeUnavailable, openCodeStatus } from './opencode'
+import { errorText, listOpenCodeSessions, OpenCodeUnavailable, openCodeStatus } from './opencode'
+import { findSessionMedia } from './seed'
 import { discardRoom, getRoomSnapshot, readRoomDoc, roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
 import type { ServerWebSocket } from 'bun'
 
@@ -368,6 +369,10 @@ interface ItemOptions {
 	/** HTML items: the CSS pixel size the page is designed for */
 	width?: number
 	height?: number
+	/** defaults to now; seeded items get the time they were output, which orders them in their group */
+	createdAt?: number
+	/** names the session when this item creates it */
+	sessionTitle?: string
 }
 
 async function addItem(canvasId: string, sessionId: string, data: Blob, opts: ItemOptions): Promise<Item> {
@@ -391,7 +396,7 @@ async function addItem(canvasId: string, sessionId: string, data: Blob, opts: It
 		await makeThumb(path, join(MEDIA_DIR, thumbFile))
 		// The canvas may have been deleted while the media was processed.
 		getCanvas(canvasId)
-		ensureSession(canvasId, sessionId)
+		ensureSession(canvasId, sessionId, opts.sessionTitle)
 		const item: Item = {
 			id,
 			canvasId,
@@ -405,7 +410,7 @@ async function addItem(canvasId: string, sessionId: string, data: Blob, opts: It
 			...(opts.group ? { group: opts.group } : {}),
 			title: opts.title,
 			caption: opts.caption,
-			createdAt: Date.now(),
+			createdAt: opts.createdAt ?? Date.now(),
 		}
 		db.items.set(id, item)
 		save()
@@ -625,6 +630,84 @@ function idList(value: unknown, name: string): string[] {
 	return value as string[]
 }
 
+// ---------- seeding from OpenCode sessions ----------
+
+const SEED_WINDOW_MS = 24 * 60 * 60 * 1000
+const SEED_MAX_ITEMS = 100
+const SEED_MAX_SESSIONS = 50
+const SEED_GROUP = 'Latest media'
+
+/**
+ * One frame per OpenCode session (in the order given), holding the images and videos it output in
+ * the last day, in output order. Sessions without any get no frame (frames only exist with items).
+ */
+async function seedCanvas(canvasId: string, sessionIds: string[], timeZone?: string): Promise<SeedResult[]> {
+	const results: SeedResult[] = []
+	for (const sessionId of sessionIds) {
+		const result: SeedResult = { sessionId, title: '', added: 0, skipped: 0 }
+		results.push(result)
+		if (!SESSION_ID.test(sessionId)) {
+			result.error = 'not an OpenCode session id ("ses_" + 26 characters)'
+			continue
+		}
+		try {
+			getCanvas(canvasId)
+			const found = await findSessionMedia(sessionId, {
+				since: Date.now() - SEED_WINDOW_MS,
+				limit: SEED_MAX_ITEMS,
+				excludeDirs: [DATA_DIR],
+			})
+			result.title = found.title
+			result.skipped = found.skipped
+			if (!found.media.length) {
+				result.error = found.skipped ? 'its media from the last 24 hours is gone' : 'no media found in the last 24 hours'
+				continue
+			}
+			// Already seeded items (same name and time) aren't added twice.
+			const existing = new Set(sessionItems(canvasId, sessionId).map((i) => `${i.name}@${i.createdAt}`))
+			let lastAt = 0
+			const failures: string[] = []
+			for (const media of found.media) {
+				// Strictly increasing, so items output in the same instant keep their order.
+				const createdAt = (lastAt = Math.max(Math.round(media.at), lastAt + 1))
+				if (existing.has(`${media.filename}@${createdAt}`)) continue
+				const data = media.path ? Bun.file(media.path) : new Blob([media.data!.bytes as BlobPart], { type: media.data!.mime })
+				try {
+					await addItem(canvasId, sessionId, data, {
+						filename: media.filename,
+						group: SEED_GROUP,
+						title: media.label,
+						caption: seedCaption(media.at, media.via, media.source, !media.path, timeZone),
+						createdAt,
+						sessionTitle: found.title,
+					})
+					result.added++
+				} catch (e) {
+					if (e instanceof HttpError && e.status === 404) throw e
+					result.skipped++
+					failures.push(`${media.filename}: ${(e as Error).message}`)
+				}
+			}
+			if (!result.added && failures.length) result.error = failures[0]
+		} catch (e) {
+			result.error =
+				e instanceof OpenCodeUnavailable ? e.message : e instanceof HttpError ? e.message : `OpenCode: ${errorText(e)}`
+		}
+	}
+	return results
+}
+
+/** "Oct 15, 2026, 2:32:05 PM · via read", then the file's path (noting when it's gone and the copy is from the session) */
+function seedCaption(at: number, via: string, path: string | undefined, gone: boolean, timeZone?: string) {
+	let when: string
+	try {
+		when = new Date(at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'medium', timeZone })
+	} catch {
+		when = new Date(at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'medium' })
+	}
+	return `${when} · via ${via}${path ? `\n${path}${gone ? ' (since deleted; this is the copy in the session)' : ''}` : ''}`
+}
+
 // ---------- canvases ----------
 
 function randomId(length: number) {
@@ -795,6 +878,12 @@ const API_INDEX = {
 			'"what have I selected?"',
 		'GET /api/opencode/status': 'Whether the canvas server can reach OpenCode: {"connected", "url"?, "error"?}',
 		'GET /api/opencode/sessions': 'Recent OpenCode sessions across projects, newest first: [{"id", "title", "directory", "updatedAt", "busy"}]',
+		'POST /api/canvases/:cid/seed':
+			'Fill a canvas from OpenCode sessions (read-only on OpenCode). Body: {"sessionIds": ["ses_…", …], "timeZone"?}. ' +
+			`For each session, in order: a frame titled like the session, with the images and videos it output in the last 24 hours ` +
+			`(tool results such as read/screenshots, finished image generations, files its tools wrote) in group "${SEED_GROUP}", ` +
+			`in output order, de-duplicated, at most ${SEED_MAX_ITEMS}; captions say when (in "timeZone", an IANA name) and which tool. ` +
+			'Sessions without media get no frame. Returns {"results": [{"sessionId", "title", "added", "skipped", "error"?}]}',
 		'GET /api/canvases/:cid/conjured': 'OpenCode sessions conjured onto the canvas as worms people can talk to',
 		'POST /api/canvases/:cid/conjured':
 			'Conjure an OpenCode session as a worm. Body: {"sessionId", "x", "y"} (page position). 409 if that session is already here',
@@ -974,6 +1063,17 @@ async function handle(req: Request): Promise<Response> {
 			if (e instanceof OpenCodeUnavailable) throw new HttpError(503, e.message)
 			throw new HttpError(502, `OpenCode: ${(e as Error).message ?? e}`)
 		}
+	}
+
+	m = /^\/api\/canvases\/([^/]+)\/seed$/.exec(p)
+	if (m && method === 'POST') {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		const body = (await req.json().catch(() => ({}))) as { sessionIds?: unknown; timeZone?: unknown }
+		const sessionIds = [...new Set(idList(body?.sessionIds, 'sessionIds'))]
+		if (!sessionIds.length) throw new HttpError(400, 'send {"sessionIds": ["ses_…", …]}')
+		if (sessionIds.length > SEED_MAX_SESSIONS) throw new HttpError(400, `at most ${SEED_MAX_SESSIONS} sessions at a time`)
+		const timeZone = typeof body?.timeZone === 'string' ? body.timeZone : undefined
+		return json({ results: await seedCanvas(canvas.id, sessionIds, timeZone) })
 	}
 
 	m = /^\/api\/canvases\/([^/]+)\/conjured$/.exec(p)

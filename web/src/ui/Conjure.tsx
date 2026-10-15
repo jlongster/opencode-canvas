@@ -249,13 +249,13 @@ function WandIcon() {
 }
 
 /** "~/projects/canvas" style: home shortened, and only the last two folders of long paths. */
-function shortDir(dir: string) {
+export function shortDir(dir: string) {
 	const home = dir.replace(/^\/(?:root|home\/[^/]+)(?=\/|$)/, '~')
 	const parts = home.split('/').filter(Boolean)
 	return parts.length > 3 ? `…/${parts.slice(-2).join('/')}` : home || '/'
 }
 
-function relativeTime(at: number) {
+export function relativeTime(at: number) {
 	const s = Math.max(0, (Date.now() - at) / 1000)
 	if (s < 45) return 'just now'
 	if (s < 3600) return `${Math.round(s / 60)}m ago`

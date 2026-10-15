@@ -116,6 +116,19 @@ export interface OpenCodeSessionSummary {
 	parentId?: string
 }
 
+/** One session's outcome of POST /api/canvases/:cid/seed. */
+export interface SeedResult {
+	sessionId: string
+	/** the OpenCode session's title ("" when it couldn't be read) */
+	title: string
+	/** items added to its frame */
+	added: number
+	/** media it output that couldn't be added (file gone, failed to process, over the cap) */
+	skipped: number
+	/** set when nothing was added: no media found, OpenCode unreachable, … */
+	error?: string
+}
+
 /**
  * An OpenCode session brought onto a canvas as a worm people can prompt (at most one per session
  * per canvas). It sits at (x, y) in page coordinates and is present in the canvas's room.

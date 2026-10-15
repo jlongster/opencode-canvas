@@ -4,7 +4,7 @@ import { describeError, Renderer } from '../render/Renderer'
 import { react } from '../state/signals'
 import type { Canvas } from '../../../shared/types'
 import { frameKey } from '../editor/selection'
-import { connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, viewUrl, type CanvasLink } from '../sync/client'
+import { connectCanvas, deleteItem, deleteSession, editUrl, openCodeStatus, restoreDeleted, listUrl, renameCanvas, viewUrl, type CanvasLink } from '../sync/client'
 import { Conjure } from '../multiplayer/Conjure'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
@@ -13,6 +13,7 @@ import { ConjureButton, ConjurePrompt } from './Conjure'
 import { CursorChat } from './CursorChat'
 import { DeepLink, urlForSelection } from './deepLink'
 import { NotFound } from './NotFound'
+import { SeedPicker } from './SeedPicker'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
 import { BASE } from '../base'
@@ -472,7 +473,21 @@ function UndoToast({ editor }: { editor: Editor }) {
 
 function EmptyState({ editor, canvas, role }: { editor: Editor; canvas: Canvas; role: CanvasLink['role'] }) {
 	const empty = useValue(() => editor.connection.get() === 'open' && Object.keys(editor.sessions.get()).length === 0)
-	if (!empty) return null
+	const [openCode, setOpenCode] = useState<boolean | null>(null)
+	// Seeding fills the canvas, but the picker stays up with its progress until it's done.
+	const [seeding, setSeeding] = useState(false)
+	const showPicker = role === 'edit' && openCode === true && (empty || seeding)
+	useEffect(() => {
+		if (role !== 'edit' || !empty || openCode !== null) return
+		let cancelled = false
+		openCodeStatus()
+			.then((s) => !cancelled && setOpenCode(s.connected))
+			.catch(() => !cancelled && setOpenCode(false))
+		return () => {
+			cancelled = true
+		}
+	}, [role, empty, openCode])
+	if (!empty && !showPicker) return null
 	if (role === 'view') {
 		return (
 			<div className="empty">
@@ -481,12 +496,26 @@ function EmptyState({ editor, canvas, role }: { editor: Editor; canvas: Canvas; 
 			</div>
 		)
 	}
+	const curl = `curl -X POST ${location.origin}${BASE}/api/canvases/${canvas.id}/sessions/$SESSION_ID/items \\
+  -F file=@output.png -F caption="first try"`
+	if (showPicker) {
+		return (
+			<div className="empty seeding">
+				<SeedPicker editor={editor} canvasId={canvas.id} onBusy={setSeeding} />
+				{empty && !seeding && (
+					<div className="seed-curl">
+						<p>Or post media from a session yourself:</p>
+						<pre>{curl}</pre>
+					</div>
+				)}
+			</div>
+		)
+	}
 	return (
 		<div className="empty">
 			<h2>No sessions yet</h2>
 			<p>Post media from a session and it shows up here live:</p>
-			<pre>{`curl -X POST ${location.origin}${BASE}/api/canvases/${canvas.id}/sessions/$SESSION_ID/items \\
-  -F file=@output.png -F caption="first try"`}</pre>
+			<pre>{curl}</pre>
 		</div>
 	)
 }

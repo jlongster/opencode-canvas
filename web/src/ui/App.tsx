@@ -5,9 +5,11 @@ import { react } from '../state/signals'
 import type { Canvas } from '../../../shared/types'
 import { frameKey } from '../editor/selection'
 import { connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, viewUrl, type CanvasLink } from '../sync/client'
+import { Conjure } from '../multiplayer/Conjure'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedNotes } from '../multiplayer/SharedNotes'
+import { ConjureButton, ConjurePrompt } from './Conjure'
 import { CursorChat } from './CursorChat'
 import { DeepLink, urlForSelection } from './deepLink'
 import { NotFound } from './NotFound'
@@ -55,6 +57,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 	const [rendererError, setRendererError] = useState<string | null>(null)
 	const [canvas, setCanvas] = useState<Canvas | null>(null)
 	const [presence, setPresence] = useState<Presence | null>(null)
+	const [conjure, setConjure] = useState<Conjure | null>(null)
 	const role = link.role
 	const onGoneRef = useRef(onGone)
 	onGoneRef.current = onGone
@@ -131,9 +134,12 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					live = new Presence(editor, `canvas-${c.id}`, link.role === 'view')
 					const p = live
 					const notes = new SharedNotes(overlayRef.current!, editor, p, link.role)
-					const cursors = new PeerCursors(overlayRef.current!, editor, p)
+					// Edit links can talk to conjured worms; view links just watch them.
+					const spells = new Conjure(editor, p, link.role === 'edit' ? c.id : null)
+					const cursors = new PeerCursors(overlayRef.current!, editor, p, spells)
 					disposers.push(() => cursors.destroy(), () => notes.destroy(), () => p.destroy())
 					setPresence(p)
+					setConjure(spells)
 					;(window as any).presence = p
 				},
 				onCanvas: setCanvas,
@@ -167,6 +173,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			<ToolPicker editor={editor} withNotes={!!presence && role === 'edit'} />
 			{presence && <FollowIndicator presence={presence} />}
 			{presence && <CursorChat editor={editor} presence={presence} />}
+			{conjure?.canPrompt && <ConjurePrompt editor={editor} conjure={conjure} />}
 			<div className="top-bar">
 				<TitleBar canvas={canvas} canRename={role === 'edit'} onRenamed={setCanvas} />
 				<div className="top-right">
@@ -183,7 +190,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 						</div>
 					)}
 					{presence && <PresenceBar presence={presence} />}
-					<Toolbar editor={editor} canvas={role === 'edit' ? canvas : null} />
+					<Toolbar editor={editor} canvas={role === 'edit' ? canvas : null} conjure={conjure?.canPrompt ? conjure : null} />
 				</div>
 			</div>
 			<StatusBar editor={editor} />
@@ -312,11 +319,12 @@ function ToolPicker({ editor, withNotes }: { editor: Editor; withNotes: boolean 
 	)
 }
 
-function Toolbar({ editor, canvas }: { editor: Editor; canvas: Canvas | null }) {
+function Toolbar({ editor, canvas, conjure }: { editor: Editor; canvas: Canvas | null; conjure: Conjure | null }) {
 	const zoom = useValue(() => Math.round(editor.camera.get().z * 100))
 	const selectedCount = useValue(() => editor.selectedIds.get().length)
 	const hasSelection = selectedCount > 0
 	const [sharing, setSharing] = useState(false)
+	const [conjuring, setConjuring] = useState(false)
 
 	return (
 		<div className="toolbar" onPointerDown={(e) => e.stopPropagation()}>
@@ -335,7 +343,26 @@ function Toolbar({ editor, canvas }: { editor: Editor; canvas: Canvas | null }) 
 			{selectedCount === 1 && <CopySelectionLink editor={editor} />}
 			{canvas && (
 				<>
-					<button title="Links to this canvas" aria-pressed={sharing} onClick={() => setSharing(!sharing)}>
+					{conjure && (
+						<ConjureButton
+							editor={editor}
+							conjure={conjure}
+							canvasId={canvas.id}
+							open={conjuring}
+							setOpen={(open) => {
+								setConjuring(open)
+								if (open) setSharing(false)
+							}}
+						/>
+					)}
+					<button
+						title="Links to this canvas"
+						aria-pressed={sharing}
+						onClick={() => {
+							setSharing(!sharing)
+							setConjuring(false)
+						}}
+					>
 						Share
 					</button>
 				</>

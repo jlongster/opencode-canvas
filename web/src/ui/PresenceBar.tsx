@@ -21,7 +21,8 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 
 	const shown = peers.slice(0, narrow ? MAX_SHOWN_NARROW : MAX_SHOWN)
 	const hidden = peers.length - shown.length
-	const activity = peers.filter((p) => p.agent && p.chat)
+	// conjured worms' replies are in their speech bubbles, too long for a one-line activity feed
+	const activity = peers.filter((p) => p.agent && !p.conjured && p.chat)
 
 	return (
 		<div className="presence" onPointerDown={(e) => e.stopPropagation()}>

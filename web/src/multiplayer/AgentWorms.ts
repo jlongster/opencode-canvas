@@ -1,5 +1,6 @@
 import type { Editor } from '../editor/Editor'
 import type { Box, Vec } from '../editor/geometry'
+import type { Conjure } from './Conjure'
 import type { Peer } from './Presence'
 
 /** Body joints, head first. Spacing and sizes are screen pixels, so worms look the same at any zoom. */
@@ -19,6 +20,12 @@ const POP_MS = 380
 /** local typewriter speed for speech, catching up faster when it falls behind what has arrived */
 const TYPE_CPS = 36
 const SPEECH_CLOSE_MS = 220
+/** conjured worms are a bit bigger than MCP agents' */
+const CONJURED_SIZE = 1.4
+/** how long the startled face lasts after a conjured worm is clicked */
+const STARTLE_MS = 1100
+/** extra screen px around the body that still counts as clicking the worm */
+const HIT_SLOP = 4
 
 interface Trip {
 	from: Vec
@@ -75,10 +82,27 @@ interface Worm {
 	speechDrawn: number
 	/** 0..1 how much it's talking, eased, drives the mouth and head bob */
 	talk: number
+	/** a conjured worm (an OpenCode session people can prompt): bigger, sits still, clickable on edit links */
+	conjured: boolean
+	/** body size multiplier */
+	size: number
+	/** conjured: its session is working on a prompt, and 0..1 eased for the animation */
+	thinking: boolean
+	think: number
+	/** when it was last startled (clicked) */
+	startledAt: number
+	/** its prompt box is open */
+	listening: boolean
+	/** the "…" thought bubble while thinking */
+	thought: HTMLDivElement
+	bubbleScroll: HTMLDivElement | null
+	/** a reply dismissed with × (locally), hidden until the worm says something else */
+	dismissed: string | null
+	/** the full chat text behind the bubble, and whether it's finished */
+	speechText: string | null
+	/** screen-space discs covering the body as last drawn, for clicks */
+	hit: { x: number; y: number; r: number }[]
 }
-
-/** Agents set speaking while their chat is a message from the say tool rather than an activity. */
-type AgentPeer = Peer & { speaking?: boolean }
 
 /**
  * AI agents have no pointer, so each one gets a little googly-eyed worm that crawls to whatever
@@ -92,10 +116,16 @@ export class AgentWorms {
 	private worms = new Map<number, Worm>()
 	private drewLastFrame = false
 	private reducedMotion: MediaQueryList
+	/** the canvas container, whose clicks on conjured worms we take before the editor sees them */
+	private container: HTMLElement | null
+	/** pointers that went down on a worm: their pointerup isn't the editor's either */
+	private swallowed = new Set<number>()
+	private disposers: (() => void)[] = []
 
 	constructor(
 		parent: HTMLElement,
 		private editor: Editor,
+		private conjure: Conjure | null = null,
 	) {
 		this.canvas = document.createElement('canvas')
 		this.canvas.className = 'agent-worms'
@@ -104,6 +134,19 @@ export class AgentWorms {
 		this.labels.className = 'agent-worm-labels'
 		parent.append(this.canvas, this.labels)
 		this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+		this.container = parent.closest<HTMLElement>('.canvas-container')
+		if (conjure?.canPrompt && this.container) {
+			// Capturing on window runs before the editor's own listeners on the container, so a click
+			// on a worm never reaches it; everywhere else passes straight through.
+			const listen = (type: 'pointerdown' | 'pointerup' | 'pointercancel' | 'pointermove', fn: (e: PointerEvent) => void) => {
+				window.addEventListener(type, fn, true)
+				this.disposers.push(() => window.removeEventListener(type, fn, true))
+			}
+			listen('pointerdown', this.onPointerDown)
+			listen('pointerup', this.onPointerUp)
+			listen('pointercancel', this.onPointerUp)
+			listen('pointermove', this.onPointerMove)
+		}
 	}
 
 	/** Called once per frame with the agent peers. */
@@ -157,9 +200,55 @@ export class AgentWorms {
 	}
 
 	destroy() {
+		for (const d of this.disposers.splice(0)) d()
+		this.container?.classList.remove('conjure-hover')
 		this.canvas.remove()
 		this.labels.remove()
 		this.worms.clear()
+	}
+
+	// ---------- clicking conjured worms ----------
+
+	/** The topmost conjured worm under a point in client coordinates. */
+	private hitTest(clientX: number, clientY: number): Worm | null {
+		const rect = this.canvas.getBoundingClientRect()
+		const x = clientX - rect.left
+		const y = clientY - rect.top
+		const worms = [...this.worms.values()].reverse()
+		for (const worm of worms) {
+			if (!worm.conjured || worm.leaving || worm.scale < 0.5) continue
+			if (worm.hit.some((d) => Math.hypot(d.x - x, d.y - y) <= d.r + HIT_SLOP)) return worm
+		}
+		return null
+	}
+
+	/** Pointer events over the canvas itself (not over a bubble, a prompt box or other UI). */
+	private overCanvas(e: PointerEvent) {
+		const target = e.target as Element | null
+		return !!target && !!this.container?.contains(target) && !target.closest('.agent-worm-speech, .conjure-prompt, .note')
+	}
+
+	private onPointerDown = (e: PointerEvent) => {
+		if (e.pointerType === 'mouse' && e.button !== 0) return
+		if (!this.overCanvas(e)) return
+		const worm = this.hitTest(e.clientX, e.clientY)
+		const peer = worm && this.conjure?.peer(worm.id)
+		if (!worm || !peer) return
+		e.stopPropagation()
+		e.preventDefault()
+		this.swallowed.add(e.pointerId)
+		this.conjure!.open(peer)
+	}
+
+	private onPointerUp = (e: PointerEvent) => {
+		if (!this.swallowed.delete(e.pointerId)) return
+		e.stopPropagation()
+	}
+
+	private onPointerMove = (e: PointerEvent) => {
+		if (this.swallowed.has(e.pointerId)) return e.stopPropagation()
+		const over = e.buttons === 0 && this.overCanvas(e) && !!this.hitTest(e.clientX, e.clientY)
+		this.container?.classList.toggle('conjure-hover', over)
 	}
 
 	// ---------- state ----------
@@ -180,9 +269,13 @@ export class AgentWorms {
 		const el = document.createElement('div')
 		el.className = 'agent-worm'
 		el.innerHTML =
-			'<span class="peer-cursor-label agent-worm-label"><span class="peer-cursor-name"></span></span>'
+			'<span class="peer-cursor-label agent-worm-label"><span class="peer-cursor-name"></span></span>' +
+			'<div class="agent-worm-thought" aria-hidden="true"><i></i><i></i><i></i></div>'
 		const label = el.querySelector<HTMLSpanElement>('.agent-worm-label')!
 		const name = el.querySelector<HTMLSpanElement>('.peer-cursor-name')!
+		const thought = el.querySelector<HTMLDivElement>('.agent-worm-thought')!
+		const conjured = !!peer.user.conjured
+		el.classList.toggle('conjured', conjured)
 		this.labels.appendChild(el)
 		const seed = Math.random() * 1000
 		const worm: Worm = {
@@ -221,6 +314,17 @@ export class AgentWorms {
 			speechShown: 0,
 			speechDrawn: 0,
 			talk: 0,
+			conjured,
+			size: conjured ? CONJURED_SIZE : 1,
+			thinking: false,
+			think: 0,
+			startledAt: -1e9,
+			listening: false,
+			thought,
+			bubbleScroll: null,
+			dismissed: null,
+			speechText: null,
+			hit: [],
 		}
 		this.layOut(worm)
 		return worm
@@ -233,8 +337,8 @@ export class AgentWorms {
 		for (let i = 0; i < JOINTS; i++) {
 			const a = Math.PI * 0.85 + i * 0.12
 			worm.joints.push({
-				x: worm.head.x + (Math.cos(a) * SPACING * i) / z,
-				y: worm.head.y + (Math.sin(-a) * SPACING * i * 0.6 + i * 0.8) / z,
+				x: worm.head.x + (Math.cos(a) * SPACING * worm.size * i) / z,
+				y: worm.head.y + ((Math.sin(-a) * SPACING * i * 0.6 + i * 0.8) * worm.size) / z,
 			})
 		}
 		worm.heading = { x: 1, y: 0 }
@@ -266,8 +370,17 @@ export class AgentWorms {
 			worm.nameText = peer.user.name
 			worm.name.textContent = worm.nameText
 		}
-		const speaking = !!(peer as AgentPeer).speaking && !!peer.chat
-		this.syncSpeech(worm, speaking ? peer.chat! : null, !!peer.chatSent)
+		const speaking = !!peer.speaking && !!peer.chat
+		if (worm.conjured) {
+			worm.thinking = !!peer.thinking
+			worm.startledAt = this.conjure?.startled.get(worm.id) ?? worm.startledAt
+			worm.listening = this.conjure?.prompting.peek()?.clientId === worm.id
+			worm.el.classList.toggle('thinking', worm.thinking && !worm.bubble)
+			// A dismissed reply stays hidden until the worm says something else.
+			if (worm.dismissed !== null && (!speaking || peer.chat !== worm.dismissed)) worm.dismissed = null
+		}
+		const hidden = worm.dismissed !== null
+		this.syncSpeech(worm, speaking && !hidden ? peer.chat! : null, !!peer.chatSent)
 		const chat = (!speaking && peer.chat) || null
 		if (worm.chat !== chat) {
 			worm.chat = chat
@@ -295,30 +408,57 @@ export class AgentWorms {
 				const bubble = worm.bubble
 				bubble.classList.add('closing')
 				setTimeout(() => bubble.remove(), this.reducedMotion.matches ? 0 : SPEECH_CLOSE_MS)
-				worm.bubble = worm.bubbleText = null
+				worm.bubble = worm.bubbleText = worm.bubbleScroll = null
 				worm.speech = []
+				worm.speechText = null
 			}
 			return
 		}
+		worm.speechText = text
 		const chars = Array.from(text)
 		if (!worm.bubble) {
 			worm.bubble = document.createElement('div')
 			worm.bubble.className = 'agent-worm-speech'
+			worm.bubbleScroll = document.createElement('div')
+			worm.bubbleScroll.className = 'agent-worm-speech-scroll'
 			worm.bubbleText = document.createElement('span')
 			worm.bubbleText.className = 'agent-worm-speech-text'
-			worm.bubble.appendChild(worm.bubbleText)
+			worm.bubbleScroll.appendChild(worm.bubbleText)
+			worm.bubble.appendChild(worm.bubbleScroll)
+			if (worm.conjured) this.makeDismissable(worm, worm.bubble)
 			worm.el.appendChild(worm.bubble)
 			worm.speech = []
 			// Arriving at a message that's already finished: show it whole.
 			worm.speechShown = sent ? chars.length : 0
 			worm.speechDrawn = -1
 		} else if (chars.length < worm.speech.length || worm.speech.some((c, i) => chars[i] !== c)) {
-			// A new message replaced the one showing: type it from the start.
-			worm.speechShown = 0
+			// A new message replaced the one showing: type it from the start. (A long reply that only
+			// keeps its end drops characters off the front as it grows: keep showing it whole.)
+			worm.speechShown = chars[0] === '…' && worm.speech[0] === '…' ? chars.length : 0
 			worm.speechDrawn = -1
 		}
 		worm.speech = chars
 		worm.speechDone = sent
+		worm.bubble.classList.toggle('done', sent)
+	}
+
+	/** Conjured worms' replies can be long: they scroll, and × puts them away. */
+	private makeDismissable(worm: Worm, bubble: HTMLDivElement) {
+		const close = document.createElement('button')
+		close.className = 'agent-worm-speech-close'
+		close.title = 'Dismiss'
+		close.textContent = '×'
+		close.addEventListener('click', () => {
+			const text = worm.speechText
+			if (text === null) return
+			worm.dismissed = text
+			this.syncSpeech(worm, null, true)
+			const sessionId = this.conjure?.peer(worm.id)?.user.sessionId
+			if (sessionId && this.conjure?.canPrompt) this.conjure.dismiss(sessionId).catch((e) => console.error('dismiss failed', e))
+		})
+		bubble.appendChild(close)
+		// Scrolling and clicking the bubble shouldn't pan or select on the canvas underneath.
+		for (const type of ['pointerdown', 'wheel', 'dblclick'] as const) bubble.addEventListener(type, (e) => e.stopPropagation())
 	}
 
 	/** Types the speech out locally, smoothing over the server's bursts. */
@@ -331,8 +471,12 @@ export class AgentWorms {
 		}
 		const shown = Math.floor(worm.speechShown)
 		if (shown !== worm.speechDrawn && worm.bubbleText) {
+			const scroll = worm.bubbleScroll
+			// Follow the text as it types, unless someone scrolled up to read.
+			const atEnd = !scroll || scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 24
 			worm.speechDrawn = shown
 			worm.bubbleText.textContent = worm.speech.slice(0, shown).join('')
+			if (scroll && atEnd) scroll.scrollTop = scroll.scrollHeight
 		}
 		const typing = shown < total || !worm.speechDone
 		worm.bubble?.classList.toggle('typing', typing)
@@ -346,6 +490,7 @@ export class AgentWorms {
 
 		const talking = worm.bubble ? this.typeSpeech(worm, elapsed) : false
 		worm.talk += ((talking ? 1 : 0) - worm.talk) * (1 - Math.exp(-elapsed / 90))
+		worm.think += ((worm.thinking && !talking ? 1 : 0) - worm.think) * (1 - Math.exp(-elapsed / 200))
 
 		// Scale: pop in, burrow out.
 		const popT = Math.min(1, (now - worm.popStart) / POP_MS)
@@ -409,7 +554,7 @@ export class AgentWorms {
 		worm.wigglePhase += dt * (still ? 0 : 2.6 + 11 * worm.motion)
 
 		// Follow-the-leader chain in page space, spaced in screen pixels.
-		const spacing = (SPACING * worm.stretch * (worm.leaving ? worm.scale : 1)) / z
+		const spacing = (SPACING * worm.size * worm.stretch * (worm.leaving ? worm.scale : 1)) / z
 		const joints = worm.joints
 		joints[0] = { ...worm.head }
 		for (let i = 1; i < joints.length; i++) {
@@ -440,7 +585,14 @@ export class AgentWorms {
 
 		// Googly pupil: springs toward where it's looking, overshooting a little.
 		let look: Vec
-		if (worm.trip) look = { x: worm.trip.to.x - worm.head.x, y: worm.trip.to.y - worm.head.y }
+		const startle = startleAmount(worm, now)
+		if (startle > 0) look = { x: 0, y: 0.0001 }
+		else if (worm.think > 0.3) {
+			// Thinking: the eye rolls round and round.
+			const a = now / 260 + worm.seed
+			look = { x: Math.cos(a), y: Math.sin(a) }
+		} else if (worm.listening) look = { x: 0.15, y: 1 }
+		else if (worm.trip) look = { x: worm.trip.to.x - worm.head.x, y: worm.trip.to.y - worm.head.y }
 		else if (worm.focus) {
 			// Mostly eyeing the work, with the occasional glance around.
 			const glance = Math.sin(now / 1700 + worm.seed) > 0.75
@@ -449,7 +601,8 @@ export class AgentWorms {
 				: { x: worm.focus.x + worm.focus.w / 2 - worm.head.x, y: worm.focus.y + worm.focus.h / 2 - worm.head.y }
 		} else look = { x: Math.cos(now / 1300 + worm.seed), y: Math.sin(now / 1900 + worm.seed) * 0.6 }
 		const ll = Math.hypot(look.x, look.y) || 1
-		const want = { x: (look.x / ll) * 2.6, y: (look.y / ll) * 2.6 }
+		const reach = startle > 0 ? 0 : 2.6
+		const want = { x: (look.x / ll) * reach, y: (look.y / ll) * reach }
 		if (still) worm.pupil = want
 		else {
 			const h = Math.min(dt, 0.05)
@@ -464,7 +617,7 @@ export class AgentWorms {
 			}
 		}
 
-		if (!still && now > worm.nextBlink) {
+		if (!still && now > worm.nextBlink && startle === 0) {
 			worm.blinkStart = now
 			worm.nextBlink = now + 1800 + Math.random() * 4200
 		}
@@ -509,8 +662,14 @@ export class AgentWorms {
 	private draw(worm: Worm, now: number) {
 		const ctx = this.ctx
 		const still = this.reducedMotion.matches
-		const scale = worm.scale
+		const scale = worm.scale * worm.size
 		const { base, dark, light } = worm.palette
+		const startle = still ? 0 : startleAmount(worm, now)
+		const startleT = (now - worm.startledAt) / STARTLE_MS
+		// Startled: a hop straight up and a fast wobble that dies away. Thinking: a slow sway.
+		const hop = startle > 0 ? -Math.sin(Math.min(1, startleT * 2.2) * Math.PI) * 16 * worm.size : 0
+		const wobble = startle > 0 ? Math.sin(startleT * 42) * 4 * startle * worm.size : 0
+		const thinkSway = still ? 0 : Math.sin(now / 700 + worm.seed) * 4 * worm.think * worm.size
 
 		// Joints to screen, then the side-to-side wiggle, strongest toward the tail.
 		const pts = worm.joints.map((j) => this.editor.pageToScreen(j))
@@ -527,12 +686,17 @@ export class AgentWorms {
 			const f = i / (pts.length - 1)
 			const off = amp * Math.sin(worm.wigglePhase - i * 0.95) * (0.25 + 0.75 * f) * scale
 			const neck = Math.max(0, 1 - i * 0.4)
-			return { x: p.x - (ty / tl) * off, y: p.y + (tx / tl) * off + (i === 0 ? bob : bob * (1 - f) * 0.6) + nod * neck }
+			const lift = Math.max(0, 1 - f * 1.6)
+			return {
+				x: p.x - (ty / tl) * off + (wobble + thinkSway) * lift,
+				y: p.y + (tx / tl) * off + (i === 0 ? bob : bob * (1 - f) * 0.6) + nod * neck + hop * lift,
+			}
 		})
 		const samples = catmullRom(wiggled, 5)
 		const thin = 1 / Math.sqrt(Math.max(0.6, worm.stretch))
 		const radius = (f: number) => (HEAD_R + (TAIL_R - HEAD_R) * Math.pow(f, 1.15)) * thin * scale
 		const n = samples.length
+		worm.hit = worm.conjured ? samples.map((p, i) => ({ x: p.x, y: p.y, r: radius(i / (n - 1)) + OUTLINE * scale })) : []
 
 		// Shadow, outline, body: tail first so the head ends up on top.
 		ctx.fillStyle = 'rgba(0, 0, 0, 0.22)'
@@ -575,11 +739,12 @@ export class AgentWorms {
 		const fwd = worm.heading
 		const hr = radius(0)
 		// The labels and speech bubble follow the head but not its nodding, so the text stays readable.
-		worm.el.style.transform = `translate(${head.x}px, ${head.y - nod}px)`
+		worm.el.style.transform = `translate(${head.x - wobble}px, ${head.y - nod - hop}px)`
 		if (scale < 0.05) return
 
-		// Antenna with a twinkling sparkle, like the robot avatar.
-		const sway = still ? 0 : Math.sin(now / 260 + worm.seed) * 0.35 + worm.motion * Math.sin(worm.wigglePhase) * 0.3
+		// Antenna with a twinkling sparkle, like the robot avatar: bolt upright when startled.
+		const antennaSway = still ? 0 : Math.sin(now / 260 + worm.seed) * 0.35 + worm.motion * Math.sin(worm.wigglePhase) * 0.3
+		const sway = antennaSway * (1 - startle) + (startle > 0 ? Math.sin(startleT * 60) * 0.25 * startle : 0)
 		const baseX = head.x - fwd.x * hr * 0.35
 		const baseY = head.y - hr * 0.8
 		const tipX = baseX - fwd.x * 4 * scale + Math.sin(sway) * 9 * scale
@@ -590,13 +755,13 @@ export class AgentWorms {
 		ctx.moveTo(baseX, baseY)
 		ctx.quadraticCurveTo(baseX - fwd.x * 4 * scale, baseY - 6 * scale, tipX, tipY)
 		ctx.stroke()
-		const twinkle = still ? 1 : 1 + 0.3 * Math.sin(now / 180 + worm.seed)
-		sparkle(ctx, tipX, tipY, 3.6 * scale * twinkle, now / 900, light, dark)
+		const twinkle = still ? 1 : 1 + 0.3 * Math.sin(now / 180 + worm.seed) + 0.5 * startle
+		sparkle(ctx, tipX, tipY, 3.6 * scale * twinkle, now / (900 - 650 * worm.think), light, dark)
 
-		// One big googly eye.
+		// One big googly eye, bulging when startled and a little wider while listening.
 		const ex = head.x + fwd.x * hr * 0.25
-		const ey = head.y - hr * 0.22
-		const er = hr * 0.72
+		const ey = head.y - hr * 0.22 - hr * 0.12 * startle
+		const er = hr * 0.72 * (1 + 0.5 * startle + (worm.listening ? 0.08 : 0))
 		const blinkT = (now - worm.blinkStart) / 150
 		const open = blinkT >= 0 && blinkT < 1 ? Math.abs(1 - 2 * blinkT) : 1
 		ctx.fillStyle = dark
@@ -604,19 +769,49 @@ export class AgentWorms {
 		ctx.fillStyle = '#f8fafc'
 		ellipse(ctx, ex, ey, er, er * Math.max(open, 0.12))
 		if (open > 0.35) {
-			const ps = (er / 5.5) * scale
+			const ps = (er / 5.5) * scale / worm.size
 			const px = ex + worm.pupil.x * ps
 			const py = ey + worm.pupil.y * ps * open
+			// a pinprick pupil when startled
+			const pr = er * (0.46 - 0.3 * startle)
 			ctx.fillStyle = '#111113'
-			ellipse(ctx, px, py, er * 0.46, er * 0.46 * open)
+			ellipse(ctx, px, py, pr, pr * open)
 			ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
-			disc(ctx, px - er * 0.15, py - er * 0.17 * open, er * 0.13)
+			disc(ctx, px - pr * 0.33, py - pr * 0.37 * open, pr * 0.28)
 		}
 
-		// A small smile under the eye, toward the front; a chattering mouth while it talks.
+		// A small smile under the eye, toward the front; a chattering mouth while it talks, an "o"
+		// when startled, a wavering line while it thinks.
 		const mx = head.x + fwd.x * hr * 0.55
 		const my = head.y + hr * 0.42
-		if (worm.talk > 0.05) {
+		if (startle > 0.05) {
+			ctx.fillStyle = dark
+			ellipse(ctx, mx, my + 0.5 * scale, 2.1 * scale * (0.6 + 0.4 * startle), 2.8 * scale * startle)
+			// and a "!" popping out above
+			ctx.save()
+			ctx.globalAlpha = Math.min(1, startle * 1.5)
+			ctx.fillStyle = light
+			ctx.strokeStyle = dark
+			ctx.lineWidth = 2.5
+			ctx.font = `800 ${Math.round(15 * worm.size)}px system-ui, sans-serif`
+			ctx.textAlign = 'center'
+			const bx = head.x + hr * 1.25
+			const by = head.y - hr * 1.5 - 6 * startle * worm.size
+			ctx.strokeText('!', bx, by)
+			ctx.fillText('!', bx, by)
+			ctx.restore()
+		} else if (worm.think > 0.3 && worm.talk <= 0.05) {
+			ctx.strokeStyle = dark
+			ctx.lineWidth = 1.2 * scale
+			ctx.beginPath()
+			for (let k = 0; k <= 6; k++) {
+				const x = mx - 2.4 * scale + (k / 6) * 4.8 * scale
+				const y = my - 0.6 * scale + Math.sin(k * 1.6 + now / 140) * 0.6 * scale
+				if (k === 0) ctx.moveTo(x, y)
+				else ctx.lineTo(x, y)
+			}
+			ctx.stroke()
+		} else if (worm.talk > 0.05) {
 			const flap = still ? 0.6 : 0.5 + 0.3 * Math.sin(now / 62 + worm.seed) + 0.2 * Math.sin(now / 37)
 			ctx.fillStyle = dark
 			ellipse(ctx, mx, my, 2.4 * scale, (0.5 + 2.1 * flap) * worm.talk * scale)
@@ -628,6 +823,12 @@ export class AgentWorms {
 			ctx.stroke()
 		}
 	}
+}
+
+/** 1 right after a worm is startled, easing to 0 over STARTLE_MS. */
+function startleAmount(worm: Worm, now: number) {
+	const t = (now - worm.startledAt) / STARTLE_MS
+	return t >= 0 && t < 1 ? 1 - t * t : 0
 }
 
 function disc(ctx: CanvasRenderingContext2D, x: number, y: number, r: number) {

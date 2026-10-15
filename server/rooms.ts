@@ -192,7 +192,8 @@ function releaseRoom(name: string, room: Room) {
 
 /**
  * Publishes (or with null, removes) a presence state the server controls, under its own awareness
- * client id, so everyone in the room sees it like any other participant. Used for MCP agents. A
+ * client id, so everyone in the room sees it like any other participant. Used for MCP agents and
+ * conjured worms (through ServerPresence). A
  * published state keeps the room loaded; once the last one is removed and no sockets remain, the
  * room unloads as usual. `clock` must grow with every call for the same client id (and start at 1).
  * Removing never loads a room.

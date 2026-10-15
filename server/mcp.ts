@@ -28,7 +28,7 @@ import { z } from 'zod'
 import type {
 	Canvas, CanvasData, CanvasSummary, Item, Note, PresenceEntry, ResolvedSelection, Session, SessionView,
 } from '../shared/types'
-import { setServerPresence } from './rooms'
+import { SERVER_PRESENCE_RENEW_MS, ServerPresence } from './presence'
 
 /** What the MCP tools need from the canvas server. Functions throw (with a readable message) on bad input. */
 export interface CanvasMcpDeps {
@@ -70,8 +70,6 @@ const AGENT_COLOR = '#22d3ee'
 const AGENT_IDLE_MS = 2 * 60_000
 /** a little longer than browsers keep a sent chat message up, so the fade-out finishes first */
 const AGENT_CHAT_MS = 6000
-/** rooms drop presence states not renewed within 30s (y-protocols' outdatedTimeout) */
-const AGENT_RENEW_MS = 10_000
 const SAY_MAX = 280
 /** typing speed: SAY_TICK_CHARS characters every SAY_TICK_MS (about 33 characters a second) */
 const SAY_TICK_MS = 60
@@ -129,8 +127,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 		key: string
 		mcpSession: string
 		canvasId: string
-		clientId: number
-		clock: number
+		presence: ServerPresence
 		/** the OpenCode session it's named after */
 		sessionId?: string
 		selection: string[]
@@ -157,9 +154,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 	async function publish(a: Agent) {
 		if (agents.get(a.key) !== a) return
 		if (!deps.canvasExists(a.canvasId)) return dropAgent(a)
-		a.clock++
 		const speech = a.speech
-		await setServerPresence(`canvas-${a.canvasId}`, a.clientId, a.clock, {
+		await a.presence.set({
 			user: { name: agentName(a), color: AGENT_COLOR, agent: true },
 			cursor: null,
 			selection: a.selection,
@@ -176,8 +172,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 		clearTimeout(a.idleTimer)
 		clearTimeout(a.chatTimer)
 		clearTimeout(a.speechTimer)
-		a.clock++
-		setServerPresence(`canvas-${a.canvasId}`, a.clientId, a.clock, null).catch((e) => console.error('agent leave failed:', e))
+		a.presence.leave().catch((e) => console.error('agent leave failed:', e))
 	}
 
 	/** Types a say message out in the agent's chat, then keeps it up for a while before clearing it. */
@@ -215,8 +210,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			const key = agentKey(who.mcpSession, canvasId)
 			let a = agents.get(key)
 			if (!a) {
-				const clientId = crypto.getRandomValues(new Uint32Array(1))[0]
-				a = { key, mcpSession: who.mcpSession, canvasId, clientId, clock: 0, selection: [], chat: null, speech: null, joined: false }
+				a = { key, mcpSession: who.mcpSession, canvasId, presence: new ServerPresence(canvasId), selection: [], chat: null, speech: null, joined: false }
 				agents.set(key, a)
 			}
 			if (who.sessionId) a.sessionId = who.sessionId
@@ -247,10 +241,10 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 
 	setInterval(() => {
 		for (const a of agents.values()) publish(a).catch(() => {})
-	}, AGENT_RENEW_MS)
+	}, SERVER_PRESENCE_RENEW_MS)
 
 	/** The calling agent's own awareness client id on a canvas, to leave it out of presence results. */
-	const ownClientId = (who: Who, canvasId: string) => agents.get(agentKey(who.mcpSession, canvasId))?.clientId
+	const ownClientId = (who: Who, canvasId: string) => agents.get(agentKey(who.mcpSession, canvasId))?.presence.clientId
 
 	// ---------- MCP sessions ----------
 

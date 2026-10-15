@@ -10,6 +10,10 @@ export interface PeerUser {
 	color: string
 	/** set by AI agents working through the canvas MCP server: no cursor or view, just activity */
 	agent?: boolean
+	/** a conjured worm: an OpenCode session brought onto the canvas, which edit links can prompt */
+	conjured?: boolean
+	/** conjured worms: their OpenCode session */
+	sessionId?: string
 }
 
 /** What each person broadcasts through Yjs awareness. */
@@ -24,6 +28,10 @@ interface PresenceState {
 	chat: string | null
 	/** true once the message was sent (Enter), so viewers can fade it out */
 	chatSent: boolean
+	/** agents: chat is something they say (a speech bubble) rather than an activity */
+	speaking?: boolean
+	/** conjured worms: their session is working on a prompt */
+	thinking?: boolean
 }
 
 export interface Peer extends PresenceState {

@@ -82,7 +82,8 @@ export interface Note {
 /** Someone on a canvas right now, from the room's Yjs awareness (GET /api/canvases/:cid/presence). */
 export interface PresenceEntry {
 	clientId: number
-	user: { name: string; color: string; agent?: boolean }
+	/** agent: an AI agent (no pointer); conjured: a worm for an OpenCode session you can talk to (see ConjuredAgent) */
+	user: { name: string; color: string; agent?: boolean; conjured?: boolean; sessionId?: string }
 	/** item ids as they are, "frame:<sessionId>" for session frames, "note:<noteId>" for sticky notes */
 	selection: string[]
 	/** page coordinates, or null when their pointer is off the canvas */
@@ -90,6 +91,44 @@ export interface PresenceEntry {
 	/** the part of the page they're looking at */
 	view: { x: number; y: number; w: number; h: number } | null
 	chat: string | null
+	/** false while the chat message is still being typed (or, for agents, streamed) */
+	chatSent?: boolean
+	/** conjured worms: their OpenCode session is working on a prompt */
+	thinking?: boolean
+}
+
+/** GET /api/opencode/status */
+export interface OpenCodeStatus {
+	connected: boolean
+	url?: string
+	error?: string
+}
+
+/** One OpenCode session as GET /api/opencode/sessions lists it. */
+export interface OpenCodeSessionSummary {
+	id: string
+	title: string
+	directory: string
+	updatedAt: number
+	/** running a prompt right now */
+	busy: boolean
+	/** set on subagent sessions */
+	parentId?: string
+}
+
+/**
+ * An OpenCode session brought onto a canvas as a worm people can prompt (at most one per session
+ * per canvas). It sits at (x, y) in page coordinates and is present in the canvas's room.
+ */
+export interface ConjuredAgent {
+	canvasId: string
+	sessionId: string
+	title: string
+	directory: string
+	color: string
+	x: number
+	y: number
+	createdAt: number
 }
 
 /** One person's selection, resolved into objects (GET /api/canvases/:cid/selection). */

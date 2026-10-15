@@ -1,6 +1,7 @@
 import type { Editor } from '../editor/Editor'
 import type { Vec } from '../editor/geometry'
 import { AgentWorms } from './AgentWorms'
+import type { Conjure } from './Conjure'
 import type { Peer, Presence } from './Presence'
 
 const EASE_MS = 45
@@ -23,11 +24,12 @@ export class PeerCursors {
 		parent: HTMLElement,
 		private editor: Editor,
 		private presence: Presence,
+		conjure: Conjure | null = null,
 	) {
 		this.host = document.createElement('div')
 		this.host.className = 'peer-cursors'
 		parent.appendChild(this.host)
-		this.worms = new AgentWorms(this.host, editor)
+		this.worms = new AgentWorms(this.host, editor, conjure)
 		this.dispose = editor.onFrame((now, elapsed) => this.update(now, elapsed))
 	}
 

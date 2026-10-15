@@ -1,4 +1,4 @@
-import type { Canvas, CanvasData, CanvasSummary, ServerEvent } from '../../../shared/types'
+import type { Canvas, CanvasData, CanvasSummary, ConjuredAgent, OpenCodeSessionSummary, OpenCodeStatus, ServerEvent } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { BASE, url as withBase } from '../base'
 
@@ -40,6 +40,29 @@ export const deleteItem = (id: string) => request<unknown>(`/api/items/${encodeU
 /** Brings deleted items and sessions back from the trash (within an hour of deleting them). */
 export const restoreDeleted = (canvasId: string, ids: { itemIds: string[]; sessionIds: string[] }) =>
 	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/restore`, json('POST', ids))
+
+// ---------- OpenCode: conjured worms ----------
+
+export const openCodeStatus = () => request<OpenCodeStatus>('/api/opencode/status')
+export const listOpenCodeSessions = () => request<OpenCodeSessionSummary[]>('/api/opencode/sessions')
+
+const conjuredPath = (canvasId: string, sessionId?: string) =>
+	`/api/canvases/${encodeURIComponent(canvasId)}/conjured${sessionId ? `/${encodeURIComponent(sessionId)}` : ''}`
+
+export const listConjured = (canvasId: string) => request<ConjuredAgent[]>(conjuredPath(canvasId))
+/** Brings an OpenCode session onto the canvas as a worm at page position (x, y). Fails with status 409 if it's already here. */
+export async function conjure(canvasId: string, sessionId: string, at: { x: number; y: number }) {
+	const res = await fetch(withBase(conjuredPath(canvasId)), json('POST', { sessionId, x: at.x, y: at.y }))
+	const body = await res.json().catch(() => null)
+	if (!res.ok) throw Object.assign(new Error(body?.error ?? `request failed: ${res.status}`), { status: res.status })
+	return body as ConjuredAgent
+}
+export const banishConjured = (canvasId: string, sessionId: string) =>
+	request<unknown>(conjuredPath(canvasId, sessionId), { method: 'DELETE' })
+export const promptConjured = (canvasId: string, sessionId: string, text: string, from?: string) =>
+	request<unknown>(`${conjuredPath(canvasId, sessionId)}/prompt`, json('POST', { text, from }))
+export const dismissConjured = (canvasId: string, sessionId: string) =>
+	request<unknown>(`${conjuredPath(canvasId, sessionId)}/dismiss`, json('POST', {}))
 
 /** Thrown when a canvas doesn't exist (or was deleted). */
 export class CanvasNotFound extends Error {}

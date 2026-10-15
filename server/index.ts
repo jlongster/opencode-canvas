@@ -3,9 +3,11 @@ import { existsSync } from 'node:fs'
 import { basename, extname, join, resolve } from 'node:path'
 import * as Y from 'yjs'
 import type {
-	Canvas, CanvasData, CanvasSummary, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, ServerEvent, Session, SessionView,
+	Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, ServerEvent, Session, SessionView,
 } from '../shared/types'
+import { ConjureError, createConjured } from './conjured'
 import { createCanvasMcp } from './mcp'
+import { listOpenCodeSessions, OpenCodeUnavailable, openCodeStatus } from './opencode'
 import { discardRoom, getRoomSnapshot, readRoomDoc, roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
 import type { ServerWebSocket } from 'bun'
 
@@ -48,6 +50,8 @@ interface StoredIndex {
 	sessions: Session[]
 	items: Item[]
 	trash?: TrashEntry[]
+	/** OpenCode sessions conjured onto canvases as worms (see conjured.ts) */
+	conjured?: ConjuredAgent[]
 }
 
 /**
@@ -72,6 +76,7 @@ const db: { canvases: Map<string, Canvas>; sessions: Map<string, Session>; items
 }
 /** keyed "item:<id>" and "session:<canvasId>/<sessionId>" */
 const trash = new Map<string, TrashEntry>()
+let storedConjured: ConjuredAgent[] = []
 const trashKey = (entry: TrashEntry) =>
 	entry.kind === 'item' ? `item:${entry.item.id}` : `session:${sessionKey(entry.session.canvasId, entry.session.id)}`
 
@@ -81,6 +86,7 @@ if (existsSync(INDEX_FILE)) {
 	for (const s of stored.sessions) db.sessions.set(sessionKey(s.canvasId, s.id), s)
 	for (const i of stored.items) db.items.set(i.id, withName(i))
 	for (const t of stored.trash ?? []) trash.set(trashKey(t), t.kind === 'item' ? { ...t, item: withName(t.item) } : t)
+	storedConjured = stored.conjured ?? []
 }
 
 /** Items saved before they had names get one: their title (or id) plus the file's extension. */
@@ -121,8 +127,18 @@ function storedIndex(): StoredIndex {
 		sessions: [...db.sessions.values()],
 		items: [...db.items.values()],
 		trash: [...trash.values()],
+		conjured: conjured.all(),
 	}
 }
+
+const conjured = createConjured(
+	{
+		canvasExists: (id) => db.canvases.has(id),
+		canvasTitle: (id) => db.canvases.get(id)?.title ?? '',
+		save,
+	},
+	storedConjured,
+)
 
 // ---------- live events (WebSocket) ----------
 // Every change is pushed to open canvases over /api/live. (This used to be server-sent events,
@@ -639,6 +655,7 @@ function createCanvas(title?: string): Canvas {
 
 async function deleteCanvas(canvas: Canvas) {
 	db.canvases.delete(canvas.id)
+	conjured.dropCanvas(canvas.id)
 	for (const session of canvasSessions(canvas.id)) deleteSession(session)
 	// items whose session record is missing, just in case
 	for (const item of [...db.items.values()]) if (item.canvasId === canvas.id) deleteItem(item.id)
@@ -662,11 +679,19 @@ function presence(canvasId: string): PresenceEntry[] {
 		if (!user || typeof user !== 'object') continue
 		entries.push({
 			clientId,
-			user: { name: String(user.name ?? ''), color: String(user.color ?? ''), ...(user.agent === true ? { agent: true } : {}) },
+			user: {
+				name: String(user.name ?? ''),
+				color: String(user.color ?? ''),
+				...(user.agent === true ? { agent: true } : {}),
+				...(user.conjured === true ? { conjured: true } : {}),
+				...(typeof user.sessionId === 'string' ? { sessionId: user.sessionId } : {}),
+			},
 			selection: Array.isArray(state.selection) ? state.selection.filter((s): s is string => typeof s === 'string') : [],
 			cursor: (state.cursor as PresenceEntry['cursor']) ?? null,
 			view: (state.view as PresenceEntry['view']) ?? null,
 			chat: typeof state.chat === 'string' ? state.chat : null,
+			...(typeof state.chatSent === 'boolean' ? { chatSent: state.chatSent } : {}),
+			...(user.conjured === true ? { thinking: state.thinking === true } : {}),
 		})
 	}
 	return entries.sort((a, b) => a.clientId - b.clientId)
@@ -768,6 +793,16 @@ const API_INDEX = {
 			'What each person on the canvas has selected, resolved: {"users": [{"user", "selection", "items" (full items ' +
 			'with absolute "url"/"thumbUrl"), "sessions" (with "itemCount"), "notes", "missing"}]}. Use this to answer ' +
 			'"what have I selected?"',
+		'GET /api/opencode/status': 'Whether the canvas server can reach OpenCode: {"connected", "url"?, "error"?}',
+		'GET /api/opencode/sessions': 'Recent OpenCode sessions across projects, newest first: [{"id", "title", "directory", "updatedAt", "busy"}]',
+		'GET /api/canvases/:cid/conjured': 'OpenCode sessions conjured onto the canvas as worms people can talk to',
+		'POST /api/canvases/:cid/conjured':
+			'Conjure an OpenCode session as a worm. Body: {"sessionId", "x", "y"} (page position). 409 if that session is already here',
+		'DELETE /api/canvases/:cid/conjured/:sessionId': 'Banish a conjured worm',
+		'POST /api/canvases/:cid/conjured/:sessionId/prompt':
+			'Prompt the worm\'s OpenCode session. Body: {"text", "from"?}. The worm thinks, then its reply streams into its ' +
+			'presence chat. 409 while the session is busy, 502 when OpenCode refuses',
+		'POST /api/canvases/:cid/conjured/:sessionId/dismiss': 'Clear the worm\'s speech bubble for everyone',
 	},
 	items:
 		'Every item has a "name": its file name. On upload it is the original file name (the path\'s basename, the ' +
@@ -928,6 +963,47 @@ async function handle(req: Request): Promise<Response> {
 		return json({ canvasId: canvas.id, users: await resolveSelections(canvas.id) })
 	}
 
+	// ---- OpenCode: conjured worms ----
+
+	if (p === '/api/opencode/status' && method === 'GET') return json(await openCodeStatus())
+	if (p === '/api/opencode/sessions' && method === 'GET') {
+		try {
+			return json(await listOpenCodeSessions())
+		} catch (e) {
+			if (e instanceof OpenCodeUnavailable) throw new HttpError(503, e.message)
+			throw new HttpError(502, `OpenCode: ${(e as Error).message ?? e}`)
+		}
+	}
+
+	m = /^\/api\/canvases\/([^/]+)\/conjured$/.exec(p)
+	if (m) {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		if (method === 'GET') return json(conjured.list(canvas.id))
+		if (method === 'POST') {
+			const body = (await req.json().catch(() => ({}))) as { sessionId?: unknown; x?: unknown; y?: unknown }
+			return json(await conjured.conjure(canvas.id, body?.sessionId, body?.x, body?.y), 201)
+		}
+	}
+
+	m = /^\/api\/canvases\/([^/]+)\/conjured\/([^/]+)$/.exec(p)
+	if (m && method === 'DELETE') {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		conjured.banish(canvas.id, decodeURIComponent(m[2]))
+		return json({ ok: true })
+	}
+
+	m = /^\/api\/canvases\/([^/]+)\/conjured\/([^/]+)\/(prompt|dismiss)$/.exec(p)
+	if (m && method === 'POST') {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		const sessionId = decodeURIComponent(m[2])
+		if (m[3] === 'dismiss') {
+			await conjured.dismiss(canvas.id, sessionId)
+			return json({ ok: true })
+		}
+		const body = (await req.json().catch(() => ({}))) as { text?: unknown; from?: unknown }
+		return json(await conjured.prompt(canvas.id, sessionId, body?.text, body?.from), 202)
+	}
+
 	// ---- groups (named sets of items within a session) ----
 
 	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/groups\/([^/]+)$/.exec(p)
@@ -1086,7 +1162,7 @@ Bun.serve<SocketData, never>({
 		try {
 			return await handle(req)
 		} catch (e) {
-			if (e instanceof HttpError) return json({ error: e.message }, e.status)
+			if (e instanceof HttpError || e instanceof ConjureError) return json({ error: e.message }, e.status)
 			console.error(e)
 			return json({ error: 'internal error' }, 500)
 		}

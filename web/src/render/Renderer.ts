@@ -1,11 +1,12 @@
 import type { Item } from '../../../shared/types'
-import type { Editor } from '../editor/Editor'
+import type { Editor, HtmlLink } from '../editor/Editor'
 import { Box } from '../editor/geometry'
 import { LAYOUT, type SectionLayout } from '../editor/layout'
 import { frameKey } from '../editor/selection'
 import { imageShader, rectShader, videoShader } from './shaders'
 import { TextureCache } from './TextureCache'
 import { VideoPool } from './VideoPool'
+import { LinkHover, loadHtml, makeNonce, parseLinkMessage, withLinkReporter, type FrameTransform } from './HtmlLinks'
 import { url as withBase } from '../base'
 
 const THUMB_SIZE = 512
@@ -80,6 +81,7 @@ export class Renderer {
 	private actions: ItemActions
 	private titles: ItemTitles
 	private html: HtmlItems
+	private linkHover: LinkHover
 
 	private displayedItems = new Map<string, Displayed>()
 	private displayedSections = new Map<string, Displayed>()
@@ -197,6 +199,8 @@ export class Renderer {
 		this.textures = new TextureCache(device, imageLayout)
 		this.videos = new VideoPool(overlay)
 		this.html = new HtmlItems(overlay)
+		this.linkHover = new LinkHover(this.html.host)
+		editor.linkAt = (point) => this.html.linkAt(point)
 		this.labels = new SectionLabels(overlay, options.readOnly ? null : (id) => options.onCloseSection?.(id))
 		this.titles = new ItemTitles(overlay)
 		this.actions = new ItemActions(overlay)
@@ -339,6 +343,8 @@ export class Renderer {
 			editor,
 			{ selected, hovered, remote: remoteSelected },
 		)
+		const link = editor.hoveredLink.get()
+		this.linkHover.update(link, link && this.html.transform(link.itemId), editor.viewport.get())
 
 		for (const [id, d] of this.displayedItems) {
 			if (!Box.intersects(d, cull)) continue
@@ -562,6 +568,8 @@ export class Renderer {
 		this.actions.destroy()
 		this.titles.destroy()
 		this.html.destroy()
+		this.linkHover.destroy()
+		if (this.editor.linkAt) this.editor.linkAt = null
 		this.device.destroy()
 	}
 }
@@ -625,24 +633,66 @@ interface HtmlFrame {
 	loaded: boolean
 	src: string
 	style: string
+	/** In the document's injected link reporter; its messages must carry it. */
+	nonce: string
+	/** Its links in document px, as last reported. */
+	links: { href: string; rects: Box[] }[]
+	/** Where the document is on screen, as of the last update(). */
+	transform: FrameTransform & { w: number; h: number }
 }
 
 /**
  * HTML items as sandboxed iframes in the overlay, laid out at the item's design size (item.width ×
  * item.height CSS px) and scaled onto its displayed box, so the browser renders them crisply at any
- * zoom. They never take input (the editor hit-tests from layout boxes), so they behave like images.
+ * zoom. They never take input (the editor hit-tests from layout boxes), so they behave like images;
+ * their links are reported by a script injected into each document (see HtmlLinks.ts) and opened
+ * by the editor.
  * Only items in or near the viewport get an iframe, at most MAX_HTML_FRAMES, biggest on screen first.
  * Since they cover the WebGPU canvas, their selection/hover outlines are drawn here too.
  */
 class HtmlItems {
 	private frames = new Map<string, HtmlFrame>()
-	private host: HTMLDivElement
+	readonly host: HTMLDivElement
 
 	constructor(parent: HTMLElement) {
 		this.host = document.createElement('div')
 		this.host.className = 'html-items'
 		// First in the overlay, so titles, buttons, notes and cursors all sit above.
 		parent.prepend(this.host)
+		window.addEventListener('message', this.onMessage)
+	}
+
+	private onMessage = (e: MessageEvent) => {
+		if (!e.source) return
+		for (const f of this.frames.values()) {
+			if (f.frame.contentWindow !== e.source) continue
+			const links = parseLinkMessage(e.data, f.nonce)
+			if (links) f.links = links
+			return
+		}
+	}
+
+	/** Where the item's document is on screen, if it's mounted. */
+	transform(id: string): FrameTransform | null {
+		return this.frames.get(id)?.transform ?? null
+	}
+
+	/** The link under a screen point (relative to the canvas container), in a mounted, loaded item. */
+	linkAt(point: { x: number; y: number }): HtmlLink | null {
+		for (const [itemId, f] of this.frames) {
+			const t = f.transform
+			if (!f.loaded || !f.links.length || t.sx <= 0 || t.sy <= 0) continue
+			const x = (point.x - t.x) / t.sx
+			const y = (point.y - t.y) / t.sy
+			if (x < 0 || y < 0 || x > t.w || y > t.h) continue
+			// Later links are usually drawn on top of earlier ones.
+			for (let i = f.links.length - 1; i >= 0; i--) {
+				const link = f.links[i]
+				if (link.rects.some((r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h)) return { itemId, ...link }
+			}
+			return null
+		}
+		return null
 	}
 
 	/** Returns the ids of the items that are mounted. */
@@ -668,11 +718,7 @@ class HtmlItems {
 			seen.add(item.id)
 			const f = this.frames.get(item.id) ?? this.mount(item)
 			const src = withBase(item.src)
-			if (f.src !== src) {
-				f.src = src
-				f.loaded = false
-				f.frame.src = src
-			}
+			if (f.src !== src) this.load(f, src)
 			const p = editor.pageToScreen(d)
 			const remote = marks.remote.get(item.id)
 			const shadow = marks.selected.has(item.id)
@@ -690,7 +736,8 @@ class HtmlItems {
 			}
 			f.frame.style.width = `${item.width}px`
 			f.frame.style.height = `${item.height}px`
-			f.frame.style.transform = `scale(${(d.w * z) / item.width}, ${(d.h * z) / item.height})`
+			f.transform = { x: p.x, y: p.y, sx: (d.w * z) / item.width, sy: (d.h * z) / item.height, w: item.width, h: item.height }
+			f.frame.style.transform = `scale(${f.transform.sx}, ${f.transform.sy})`
 			f.frame.style.opacity = f.loaded ? String(d.opacity) : '0'
 		}
 		for (const [id, f] of this.frames) {
@@ -711,8 +758,19 @@ class HtmlItems {
 		frame.loading = 'lazy'
 		frame.tabIndex = -1
 		frame.title = item.title ?? 'HTML item'
-		const f: HtmlFrame = { wrap, frame, loaded: false, src: '', style: '' }
+		const f: HtmlFrame = {
+			wrap,
+			frame,
+			loaded: false,
+			src: '',
+			style: '',
+			nonce: '',
+			links: [],
+			transform: { x: 0, y: 0, sx: 0, sy: 0, w: 0, h: 0 },
+		}
 		frame.addEventListener('load', () => {
+			// The initial about:blank, before load() has given it a document.
+			if (!frame.hasAttribute('srcdoc') && !frame.hasAttribute('src')) return
 			f.loaded = true
 			frame.style.opacity = '1'
 		})
@@ -722,7 +780,30 @@ class HtmlItems {
 		return f
 	}
 
+	/**
+	 * Loads the item's HTML as srcdoc with the link reporter added. It keeps the sandbox's opaque
+	 * origin, and a <base> keeps relative URLs pointing where they did. If the HTML can't be fetched,
+	 * the iframe loads the URL itself (no links).
+	 */
+	private load(f: HtmlFrame, src: string) {
+		f.src = src
+		f.loaded = false
+		f.links = []
+		f.nonce = makeNonce()
+		const nonce = f.nonce
+		loadHtml(src).then((html) => {
+			if (f.src !== src || f.nonce !== nonce || !f.frame.isConnected) return
+			if (html === null) {
+				f.frame.removeAttribute('srcdoc')
+				f.frame.src = src
+			} else {
+				f.frame.srcdoc = withLinkReporter(html, src, nonce)
+			}
+		})
+	}
+
 	destroy() {
+		window.removeEventListener('message', this.onMessage)
 		this.host.remove()
 	}
 }

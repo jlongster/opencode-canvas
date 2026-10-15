@@ -8,7 +8,7 @@ import { StateNode } from './StateNode'
 import { HandTool } from './tools/HandTool'
 import { NoteTool } from './tools/NoteTool'
 import { SelectTool } from './tools/SelectTool'
-import type { EditorEvent, Modifiers, Target } from './types'
+import type { EditorEvent, EventOf, Modifiers, Target } from './types'
 
 export interface Camera {
 	x: number
@@ -44,6 +44,13 @@ class Root extends StateNode {
 }
 
 export type ToolId = 'select' | 'hand' | 'note'
+
+/** A link in an HTML item: its URL and rects in the item's document px (see render/HtmlLinks.ts). */
+export interface HtmlLink {
+	itemId: string
+	href: string
+	rects: Box[]
+}
 
 /** Pointer and keyboard state, kept up to date before events reach the state chart. */
 export class Inputs {
@@ -90,6 +97,8 @@ export class Editor {
 	/** Reactive copy of inputs.shiftKey, for UI that changes while shift is held. */
 	readonly isShiftDown = atom<boolean>('isShiftDown', false)
 	readonly toolPath = atom<string>('toolPath', '')
+	/** The link in an HTML item under the pointer, which a click opens. */
+	readonly hoveredLink = atom<HtmlLink | null>('hoveredLink', null, linkEquals)
 	readonly connection = atom<'connecting' | 'open' | 'closed'>('connection', 'connecting')
 
 	// --- derived ---
@@ -105,6 +114,8 @@ export class Editor {
 	readonly inputs = new Inputs()
 	/** Set when sticky notes are available (edit role); the note tool calls it to drop a note. */
 	createNote: ((point: Vec) => void) | null = null
+	/** Set by the renderer: the link in an HTML item at a screen point, if any (ignoring what's on top). */
+	linkAt: ((point: Vec) => HtmlLink | null) | null = null
 	readonly deletions = new Deletions(this)
 	readonly root: Root
 
@@ -121,6 +132,16 @@ export class Editor {
 	private pinch: { startDistance: number; startZoom: number; pagePoint: Vec } | null = null
 	private lastTap: { time: number; point: Vec } | null = null
 	private lastPointerType = 'mouse'
+	/** The cursor the tools asked for; a hovered link shows 'pointer' over it. */
+	private toolCursor = 'default'
+	/** Whether the pointer is over the canvas itself rather than UI on top of it (notes, buttons…). */
+	private pointerOnSurface = false
+	/**
+	 * Pressed on a link: held back from the state chart until it moves into a drag (then replayed,
+	 * so drags start as usual) or is released (then the link opens and nothing gets selected).
+	 */
+	private linkPress: { href: string; down: EventOf<'pointer_down'> } | null = null
+	private lastLinkOpen = 0
 
 	constructor() {
 		this.root = new Root(this)
@@ -211,7 +232,8 @@ export class Editor {
 		this.brush.set(brush)
 	}
 	setCursor(cursor: string) {
-		this.cursor.set(cursor)
+		this.toolCursor = cursor
+		this.cursor.set(this.hoveredLink.peek() ? 'pointer' : cursor)
 	}
 
 	// ---------- tools ----------
@@ -265,6 +287,40 @@ export class Editor {
 		if (kind === 'frame') return this.layout.get().sections.find((s) => s.id === id)?.box
 		if (kind === 'note') return this.noteBoxes.get()[id]
 		return this.layout.get().items.get(id)
+	}
+
+	/** The openable link under a screen point, if the select tool is idle and nothing covers it. */
+	private linkUnder(point: Vec): HtmlLink | null {
+		if (!this.linkAt || this.toolPath.peek() !== 'select.idle' || this.inputs.isSpaceDown) return null
+		const link = this.linkAt(point)
+		if (!link) return null
+		const target = this.getTargetAt(this.screenToPage(point))
+		return target.type === 'item' && target.id === link.itemId ? link : null
+	}
+
+	private updateLinkHover() {
+		const { inputs } = this
+		const canHover =
+			this.lastPointerType !== 'touch' &&
+			inputs.isPointerInside &&
+			this.pointerOnSurface &&
+			!inputs.isPanning &&
+			(!inputs.isPointing || (this.linkPress && !inputs.isDragging))
+		const link = canHover ? this.linkUnder(inputs.currentScreenPoint) : null
+		if (linkEquals(link, this.hoveredLink.peek())) return
+		this.hoveredLink.set(link)
+		this.cursor.set(link ? 'pointer' : this.toolCursor)
+	}
+
+	private openLink(href: string) {
+		this.lastLinkOpen = performance.now()
+		window.open(href, '_blank', 'noopener,noreferrer')
+	}
+
+	/** Whether an event is on the canvas itself, not on UI inside the container (notes, labels, buttons). */
+	private isOnSurface(e: Event) {
+		const t = e.target
+		return !!t && (t === this.container || (t as Node).parentNode === this.container)
 	}
 
 	// ---------- camera ----------
@@ -548,9 +604,18 @@ export class Editor {
 			inputs.isPanning = true
 			this.setCursor('grabbing')
 			this.setHovered(null)
+			this.updateLinkHover()
 			return
 		}
-		this.dispatch({ name: 'pointer_down', point, button: e.button, target: this.getTargetAt(inputs.currentPagePoint), ...modifiers })
+		const down: EventOf<'pointer_down'> = { name: 'pointer_down', point, button: e.button, target: this.getTargetAt(inputs.currentPagePoint), ...modifiers }
+		// Cmd/Ctrl-click still opens a link; shift and alt keep their usual meaning.
+		const link = e.button === 0 && !e.shiftKey && !e.altKey && this.isOnSurface(e) ? this.linkUnder(point) : null
+		if (link) {
+			this.linkPress = { href: link.href, down }
+			return
+		}
+		this.dispatch(down)
+		this.updateLinkHover()
 	}
 
 	private handlePointerMove = (e: PointerEvent) => {
@@ -570,6 +635,8 @@ export class Editor {
 		inputs.previousScreenPoint = inputs.currentScreenPoint
 		inputs.currentScreenPoint = point
 
+		if (!inputs.isPointing) this.pointerOnSurface = this.isOnSurface(e)
+
 		if (inputs.isPanning) {
 			this.panBy(delta.x, delta.y)
 			return
@@ -579,7 +646,14 @@ export class Editor {
 		if (inputs.isPointing && !inputs.isDragging && Vec.dist(point, inputs.originScreenPoint) > DRAG_DISTANCE) {
 			inputs.isDragging = true
 		}
+		// A press on a link became a drag: start it as if the link weren't there.
+		const press = this.linkPress
+		if (press && inputs.isDragging) {
+			this.linkPress = null
+			this.dispatch(press.down)
+		}
 		this.dispatch({ name: 'pointer_move', point, button: e.button, target: this.getTargetAt(inputs.currentPagePoint), ...modifiers })
+		this.updateLinkHover()
 	}
 
 	private handlePointerUp = (e: PointerEvent) => {
@@ -593,12 +667,20 @@ export class Editor {
 		inputs.isPanning = false
 		if (this.container!.hasPointerCapture(e.pointerId)) this.container!.releasePointerCapture(e.pointerId)
 
+		const press = this.linkPress
+		this.linkPress = null
 		if (wasPanning) {
 			this.flingCamera()
 			this.setCursor(inputs.isSpaceDown ? 'grab' : this.restingCursor())
+			this.updateLinkHover()
+			return
+		}
+		if (press) {
+			if (e.type === 'pointerup') this.openLink(press.href)
 			return
 		}
 		this.dispatch({ name: 'pointer_up', point, button: e.button, target: this.getTargetAt(inputs.currentPagePoint), ...modifiers })
+		this.updateLinkHover()
 	}
 
 	private handlePointerLeave = () => {
@@ -606,12 +688,15 @@ export class Editor {
 			this.inputs.isPointerInside = false
 			this.setHovered(null)
 			this.pointerPage.set(null)
+			this.updateLinkHover()
 		}
 	}
 
 	private handleDoubleClick = (e: MouseEvent) => {
 		// Touch double-taps are recognised in handleTouchUp; ignore any dblclick the browser adds.
 		if (this.inputs.isSpaceDown || this.lastPointerType === 'touch') return
+		// The second click of a double-click on a link opened it (again); don't also zoom.
+		if (performance.now() - this.lastLinkOpen < DOUBLE_TAP_MS * 2) return
 		const { point, modifiers } = this.pointerInfo(e)
 		this.dispatch({ name: 'double_click', point, target: this.getTargetAt(this.screenToPage(point)), ...modifiers })
 	}
@@ -630,6 +715,8 @@ export class Editor {
 		this.touches.set(e.pointerId, point)
 		this.stopCameraMotion()
 		if (this.touches.size === 1) {
+			this.pointerOnSurface = this.isOnSurface(e)
+			this.updateLinkHover()
 			this.updateModifiers(modifiers)
 			this.touchMode = 'pending'
 			inputs.originScreenPoint = inputs.currentScreenPoint = inputs.previousScreenPoint = point
@@ -721,8 +808,14 @@ export class Editor {
 		if (mode === 'pan') return this.flingCamera()
 		if (mode !== 'pending' || e.type === 'pointercancel') return
 
-		// A tap: the state chart gets a click at the point the finger went down.
+		// A tap: the state chart gets a click at the point the finger went down, unless it's on a link.
 		const point = inputs.originScreenPoint
+		const link = this.pointerOnSurface ? this.linkUnder(point) : null
+		if (link) {
+			this.lastTap = null
+			this.openLink(link.href)
+			return
+		}
 		inputs.currentScreenPoint = point
 		inputs.currentPagePoint = inputs.originPagePoint = this.screenToPage(point)
 		const target = this.getTargetAt(inputs.currentPagePoint)
@@ -775,6 +868,7 @@ export class Editor {
 			e.preventDefault()
 			if (!this.inputs.isSpaceDown) {
 				this.inputs.isSpaceDown = true
+				this.updateLinkHover()
 				if (!this.inputs.isPointing) this.setCursor('grab')
 			}
 			return
@@ -822,6 +916,7 @@ export class Editor {
 		this.touches.clear()
 		this.touchMode = null
 		this.pinch = null
+		this.linkPress = null
 		this.updateModifiers({ shiftKey: false, altKey: false, ctrlKey: false, metaKey: false })
 		if (this.inputs.isPointing) {
 			this.inputs.isPointing = this.inputs.isDragging = this.inputs.isPanning = false
@@ -912,6 +1007,8 @@ export class Editor {
 			}
 
 			this.root.handleEvent({ name: 'tick', elapsed })
+			// The camera or the document can move a link under a still pointer.
+			if (this.lastPointerType !== 'touch' && this.inputs.isPointerInside) this.updateLinkHover()
 		})
 	}
 
@@ -927,6 +1024,12 @@ export class Editor {
 function boxRecordEquals(a: Record<string, Box>, b: Record<string, Box>) {
 	const keys = Object.keys(a)
 	return keys.length === Object.keys(b).length && keys.every((k) => b[k] && Box.equals(a[k], b[k]))
+}
+
+function linkEquals(a: HtmlLink | null, b: HtmlLink | null) {
+	if (a === b) return true
+	if (!a || !b || a.itemId !== b.itemId || a.href !== b.href || a.rects.length !== b.rects.length) return false
+	return a.rects.every((r, i) => Box.equals(r, b.rects[i]))
 }
 
 function arrayEquals(a: string[], b: string[]) {

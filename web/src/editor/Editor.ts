@@ -455,7 +455,12 @@ export class Editor {
 		}
 
 		this.select([next])
+		const z = (this.cameraAnimation?.to ?? this.camera.peek()).z
 		this.stopCameraMotion()
+		// Keep the on-screen width constant when stepping from one item to another.
+		const from = anchor && layout.items.get(anchor)
+		const to = layout.items.get(next)!
+		if (from && from.w > 0 && to.w > 0) this.setCamera({ ...this.camera.peek(), z: clamp((z * from.w) / to.w, MIN_ZOOM, MAX_ZOOM) })
 		this.centerOn(this.getItemBoundsWithTitle(next)!, { animate: false })
 	}
 

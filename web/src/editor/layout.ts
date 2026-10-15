@@ -73,7 +73,7 @@ export function frameTitleBox(section: SectionLayout, z: number): Box {
  * Positions are a pure function of the data. Each session is a frame; frames sit side by side,
  * oldest on the left, so new sessions appear on the far right. Inside a frame, groups stack top to
  * bottom: the untitled group first, then named groups in the order they first appeared. Each group's
- * items flow left to right into rows at one scale per session, so equal pixel sizes render equal. A frame is as
+ * items flow left to right into justified rows that keep every item's aspect ratio. A frame is as
  * wide as its widest group, so a wider row pushes every frame to its right further out.
  */
 export function computeLayout(sessions: Record<string, Session>, items: Record<string, Item>): Layout {
@@ -100,7 +100,6 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 			named.get(key)!.push(item)
 		}
 		const groups = [...named.entries()].sort(([a], [b]) => (a === null ? -1 : b === null ? 1 : 0))
-		const scale = sessionScale(list)
 
 		// Lay out each group relative to the frame's content origin, then shift into place.
 		const contentX = frameX + L.framePadding
@@ -112,7 +111,7 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 		for (const [name, groupItems] of groups) {
 			const top = y
 			if (name !== null) y += L.groupHeadingHeight
-			const { boxes, width, height } = flowRows(groupItems, y, scale)
+			const { boxes, width, height } = flowRows(groupItems, y)
 			for (const [id, box] of boxes) {
 				layout.items.set(id, { ...box, x: box.x + contentX })
 				layout.sectionOf.set(id, session.id)
@@ -154,60 +153,38 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 }
 
 /**
- * Page units per source pixel for a whole session, so the same pixel size always renders the same
- * size: the median item height maps to rowHeight, reduced if that would make any item wider than
- * maxRowWidth.
+ * Justified rows starting at (0, top): fill a row until it would pass maxRowWidth, then scale it
+ * down to exactly fit. The last row keeps the natural row height. Rows with a titled item get a
+ * strip above them for the titles.
  */
-function sessionScale(items: Item[]): number {
-	const { maxRowWidth: W, rowHeight: H } = LAYOUT
-	const heights = items.map((i) => i.height).filter((h) => h > 0).sort((a, b) => a - b)
-	if (!heights.length) return 1
-	const mid = heights.length >> 1
-	const median = heights.length % 2 ? heights[mid] : (heights[mid - 1] + heights[mid]) / 2
-	let scale = H / median
-	const widest = Math.max(...items.map((i) => i.width))
-	if (widest * scale > W) scale = W / widest
-	return scale
-}
-
-/**
- * Rows starting at (0, top) at a fixed scale: items keep their scaled size and wrap when the next
- * one would pass maxRowWidth (ragged right edge), top-aligned in rows as tall as their tallest
- * item. Rows with a titled item get a strip above them for the titles.
- */
-function flowRows(items: Item[], top: number, scale: number) {
-	const { maxRowWidth: W, gap, titleHeight } = LAYOUT
+function flowRows(items: Item[], top: number) {
+	const { maxRowWidth: W, rowHeight: H, gap, titleHeight } = LAYOUT
 	const boxes = new Map<string, Box>()
 	let rowY = top
 	let width = 0
 	let row: Item[] = []
-	let rowWidth = 0
+	let rowAspect = 0
 
-	const size = (item: Item) => ({ w: item.width * scale, h: item.height * scale })
-
-	const placeRow = () => {
+	const placeRow = (height: number) => {
 		if (row.some((item) => item.title)) rowY += titleHeight
 		let x = 0
-		let height = 0
 		for (const item of row) {
-			const { w, h } = size(item)
-			boxes.set(item.id, { x, y: rowY, w, h })
+			const w = (item.width / item.height) * height
+			boxes.set(item.id, { x, y: rowY, w, h: height })
 			x += w + gap
-			height = Math.max(height, h)
 		}
 		width = Math.max(width, x - gap)
 		rowY += height + gap
 		row = []
-		rowWidth = 0
+		rowAspect = 0
 	}
 
 	for (const item of items) {
-		const { w } = size(item)
-		if (row.length && rowWidth + gap + w > W) placeRow()
-		rowWidth += (row.length ? gap : 0) + w
 		row.push(item)
+		rowAspect += item.width / item.height
+		if (rowAspect * H + gap * (row.length - 1) >= W) placeRow((W - gap * (row.length - 1)) / rowAspect)
 	}
-	if (row.length) placeRow()
+	if (row.length) placeRow(H)
 
 	return { boxes, width, height: rowY - gap - top }
 }

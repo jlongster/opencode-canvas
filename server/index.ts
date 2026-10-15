@@ -386,7 +386,7 @@ interface ItemOptions {
 	height?: number
 	/** defaults to now; seeded items get the time they were output, which orders them in their group */
 	createdAt?: number
-	/** names the session when this item creates it */
+	/** the OpenCode session's title: names the session if it's new or still untitled */
 	sessionTitle?: string
 }
 
@@ -411,7 +411,7 @@ async function addItem(canvasId: string, sessionId: string, data: Blob, opts: It
 		await makeThumb(path, join(MEDIA_DIR, thumbFile))
 		// The canvas may have been deleted while the media was processed.
 		getCanvas(canvasId)
-		ensureSession(canvasId, sessionId, opts.sessionTitle)
+		ensureSession(canvasId, sessionId, opts.sessionTitle, { onlyIfUntitled: true })
 		const item: Item = {
 			id,
 			canvasId,
@@ -448,6 +448,7 @@ interface ItemJson {
 	title?: string
 	caption?: string
 	name?: unknown
+	sessionTitle?: unknown
 }
 
 async function addItemFromJson(canvasId: string, sessionId: string, body: ItemJson | null): Promise<Item> {
@@ -458,6 +459,7 @@ async function addItemFromJson(canvasId: string, sessionId: string, body: ItemJs
 		name: nameField(body?.name),
 		width: sizeField(body?.width, 'width'),
 		height: sizeField(body?.height, 'height'),
+		sessionTitle: textField(body?.sessionTitle)?.slice(0, TITLE_MAX),
 	}
 	if (body?.html !== undefined) {
 		if (typeof body.html !== 'string') throw new HttpError(400, '"html" must be a string')
@@ -490,7 +492,7 @@ async function addHtmlItem(canvasId: string, sessionId: string, html: string, op
 	const file = `${id}.html`
 	await Bun.write(join(MEDIA_DIR, file), htmlDocument(html))
 	getCanvas(canvasId)
-	ensureSession(canvasId, sessionId, opts.sessionTitle)
+	ensureSession(canvasId, sessionId, opts.sessionTitle, { onlyIfUntitled: true })
 	const item: Item = {
 		id,
 		canvasId,
@@ -530,13 +532,21 @@ function sizeField(value: unknown, name: string): number | undefined {
 	return Math.round(Math.min(HTML_MAX_SIZE, Math.max(HTML_MIN_SIZE, n)))
 }
 
-function ensureSession(canvasId: string, id: string, title?: string): Session {
+/** A session's title is a placeholder when it's empty or just the session id. */
+const untitled = (s: Session) => !s.title?.trim() || s.title === s.id
+
+/**
+ * Gets a session, creating it if needed. `title` renames it (PUT /sessions/:sid). A posted item's
+ * `sessionTitle` is passed with `onlyIfUntitled`: it names a new or still untitled session, but
+ * never replaces a real title.
+ */
+function ensureSession(canvasId: string, id: string, title?: string, opts: { onlyIfUntitled?: boolean } = {}): Session {
 	const key = sessionKey(canvasId, id)
 	const existing = db.sessions.get(key)
-	if (existing && (title === undefined || existing.title === title)) return existing
+	if (existing && (title === undefined || existing.title === title || (opts.onlyIfUntitled && !untitled(existing)))) return existing
 	const session: Session = existing
 		? { ...existing, title: title! }
-		: { id, canvasId, title: title ?? id, createdAt: Date.now() }
+		: { id, canvasId, title: title ?? '', createdAt: Date.now() }
 	db.sessions.set(key, session)
 	save()
 	broadcast({ type: 'session', session })
@@ -788,13 +798,15 @@ const API_INDEX = {
 		'GET /api/view/:viewKey': 'A canvas by its view-only key (same body as GET /api/canvases/:cid)',
 		'GET /api/canvases/:cid/sessions': 'The canvas\'s sessions, each with its groups and their items, in canvas order',
 		'GET /api/canvases/:cid/sessions/:sessionId': 'One session with its groups and items',
-		'PUT /api/canvases/:cid/sessions/:sessionId': 'Create or rename a session. Body: {"title"}',
+		'PUT /api/canvases/:cid/sessions/:sessionId': 'Create or rename a session. Body: {"title"} (always replaces the title, unlike a post\'s "sessionTitle")',
 		'DELETE /api/canvases/:cid/sessions/:sessionId': 'Delete a session and all its items (restorable for an hour, see restore)',
 		'POST /api/canvases/:cid/sessions/:sessionId/items':
 			'Add an image, video or HTML page. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
 			'or JSON {"html": "<html source>"} for an HTML item. Plus optional "group", "title", "caption", "name". ' +
-			'Multipart uploads may also send "createdAt" (ms; orders the item in its group) and "sessionTitle" (names a ' +
-			'session this creates). Creates the session if needed.',
+			'Send "sessionTitle" (your OpenCode session\'s title, from `opencode api get /api/session/$OPENCODE_SESSION_ID` ' +
+			'→ .data.title) with every post, JSON or multipart: it names the session\'s frame when the session is new or ' +
+			'still untitled, and never replaces a real title (rename with PUT). Multipart uploads may also send "createdAt" ' +
+			'(ms; orders the item in its group). Creates the session if needed.',
 		'GET /api/items/:itemId': 'One item',
 		'PATCH /api/items/:itemId': 'Change an item\'s "group", "title", "caption" (null clears) or "name"',
 		'DELETE /api/items/:itemId':

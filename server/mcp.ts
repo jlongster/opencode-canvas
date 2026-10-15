@@ -147,7 +147,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 	function agentName(a: Agent) {
 		if (!a.sessionId) return 'Agent'
 		const title = deps.canvasData(a.canvasId).sessions.find((s) => s.id === a.sessionId)?.title.trim()
-		if (!title) return `Agent ses_…${a.sessionId.slice(-6)}`
+		if (!title || title === a.sessionId) return `Agent ses_…${a.sessionId.slice(-6)}`
 		return `Agent · ${title.length > 32 ? title.slice(0, 31) + '…' : title}`
 	}
 
@@ -393,7 +393,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				instructions:
 					'Review canvases where you post images, videos and HTML for the user. While you use a canvas you appear on it ' +
 					'as a little worm showing what you are doing; use say to talk to the people looking at it in a speech bubble ' +
-					'(optionally pointing at an item, frame or note with about).',
+					'(optionally pointing at an item, frame or note with about). When posting with post_item, pass sessionId and ' +
+					'sessionTitle (your OpenCode session\'s title) every time so your frame is named after your session.',
 			},
 		)
 
@@ -669,12 +670,20 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'Post an image, video or HTML page to a canvas, into your session\'s frame. Give exactly one of path (an ' +
 					'absolute path of a file on this machine), url, or html (inline HTML: diagrams, charts, annotated explanations; ' +
 					'set width/height to the CSS pixel size it is designed for, default 800x600). Use group to organise items ' +
-					'within the session.',
+					'within the session. Pass sessionTitle (your OpenCode session\'s title) on every post: it names your frame ' +
+					'while it is new or untitled, and never overwrites a title it already has.',
 				inputSchema: {
 					canvas: canvasArg,
 					sessionId: z
 						.string()
 						.describe('Your exact OpenCode session id, $OPENCODE_SESSION_ID ("ses_" + 26 characters): your frame on the canvas'),
+					sessionTitle: z
+						.string()
+						.optional()
+						.describe(
+							'Your OpenCode session\'s title (e.g. from `opencode api get /api/session/$OPENCODE_SESSION_ID` → .data.title). ' +
+								'Names your frame; pass it on every post.',
+						),
 					path: z.string().optional().describe('Absolute path of an image/video/HTML file on this machine'),
 					url: z.string().optional().describe('URL of an image/video/HTML file to fetch'),
 					html: z.string().optional().describe('Inline HTML (a fragment or a full document)'),
@@ -689,6 +698,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			tool(async (args: {
 				canvas: string
 				sessionId: string
+				sessionTitle?: string
 				path?: string
 				url?: string
 				html?: string

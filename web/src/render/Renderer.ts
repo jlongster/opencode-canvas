@@ -915,7 +915,14 @@ class SectionLabels {
 				this.els.set(s.id, el)
 			}
 			const title = el.children[0] as HTMLElement
-			if (title.textContent !== s.title) title.textContent = s.title
+			// Sessions posted without a title (or titled with their id) get a placeholder; the id shows on hover.
+			const untitled = !s.title.trim() || s.title === s.id
+			const label = untitled ? 'Untitled session' : s.title
+			if (title.textContent !== label) {
+				title.textContent = label
+				title.title = untitled ? s.id : ''
+				title.style.opacity = untitled ? '0.6' : ''
+			}
 			place(el, shift(s.header), Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx))
 			el.style.opacity = String(d.opacity)
 

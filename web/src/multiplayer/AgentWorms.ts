@@ -35,6 +35,8 @@ const PIN_MS = 5000
 const GRAVITY = 2600
 /** a conjured worm's finished reply puts itself away (locally) after this long, unless it's pinned */
 const REPLY_HIDE_MS = 7000
+/** zoom at and above which speech bubbles are full size; below it they shrink with the canvas */
+const FULL_BUBBLE_ZOOM = 0.6
 
 interface Trip {
 	from: Vec
@@ -115,6 +117,8 @@ interface Worm {
 	speechPinned: boolean
 	/** conjured: when the reply finished (typed out, nothing more coming), 0 while it isn't */
 	speechDoneAt: number
+	/** the speech bubbles' and thought cloud's scale for the zoom, last set on el as --bubble-scale */
+	bubbleScale: number
 	/** screen-space discs covering the body as last drawn, for clicks */
 	hit: { x: number; y: number; r: number }[]
 	/** where it's being dragged to (page space), while someone here carries it */
@@ -418,6 +422,7 @@ export class AgentWorms {
 			speechText: null,
 			speechPinned: false,
 			speechDoneAt: 0,
+			bubbleScale: 1,
 			hit: [],
 			carried: null,
 			carry: 0,
@@ -932,6 +937,12 @@ export class AgentWorms {
 		const hr = radius(0)
 		// The labels and speech bubble follow the head but not its nodding, so the text stays readable.
 		worm.el.style.transform = `translate(${head.x - wobble}px, ${head.y - nod - hop}px)`
+		// Zoomed out, the bubbles shrink toward where they attach (the worm and its name tag don't).
+		const bubbleScale = Math.min(1, this.editor.camera.peek().z / FULL_BUBBLE_ZOOM)
+		if (bubbleScale !== worm.bubbleScale) {
+			worm.bubbleScale = bubbleScale
+			worm.el.style.setProperty('--bubble-scale', String(bubbleScale))
+		}
 		if (scale < 0.05) return
 
 		// Antenna with a twinkling sparkle, like the robot avatar: bolt upright when startled.

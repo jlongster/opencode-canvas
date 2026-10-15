@@ -789,6 +789,8 @@ body,
 	overflow-wrap: anywhere;
 	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 	transform-origin: 22px calc(100% + 10px);
+	/* zoomed out (see AgentWorms): the scale property, so it composes with the open/close animations' transform */
+	scale: var(--bubble-scale, 1);
 	animation: agent-speech-in 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -911,6 +913,8 @@ body,
 	width: 0;
 	height: 0;
 	pointer-events: none;
+	transform-origin: 0 0;
+	scale: var(--bubble-scale, 1);
 }
 
 .agent-worm.thinking .agent-worm-thought {

@@ -33,7 +33,7 @@ export class Conjure {
 	readonly prompting = atom<PromptTarget | null>('conjurePrompting', null)
 	/** when each worm was last startled (clicked or focused), by awareness client id */
 	readonly startled = new Map<number, number>()
-	/** where worms were just summoned to (W), by session id, for AgentWorms to crawl there right away */
+	/** where worms were just summoned to (C), by session id, for AgentWorms to crawl there right away */
 	readonly placing = new Map<string, Vec>()
 	/**
 	 * Replies reopened here with "Show last reply", by session id: shown pinned in the bubble until
@@ -140,7 +140,7 @@ export class Conjure {
 	}
 
 	/**
-	 * W over a session frame (or a long press): brings the session's worm to `at`. Conjures it when
+	 * C over a session frame (or a long press): brings the session's worm to `at`. Conjures it when
 	 * it isn't here (from whichever paired OpenCode has the session); otherwise our own worm crawls
 	 * over. Resolves to a message for the user when it can't, else null.
 	 */

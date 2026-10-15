@@ -7,7 +7,7 @@ const LONG_PRESS_MS = 500
 const LONG_PRESS_SLOP = 8
 
 /**
- * Summoning a session's worm (edit links): press W while the pointer is over anything of a session
+ * Summoning a session's worm (edit links): press C while the pointer is over anything of a session
  * frame (an item, a group, the frame's title or background), or long-press it on touch. See
  * Conjure.summon for what happens then; when it can't, the reason shows in the toast.
  */
@@ -55,7 +55,8 @@ export class Summon {
 	}
 
 	private onKeyDown = (e: KeyboardEvent) => {
-		if (e.key !== 'w' && e.key !== 'W') return
+		if (e.key !== 'c' && e.key !== 'C') return
+		// With a modifier it's Cmd/Ctrl+C (copy) or similar: leave it alone.
 		if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || isEditable(e.target)) return
 		const point = this.editor.pointerPage.peek()
 		if (!point || this.editor.inputs.isPointing) return

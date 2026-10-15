@@ -6,8 +6,8 @@ export const BASE = /^\/canvas(\/|$)/.test(location.pathname) ? '/canvas' : ''
 
 /**
  * Where the canvas server is: its origin plus path prefix, e.g. "https://jamesbox.exe.xyz/canvas".
- * Usually the page's own server; `bunx opencode-canvas` serves the app from localhost and names the
- * shared canvas server in <meta name="canvas-api">.
+ * Usually the page's own server; `bunx opencode-canvas --canvas-server <url>` serves just the app
+ * from localhost and names the remote canvas server in <meta name="canvas-api">.
  */
 export const API_BASE = (() => {
 	const configured = document.querySelector<HTMLMetaElement>('meta[name="canvas-api"]')?.content.trim()
@@ -21,7 +21,7 @@ export const API_BASE = (() => {
 	return location.origin + BASE
 })()
 
-/** The canvas server is somewhere other than this page (the app is served by `bunx opencode-canvas`). */
+/** The canvas server is somewhere other than this page (the app is served by `bunx opencode-canvas --canvas-server`). */
 export const API_ELSEWHERE = API_BASE !== location.origin + BASE
 
 /** A canvas server path like "/api/state" or "/media/x.png" as a full URL; anything else as it is. */

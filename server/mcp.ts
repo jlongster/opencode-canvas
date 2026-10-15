@@ -377,7 +377,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 
 	const canvasArg = z
 		.string()
-		.describe('Canvas id, or a canvas URL such as https://jamesbox.exe.xyz/canvas/c/<id> or a view link …/v/<viewKey>')
+		.describe(`Canvas id, or a canvas URL such as ${deps.webBase}/c/<id> or a view link …/v/<viewKey>`)
 	const sessionArg = z
 		.string()
 		.optional()

@@ -78,11 +78,14 @@ export function PairErrorView({ error }: { error: Error }) {
 /** How many pairing forms show the offer inline (PairNotice shows it as a toast when none do). */
 export const offersShownInline = atom('offersShownInline', 0)
 
+/** What to run for a new pairing code from the command that opened this page. */
+export const CLI_COMMAND = 'bunx github:jlongster/opencode-canvas'
+
 /**
  * The pairing code the page was opened with: who it would connect, and a Connect button (it never
- * connects by itself). × forgets it.
+ * connects by itself). × forgets it. `large`: the first thing on a page (empty canvas, canvas list).
  */
-export function PairOfferCard({ inline, onPaired }: { inline?: boolean; onPaired?: (server: Pairing) => void }) {
+export function PairOfferCard({ inline, large, onPaired }: { inline?: boolean; large?: boolean; onPaired?: (server: Pairing) => void }) {
 	const offer = useValue(() => pairOffer.get())
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState<Error | null>(null)
@@ -110,13 +113,22 @@ export function PairOfferCard({ inline, onPaired }: { inline?: boolean; onPaired
 		}
 	}
 
-	const manually = inline ? 'pair manually below' : 'pair manually (Conjure)'
+	const manually = inline ? 'pair manually instead' : 'pair manually (Conjure)'
 	return (
-		<div className="oc-offer">
+		<div className={`oc-offer${large ? ' oc-offer-large' : ''}`}>
 			<div className="oc-offer-row">
-				<span className="oc-offer-text">
-					{offer.from === 'cli' ? 'Found OpenCode on this machine' : 'This link wants to connect OpenCode at'} <code>{host}</code>
-				</span>
+				{large ? (
+					<span className="oc-offer-text">
+						<strong>{offer.from === 'cli' ? 'Found OpenCode on this machine' : 'This link wants to connect OpenCode'}</strong>
+						<span>
+							at <code>{host}</code>
+						</span>
+					</span>
+				) : (
+					<span className="oc-offer-text">
+						{offer.from === 'cli' ? 'Found OpenCode on this machine' : 'This link wants to connect OpenCode at'} <code>{host}</code>
+					</span>
+				)}
 				{!used && (
 					<button type="button" className="oc-primary" disabled={busy} onClick={connect}>
 						{busy ? 'Connecting…' : 'Connect'}
@@ -126,13 +138,14 @@ export function PairOfferCard({ inline, onPaired }: { inline?: boolean; onPaired
 					×
 				</button>
 			</div>
+			{large && !used && !error && <span className="oc-offer-note">Connect lets this page list your sessions and talk to them. The token stays in this browser.</span>}
 			{used ? (
 				<div className="oc-error">
 					<p className="oc-error-text">
 						<CodeText
 							text={
 								offer.from === 'cli'
-									? `That pairing code expired or was already used. Run \`bunx opencode-canvas\` again, or ${manually}.`
+									? `That pairing code expired or was already used. Run \`${CLI_COMMAND}\` again, or ${manually}.`
 									: `That pairing link expired or was already used. Ask for a new one, or ${manually}.`
 							}
 						/>
@@ -152,11 +165,26 @@ const CORS_TITLE = "Replaces OpenCode's list of extra allowed sites (separate se
  * (or open this page with #pair=<link>). Sites other than localhost must be allowed in OpenCode
  * first, which the form says how to do.
  */
-export function PairForm({ onPaired, onCancel, autoFocus }: { onPaired: (server: Pairing) => void; onCancel?: () => void; autoFocus?: boolean }) {
+export function PairForm({
+	onPaired,
+	onCancel,
+	autoFocus,
+	large,
+	title = 'Connect your OpenCode',
+}: {
+	onPaired: (server: Pairing) => void
+	onCancel?: () => void
+	autoFocus?: boolean
+	/** the offer as the page's main call to action, with the manual steps folded away */
+	large?: boolean
+	title?: string
+}) {
 	const [link, setLink] = useState('')
 	const [busy, setBusy] = useState(false)
 	const [error, setError] = useState<Error | null>(null)
+	const [manual, setManual] = useState(false)
 	const offer = useValue(() => pairOffer.get())
+	const folded = large && !!offer && !manual
 
 	const connect = async () => {
 		if (!link.trim() || busy) return
@@ -181,50 +209,58 @@ export function PairForm({ onPaired, onCancel, autoFocus }: { onPaired: (server:
 				connect()
 			}}
 		>
-			<strong className="oc-pair-title">Connect your OpenCode</strong>
-			<PairOfferCard inline onPaired={onPaired} />
-			{offer && <span className="oc-or">Or pair manually:</span>}
-			{!OPENCODE_ALLOWS_PAGE && (
-				<div className="oc-setup">
-					<span>First time on this site? Run</span>
-					<CopyCommand command={CORS_COMMAND} title={CORS_TITLE} />
-				</div>
-			)}
-			<ol className="oc-steps">
-				<li>
-					<span className="oc-step-num">1</span>
-					<div className="oc-step-body">
-						<span>On the machine running OpenCode, run</span>
-						<CopyCommand command="opencode pair" />
-					</div>
-				</li>
-				<li>
-					<span className="oc-step-num">2</span>
-					<div className="oc-step-body">
-						<span>Paste the link it prints</span>
-						<div className="oc-pair-row">
-							<input
-								autoFocus={autoFocus}
-								placeholder="http://…/auth/connect/…"
-								aria-label="Pairing link"
-								value={link}
-								spellCheck={false}
-								autoComplete="off"
-								onChange={(e) => setLink(e.target.value)}
-								onKeyDown={(e) => {
-									e.stopPropagation()
-									if (e.key === 'Escape' && onCancel) onCancel()
-								}}
-							/>
-							<button type="submit" className="oc-primary" disabled={busy || !link.trim()}>
-								{busy ? 'Connecting…' : 'Connect'}
-							</button>
+			{!(large && offer) && <strong className="oc-pair-title">{title}</strong>}
+			<PairOfferCard inline large={large} onPaired={onPaired} />
+			{folded ? (
+				<button type="button" className="oc-link oc-manual-toggle" onClick={() => setManual(true)}>
+					Pair manually instead
+				</button>
+			) : (
+				<>
+					{offer && <span className="oc-or">Or pair manually:</span>}
+					{!OPENCODE_ALLOWS_PAGE && (
+						<div className="oc-setup">
+							<span>First time on this site? Run</span>
+							<CopyCommand command={CORS_COMMAND} title={CORS_TITLE} />
 						</div>
-						<span className="oc-pair-note">The code works once. The token it gives stays in this browser only.</span>
-					</div>
-				</li>
-			</ol>
-			{error && <PairErrorView error={error} />}
+					)}
+					<ol className="oc-steps">
+						<li>
+							<span className="oc-step-num">1</span>
+							<div className="oc-step-body">
+								<span>On the machine running OpenCode, run</span>
+								<CopyCommand command="opencode pair" />
+							</div>
+						</li>
+						<li>
+							<span className="oc-step-num">2</span>
+							<div className="oc-step-body">
+								<span>Paste the link it prints</span>
+								<div className="oc-pair-row">
+									<input
+										autoFocus={autoFocus}
+										placeholder="http://…/auth/connect/…"
+										aria-label="Pairing link"
+										value={link}
+										spellCheck={false}
+										autoComplete="off"
+										onChange={(e) => setLink(e.target.value)}
+										onKeyDown={(e) => {
+											e.stopPropagation()
+											if (e.key === 'Escape' && onCancel) onCancel()
+										}}
+									/>
+									<button type="submit" className="oc-primary" disabled={busy || !link.trim()}>
+										{busy ? 'Connecting…' : 'Connect'}
+									</button>
+								</div>
+								<span className="oc-pair-note">The code works once. The token it gives stays in this browser only.</span>
+							</div>
+						</li>
+					</ol>
+					{error && <PairErrorView error={error} />}
+				</>
+			)}
 			{onCancel && (
 				<button type="button" className="oc-link" onClick={onCancel}>
 					Cancel

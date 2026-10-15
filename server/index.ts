@@ -6,11 +6,14 @@ import type {
 	Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, ServerEvent, Session, SessionView,
 } from '../shared/types'
 import { ConjureError, createConjured } from './conjured'
+import { imageSize } from './imageSize'
 import { createCanvasMcp } from './mcp'
 import { discardRoom, getRoomSnapshot, readRoomDoc, roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
 import type { Server, ServerWebSocket } from 'bun'
 
 const PORT = Number(process.env.PORT ?? 4410)
+/** The address to listen on (all interfaces unless set; `bunx opencode-canvas` binds 127.0.0.1). */
+const HOSTNAME = process.env.CANVAS_HOST || undefined
 const DATA_DIR = resolve(process.env.CANVAS_DATA ?? join(import.meta.dir, '../data'))
 const MEDIA_DIR = join(DATA_DIR, 'media')
 const INDEX_FILE = join(DATA_DIR, 'index.json')
@@ -19,7 +22,7 @@ const WEB_DIST = resolve(import.meta.dir, '../web/dist')
 const THUMB_SIZE = 512
 const BASE_PATH = '/canvas'
 /** Where selection results point their absolute media URLs. */
-const MEDIA_ORIGIN = `http://localhost:${PORT}`
+const MEDIA_ORIGIN = (process.env.CANVAS_MEDIA_ORIGIN ?? `http://localhost:${PORT}`).replace(/\/+$/, '')
 /** Where people open canvases in a browser, for links in MCP tool results. */
 const WEB_BASE = (process.env.CANVAS_WEB ?? 'https://jamesbox.exe.xyz/canvas').replace(/\/+$/, '')
 
@@ -182,6 +185,10 @@ function eventCanvas(event: ServerEvent): string {
 }
 
 // ---------- media processing ----------
+
+/** Without ffmpeg (e.g. a fresh machine running `bunx opencode-canvas`) images still work, unthumbnailed; videos don't. */
+const HAS_FFMPEG = !!Bun.which('ffmpeg') && !!Bun.which('ffprobe')
+if (!HAS_FFMPEG) console.warn('ffmpeg/ffprobe not found: images are shown without thumbnails and videos can\'t be posted (install ffmpeg to fix)')
 
 async function run(cmd: string[]) {
 	const proc = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'pipe' })
@@ -407,8 +414,18 @@ async function addItem(canvasId: string, sessionId: string, data: Blob, opts: It
 	await Bun.write(path, data)
 
 	try {
-		const { width, height } = await probe(path)
-		await makeThumb(path, join(MEDIA_DIR, thumbFile))
+		let size: { width: number; height: number } | null
+		let thumb = `/media/${thumbFile}`
+		if (HAS_FFMPEG) {
+			size = await probe(path)
+			await makeThumb(path, join(MEDIA_DIR, thumbFile))
+		} else {
+			if (kind === 'video') throw new Error('posting videos needs ffmpeg installed on the canvas server\'s machine')
+			size = imageSize(new Uint8Array(await Bun.file(path).arrayBuffer()))
+			if (!size) throw new Error('can\'t read this image\'s size without ffmpeg (PNG, JPEG, GIF and WebP work; install ffmpeg for others)')
+			thumb = `/media/${file}`
+		}
+		const { width, height } = size
 		// The canvas may have been deleted while the media was processed.
 		getCanvas(canvasId)
 		ensureSession(canvasId, sessionId, opts.sessionTitle, { onlyIfUntitled: true })
@@ -419,7 +436,7 @@ async function addItem(canvasId: string, sessionId: string, data: Blob, opts: It
 			kind,
 			name: name ?? file,
 			src: `/media/${file}`,
-			thumb: `/media/${thumbFile}`,
+			thumb,
 			width,
 			height,
 			...(opts.group ? { group: opts.group } : {}),
@@ -984,6 +1001,8 @@ async function handle(req: Request): Promise<Response> {
 	if (p === '/api/me' && method === 'GET') return json({ email: req.headers.get('x-exedev-email') || null })
 
 	if (p === '/api' && method === 'GET') return json(API_INDEX)
+	// lets `bunx opencode-canvas` recognise an instance of itself already on the port
+	if (p === '/api/health' && method === 'GET') return json({ app: 'opencode-canvas', web: WEB_BASE })
 
 	// ---- canvases ----
 
@@ -1207,6 +1226,7 @@ const mcp = createCanvasMcp({
 
 Bun.serve<SocketData, never>({
 	port: PORT,
+	hostname: HOSTNAME,
 	idleTimeout: 0,
 	maxRequestBodySize: 1024 * 1024 * 1024,
 	websocket: {
@@ -1244,7 +1264,6 @@ Bun.serve<SocketData, never>({
 })
 
 /** Everything but /mcp and preflights: WebSocket upgrades (undefined once upgraded), then the HTTP API and files. */
-/** Everything but /mcp and preflights: WebSocket upgrades (undefined once upgraded), then the HTTP API and files. */
 async function route(req: Request, server: Server<SocketData>, reqUrl: URL): Promise<Response | undefined> {
 	if (stripBase(reqUrl.pathname) === '/api/live') {
 		const canvasId = reqUrl.searchParams.get('canvas')
@@ -1271,4 +1290,4 @@ async function route(req: Request, server: Server<SocketData>, reqUrl: URL): Pro
 	}
 }
 
-console.log(`canvas server on http://localhost:${PORT}  (data: ${DATA_DIR})`)
+if (!process.env.CANVAS_QUIET) console.log(`canvas server on http://localhost:${PORT}  (data: ${DATA_DIR})`)

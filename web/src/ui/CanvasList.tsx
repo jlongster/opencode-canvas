@@ -2,8 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import type { CanvasSummary } from '../../../shared/types'
 import { createCanvas, deleteCanvas, listCanvases, liveSocket } from '../sync/client'
 import { BASE, url } from '../base'
+import { ConnectOpenCode } from './ConnectOpenCode'
 
-/** The home page: every canvas as a card, kept up to date live. */
+/**
+ * The home page: connecting OpenCode (first, until it's connected), then every canvas as a card,
+ * kept up to date live. With no canvases yet, a prominent button makes the first.
+ */
 export function CanvasList() {
 	const [canvases, setCanvases] = useState<CanvasSummary[] | null>(null)
 	const [error, setError] = useState<string | null>(null)
@@ -63,18 +67,15 @@ export function CanvasList() {
 						{canvases ? `${canvases.length} canvas${canvases.length === 1 ? '' : 'es'}` : 'Loading…'}
 					</span>
 				</div>
-				<button className="new-canvas" disabled={creating} onClick={create}>
-					<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
-						<path d="M12 5v14M5 12h14" />
-					</svg>
-					{creating ? 'Creating…' : 'New canvas'}
-				</button>
+				{canvases?.length !== 0 && <NewCanvasButton creating={creating} onClick={create} />}
 			</header>
+			<ConnectOpenCode />
 			{error && <div className="canvas-list-error">{error}</div>}
 			{canvases && canvases.length === 0 && (
 				<div className="canvas-list-empty">
 					<h2>No canvases yet</h2>
-					<p>Create one to start collecting media from your sessions.</p>
+					<p>A canvas collects the images, videos and HTML your sessions make. Seed it from your OpenCode sessions, or let agents post to it.</p>
+					<NewCanvasButton creating={creating} onClick={create} label="Create your first canvas" />
 				</div>
 			)}
 			{canvases && canvases.length > 0 && (
@@ -85,6 +86,17 @@ export function CanvasList() {
 				</div>
 			)}
 		</div>
+	)
+}
+
+function NewCanvasButton({ creating, onClick, label = 'New canvas' }: { creating: boolean; onClick: () => void; label?: string }) {
+	return (
+		<button className="new-canvas" disabled={creating} onClick={onClick}>
+			<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
+				<path d="M12 5v14M5 12h14" />
+			</svg>
+			{creating ? 'Creating…' : label}
+		</button>
 	)
 }
 

@@ -2300,6 +2300,7 @@ label.seed-row:hover {
 
 .oc-pair button.oc-link,
 .oc-servers button.oc-link,
+.connect-status button.oc-link,
 .seed-picker .oc-pair button.oc-link {
 	align-self: flex-start;
 	height: auto;
@@ -2656,6 +2657,114 @@ label.seed-row:hover {
 	font-weight: 500;
 }
 
+/* The pairing offer as a page's main call to action (empty canvas, canvas list). */
+.oc-offer.oc-offer-large {
+	gap: 10px;
+	padding: 14px 14px 14px 16px;
+	border-radius: 12px;
+	background: linear-gradient(135deg, rgba(124, 58, 237, 0.22), rgba(87, 143, 255, 0.12));
+	border-color: rgba(167, 139, 250, 0.55);
+	box-shadow: 0 6px 30px rgba(124, 58, 237, 0.18);
+	font-size: 13px;
+}
+
+.oc-offer-large .oc-offer-text {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.oc-offer-large .oc-offer-text strong {
+	color: #f4f4f5;
+	font-size: 15px;
+	font-weight: 600;
+}
+
+.oc-offer-large .oc-offer-text > span {
+	color: #a1a1aa;
+}
+
+.oc-offer.oc-offer-large button.oc-primary {
+	height: 36px;
+	padding: 0 20px;
+	border-radius: 9px;
+	font-size: 14px;
+	font-weight: 600;
+	box-shadow: 0 4px 18px rgba(124, 58, 237, 0.4);
+}
+
+.oc-offer-note {
+	color: #a1a1aa;
+	font-size: 12px;
+}
+
+/* ---------- canvas list: connecting OpenCode ---------- */
+
+.connect-panel,
+.connect-status {
+	max-width: 1200px;
+	margin: 0 auto 28px;
+}
+
+.connect-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.connect-panel .oc-pair {
+	max-width: 560px;
+	padding: 16px;
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	border-radius: 12px;
+	background: rgba(28, 28, 32, 0.96);
+}
+
+.connect-panel .oc-pair:has(.oc-offer-large) {
+	padding: 0;
+	border: 0;
+	background: none;
+}
+
+.connect-panel-why {
+	max-width: 560px;
+	margin: 0;
+	color: #71717a;
+	font-size: 12px;
+}
+
+.connect-status {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	color: #a1a1aa;
+	font-size: 13px;
+}
+
+.connect-status .oc-offer {
+	max-width: 560px;
+}
+
+.connect-status-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.connect-status-row strong {
+	color: #e4e4e7;
+	font-weight: 600;
+}
+
+.connect-status-meta {
+	color: #71717a;
+}
+
+.connect-status-error {
+	color: #fca5a5;
+	font-size: 12px;
+}
+
 /* ---------- canvas list ---------- */
 
 .canvas-list {
@@ -2723,7 +2832,7 @@ label.seed-row:hover {
 
 .canvas-list-empty {
 	max-width: 1200px;
-	margin: 80px auto 0;
+	margin: 56px auto 0;
 	text-align: center;
 	color: #a1a1aa;
 }
@@ -2732,6 +2841,19 @@ label.seed-row:hover {
 	margin: 0 0 6px;
 	color: #e4e4e7;
 	font-size: 16px;
+}
+
+.canvas-list-empty p {
+	max-width: 440px;
+	margin: 0 auto 20px;
+	line-height: 1.5;
+}
+
+.canvas-list-empty .new-canvas {
+	margin: 0 auto;
+	height: 44px;
+	padding: 0 22px;
+	font-size: 15px;
 }
 
 .canvas-grid {

@@ -3,6 +3,8 @@ import type { OpenCodeSessionSummary, SeedResult } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { seedSession } from '../opencode/seed'
 import { relativeTime, shortDir } from './Conjure'
+import { pairOffer } from '../opencode/pairings'
+import { useValue } from './useValue'
 import { PairForm, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
 
 type RowStatus = { state: 'waiting' } | { state: 'seeding' } | { state: 'done'; result: SeedResult }
@@ -18,6 +20,7 @@ type RowStatus = { state: 'waiting' } | { state: 'seeding' } | { state: 'done'; 
  */
 export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canvasId: string; onBusy: (busy: boolean) => void }) {
 	const { servers, sessions, errors, reload: load } = useOpenCode()
+	const offer = useValue(() => pairOffer.get())
 	const [query, setQuery] = useState('')
 	const [showSubagents, setShowSubagents] = useState(false)
 	const [selected, setSelected] = useState<string[]>([])
@@ -115,10 +118,13 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 		return (
 			<div className="seed-picker" onPointerDown={(e) => e.stopPropagation()} onWheel={(e) => e.stopPropagation()}>
 				<div className="seed-head">
-					<h2>Seed this canvas from OpenCode</h2>
-					<p>Connect your OpenCode, then pick sessions: each gets a frame with its images and videos from the last 24 hours, or its latest 10 if there are fewer.</p>
+					<h2>{offer ? 'Connect OpenCode to get started' : 'Seed this canvas from OpenCode'}</h2>
+					<p>
+						{offer ? 'Then' : 'Connect your OpenCode, then'} pick sessions: each gets a frame with its images and videos from the last 24 hours, or its
+						latest 10 if there are fewer.
+					</p>
 				</div>
-				<PairForm onPaired={() => load()} />
+				<PairForm large onPaired={() => load()} />
 			</div>
 		)
 	}

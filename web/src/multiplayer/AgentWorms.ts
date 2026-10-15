@@ -3,6 +3,25 @@ import { markdownToHtml } from '../ui/markdown'
 import type { Box, Vec } from '../editor/geometry'
 import type { Conjure } from './Conjure'
 import type { Peer, SubagentInfo } from './Presence'
+import {
+	HEAD_R as BF_HEAD_R,
+	SWEEP,
+	THORAX,
+	WING,
+	disc,
+	drawAntennae,
+	drawBody,
+	drawBurst,
+	drawCocoon,
+	drawShell,
+	drawWing,
+	ellipse,
+	pt,
+	sparkle,
+	wingSpan,
+	type Colors,
+	type Pose,
+} from './Butterfly'
 
 /** Body joints, head first. Spacing and sizes are screen pixels, so worms look the same at any zoom. */
 const JOINTS = 9
@@ -47,6 +66,21 @@ const TINY_LEAVE_MS = 520
 const TINY_HOVER_PX = 11
 /** zoom at and above which speech bubbles are full size; below it they shrink with the canvas */
 const FULL_BUBBLE_ZOOM = 0.6
+/** butterflies are drawn this much bigger than conjured worms, wings and all, for about the same heft */
+const BUTTERFLY_SIZE = 1.15
+/** a freshly conjured session's metamorphosis: worm, chrysalis, butterfly */
+const MORPH_MS = 1500
+/** within the metamorphosis: when the worm starts wrapping up, the chrysalis is done, and it bursts */
+const MORPH_WRAP = 0.3
+const MORPH_POD = 0.53
+const MORPH_BURST = 0.77
+/** records created longer ago than this were there already: no metamorphosis */
+const FRESH_MS = 15000
+/** a butterfly stretching its wings (waking up, coming out of the chrysalis) */
+const STRETCH_MS = 900
+/** an idle butterfly's occasional flutter hop */
+const HOP_MS = 700
+const DEG = Math.PI / 180
 
 interface Trip {
 	from: Vec
@@ -76,6 +110,8 @@ interface Tiny {
 	heading: Vec
 	/** its head on screen as last drawn, for hovering */
 	screen: Vec
+	/** 1, fading to 0 as it leaves */
+	fade: number
 }
 
 interface Worm {
@@ -163,6 +199,35 @@ interface Worm {
 	/** conjured: tiny worms for its busy subagents, by session id, and when they last moved */
 	tinies: Map<string, Tiny>
 	tiniesAt?: number
+	sessionId: string | null
+	/** conjured sessions are butterflies (MCP agents stay worms); the rest is theirs */
+	butterfly: boolean
+	bf: Flight
+}
+
+/** A butterfly's pose and wingbeat. */
+interface Flight {
+	colors: Colors
+	/** how far the wings are open (radians): 0 folded upright, ~90° spread flat, beyond that beating down */
+	phi: number
+	flapPhase: number
+	/** hovering height above where it sits, screen px, eased */
+	alt: number
+	/** which way it faces (1 right, -1 left), and that eased, so it turns through edge-on */
+	facing: number
+	face: number
+	/** nose-up tilt, radians, eased */
+	tilt: number
+	/** 0..1 eased: folded up asleep */
+	sleepy: number
+	nextHop: number
+	hopStart: number
+	stretchStart: number
+	morphStart: number
+	/** when its record was created (conjured), to tell a new one of the same session from the last */
+	conjuredAt: number
+	/** the ground under it on screen, which subagents' tiny worms circle */
+	center: Vec
 }
 
 /** A pointer that went down on a conjured worm: a click unless it moves, then a drag. */
@@ -179,10 +244,16 @@ interface Press {
  * AI agents have no pointer, so each one gets a little googly-eyed worm that crawls to whatever
  * it's working on (the first thing in its awareness selection). Bodies are drawn on one 2D canvas
  * in screen space; the name and activity label are DOM, like human cursor labels.
+ *
+ * Conjured sessions (real OpenCode sessions, see Conjure) are the worm grown up: a butterfly that
+ * flies where the worm would crawl (see Butterfly.ts), hatching from a chrysalis when it's
+ * conjured while you watch. Their busy subagents stay tiny worms crawling around it.
  */
 export class AgentWorms {
 	private canvas: HTMLCanvasElement
 	private ctx: CanvasRenderingContext2D
+	/** where sleeping butterflies are drawn before they're dimmed onto the canvas */
+	private scratch: HTMLCanvasElement | null = null
 	private labels: HTMLDivElement
 	private worms = new Map<number, Worm>()
 	private drewLastFrame = false
@@ -197,6 +268,8 @@ export class AgentWorms {
 	private pointer: Vec | null = null
 	private tip: HTMLDivElement
 	private tipFor: Tiny | null = null
+	/** when this page started showing worms (wall clock), to tell sessions conjured since from ones already here */
+	private bornAt = Date.now()
 
 	constructor(
 		parent: HTMLElement,
@@ -252,6 +325,7 @@ export class AgentWorms {
 			if (!worm && !target) continue
 			if (!worm) {
 				worm = this.spawn(peer, target!.point, now)
+				if (worm.butterfly) this.arrive(worm, peer, now)
 				this.worms.set(peer.clientId, worm)
 			}
 			if (worm.leaving) this.revive(worm, now)
@@ -484,9 +558,61 @@ export class AgentWorms {
 			pinned: null,
 			prevJoints: [],
 			tinies: new Map(),
+			sessionId: peer.user.sessionId ?? null,
+			butterfly: conjured,
+			bf: {
+				colors: wingColors('#22d3ee'),
+				phi: peer.user.asleep ? 0 : 40 * DEG,
+				flapPhase: seed,
+				alt: 0,
+				facing: 1,
+				face: 1,
+				tilt: 0.12,
+				sleepy: peer.user.asleep ? 1 : 0,
+				nextHop: now + 4000 + Math.random() * 6000,
+				hopStart: -1e9,
+				stretchStart: -1e9,
+				morphStart: -1e9,
+				conjuredAt: 0,
+				center: { x: -1e9, y: -1e9 },
+			},
 		}
+		el.classList.toggle('butterfly', conjured)
 		this.layOut(worm)
 		return worm
+	}
+
+	/**
+	 * A butterfly's arrival: the same session just woke up or nodded off (a new presence, so a new
+	 * worm), carrying on where the old one was; or a freshly conjured session, which hatches.
+	 */
+	private arrive(worm: Worm, peer: Peer, now: number) {
+		const rec = worm.sessionId ? this.conjure?.record(worm.sessionId) : undefined
+		worm.bf.conjuredAt = rec?.createdAt ?? 0
+		// (Banished and conjured again, it's a new one.)
+		const prev = worm.sessionId
+			? [...this.worms.values()].find((w) => w.sessionId === worm.sessionId && w !== worm && w.bf.conjuredAt === worm.bf.conjuredAt)
+			: undefined
+		if (prev) {
+			worm.head = { ...prev.head }
+			worm.joints = prev.joints.map((j) => ({ ...j }))
+			worm.heading = { ...prev.heading }
+			worm.seed = prev.seed
+			worm.scale = worm.popFrom = prev.leaving ? 1 : prev.scale
+			worm.popStart = now - POP_MS
+			// (A freshly conjured one first shows up asleep, until its owner's tab runs it: it keeps hatching.)
+			worm.bf = { ...prev.bf, colors: worm.bf.colors, center: { ...prev.bf.center } }
+			const hatching = now - worm.bf.morphStart < MORPH_MS
+			if (prev.asleep && !peer.user.asleep && !hatching) worm.bf.stretchStart = now
+			prev.el.remove()
+			this.worms.delete(prev.id)
+			if (this.press?.worm === prev) this.press.worm = worm
+			return
+		}
+		const age = rec ? Date.now() - rec.createdAt : Infinity
+		if (!rec || this.reducedMotion.matches || age > FRESH_MS || rec.createdAt < this.bornAt - 2000) return
+		worm.bf.morphStart = now
+		worm.bf.stretchStart = now + MORPH_MS * MORPH_BURST
 	}
 
 	/** Puts the body in a gentle curl trailing down-left of the head, as if it just surfaced. */
@@ -522,6 +648,7 @@ export class AgentWorms {
 		if (worm.color !== peer.user.color) {
 			worm.color = peer.user.color
 			worm.palette = palette(worm.color)
+			worm.bf.colors = wingColors(worm.color)
 			worm.label.style.background = worm.color
 			worm.el.style.setProperty('--agent-color', worm.color)
 		}
@@ -722,6 +849,10 @@ export class AgentWorms {
 				worm.carryVel.x += ((dx * z) / dt - worm.carryVel.x) * v
 				worm.carryVel.y += ((dy * z) / dt - worm.carryVel.y) * v
 			}
+		} else if (goal && !worm.leaving && still && worm.butterfly) {
+			// Reduced motion: no flying about, it's just there.
+			worm.trip = null
+			worm.head = { ...goal }
 		} else if (goal && !worm.leaving) {
 			const screenDist = Math.hypot(goal.x - worm.head.x, goal.y - worm.head.y) * z
 			if (worm.trip) {
@@ -753,7 +884,7 @@ export class AgentWorms {
 		if (trip) {
 			const t = Math.min(1, (now - trip.start) / trip.duration)
 			let u = t
-			if (!still) {
+			if (!still && !worm.butterfly) {
 				// Inchworm clock: surges and pauses, but still lands at u = 1.
 				const w = 2 * Math.PI * trip.pulses
 				u = t + (0.7 * Math.sin(w * t)) / w
@@ -862,17 +993,82 @@ export class AgentWorms {
 			worm.blinkStart = now
 			worm.nextBlink = now + 1800 + Math.random() * 4200
 		}
+		if (worm.butterfly) this.stepWings(worm, now, elapsed)
+	}
+
+	/** A butterfly's wingbeat, hover height, facing and tilt. */
+	private stepWings(worm: Worm, now: number, elapsed: number) {
+		const bf = worm.bf
+		const still = this.reducedMotion.matches
+		const ease = (ms: number) => (still ? 1 : 1 - Math.exp(-elapsed / ms))
+		const z = this.editor.camera.peek().z
+		const trip = worm.trip
+
+		// Facing: the way it's flying or being swung; otherwise as it was.
+		if (trip && Math.abs(trip.to.x - trip.from.x) * z > 10) bf.facing = Math.sign(trip.to.x - trip.from.x)
+		else if (worm.carried && Math.abs(worm.carryVel.x) > 160) bf.facing = Math.sign(worm.carryVel.x)
+		bf.face += (bf.facing - bf.face) * ease(120)
+
+		// Now and then, sitting about, a little flutter hop.
+		const idle = !trip && !worm.carried && !worm.thinking && !worm.asleep && worm.talk < 0.05 && now - bf.morphStart > MORPH_MS
+		if (!idle) bf.nextHop = Math.max(bf.nextHop, now + 2500)
+		else if (!still && now > bf.nextHop) {
+			bf.hopStart = now
+			bf.nextHop = now + 6000 + Math.random() * 8000
+		}
+		const hop = this.hopAmount(worm, now)
+
+		// Hover: up while flying, held aloft while thinking, settling softly when it lands.
+		const aloft = worm.asleep || worm.carried ? 0 : trip ? 12 : 9 * worm.think
+		bf.alt += (aloft - bf.alt) * ease(trip ? 160 : 260)
+
+		// Wingbeat: slow open-and-close at rest, quick beats flying or carried, a fast shimmer thinking.
+		const thinkW = worm.think * (1 - worm.motion) * (1 - worm.carry)
+		const energy = Math.min(1, Math.max(worm.motion, worm.carry, worm.think, hop))
+		const freq = 0.32 + (5.8 + 3.8 * thinkW - 0.32) * energy
+		const center = (38 + (55 + 9 * thinkW - 38) * energy) * DEG
+		const amp = (30 + (58 - 28 * thinkW - 30) * energy) * DEG
+		bf.flapPhase += (elapsed / 1000) * freq * Math.PI * 2
+		bf.sleepy += ((worm.asleep ? 1 : 0) - bf.sleepy) * ease(300)
+		let phi = still ? 68 * DEG : center + amp * Math.sin(bf.flapPhase)
+		// Folded up, asleep.
+		phi += (-6 * DEG - phi) * bf.sleepy
+		if (!still) {
+			// Stretching them out wide (waking, hatching), or flung open when startled.
+			const st = (now - bf.stretchStart) / STRETCH_MS
+			if (st >= 0 && st < 1) phi += (100 * DEG - phi) * Math.pow(Math.sin(Math.PI * st), 0.6)
+			const startle = startleAmount(worm, now)
+			if (startle > 0) phi += (100 * DEG - phi) * startle
+		}
+		bf.phi += (phi - bf.phi) * ease(22)
+
+		// Nose up a little at rest; leaning into a climb or dive; swinging when carried.
+		let tilt = worm.asleep ? 0.04 : 0.12
+		if (trip) {
+			const dx = trip.to.x - trip.from.x
+			const dy = trip.to.y - trip.from.y
+			tilt += Math.max(-0.3, Math.min(0.3, (-dy / (Math.hypot(dx, dy) || 1)) * 0.3))
+		} else if (worm.carried) tilt += Math.max(-0.4, Math.min(0.4, -worm.carryVel.y / 2500))
+		bf.tilt += (tilt - bf.tilt) * ease(200)
+	}
+
+	/** 0..1..0 over an idle flutter hop. */
+	private hopAmount(worm: Worm, now: number) {
+		if (this.reducedMotion.matches) return 0
+		const t = (now - worm.bf.hopStart) / HOP_MS
+		return t >= 0 && t < 1 ? Math.sin(Math.PI * t) : 0
 	}
 
 	private plan(worm: Worm, goal: Vec, now: number): Trip {
 		const z = this.editor.camera.peek().z
 		const dist = Math.hypot(goal.x - worm.head.x, goal.y - worm.head.y) * z
-		const duration = Math.min(1500, Math.max(500, 260 + dist * 0.95))
+		const duration = worm.butterfly ? Math.min(1700, Math.max(650, 340 + dist * 0.8)) : Math.min(1500, Math.max(500, 260 + dist * 0.95))
 		const side = Math.sin(worm.seed + now / 997) > 0 ? 1 : -1
 		return {
 			from: { ...worm.head },
 			to: { ...goal },
-			bend: side * (0.14 + 0.1 * Math.abs(Math.sin(now / 331))),
+			// Butterflies swoop wider.
+			bend: side * (0.14 + 0.1 * Math.abs(Math.sin(now / 331))) * (worm.butterfly ? 1.4 : 1),
 			start: now,
 			duration,
 			pulses: Math.max(1, Math.round(duration / 330)),
@@ -929,6 +1125,7 @@ export class AgentWorms {
 					wigglePhase: seed,
 					heading: { x: 1, y: 0 },
 					screen: { x: -1e9, y: -1e9 },
+					fade: 1,
 				}
 				worm.tinies.set(s.id, tiny)
 			}
@@ -949,56 +1146,27 @@ export class AgentWorms {
 		return { x: Math.cos(a) * r * 1.2, y: Math.sin(a) * r * 0.72 }
 	}
 
-	private drawTinies(worm: Worm, now: number) {
+	/**
+	 * Moves and draws the tiny worms around `mid` (screen). Around a butterfly, the ones behind it
+	 * (layer "back", moving them) are drawn before it and the ones in front ("front") after.
+	 */
+	private drawTinies(worm: Worm, now: number, mid: Vec, layer: 'all' | 'back' | 'front' = 'all') {
 		const ctx = this.ctx
 		const alpha = ctx.globalAlpha
 		const still = this.reducedMotion.matches
+		const move = layer !== 'front'
 		const elapsed = Math.min(100, now - (worm.tiniesAt ?? now))
-		worm.tiniesAt = now
-		// The middle of the parent's body, on screen.
-		const pts = worm.joints.map((j) => this.editor.pageToScreen(j))
-		const mid = { x: pts.reduce((a, p) => a + p.x, 0) / pts.length, y: pts.reduce((a, p) => a + p.y, 0) / pts.length }
+		if (move) worm.tiniesAt = now
 		const count = [...worm.tinies.values()].filter((t) => !t.leaving).length
 		const { dark } = worm.palette
 		const body = mixColor(worm.color, 255, 0.22)
 		for (const tiny of [...worm.tinies.values()]) {
-			let reach = 1
-			let fade = 1
-			if (tiny.leaving) {
-				const u = still ? 1 : (now - tiny.leaveStart) / TINY_LEAVE_MS
-				if (u >= 1 || worm.asleep) {
-					worm.tinies.delete(tiny.id)
-					if (this.tipFor === tiny) this.tipFor = null
-					continue
-				}
-				// Wriggles off outward and fades.
-				reach = 1 + 1.4 * u * u
-				fade = 1 - u
-				tiny.scale = 1 - 0.5 * u
-			} else {
-				const popT = Math.min(1, (now - tiny.popStart) / POP_MS)
-				tiny.scale = still ? 1 : easeOutBack(popT)
+			if (layer !== 'all' && (layer === 'front') !== tiny.head.y > 0) {
+				if (move) this.moveTiny(worm, tiny, now, elapsed, count)
+				continue
 			}
-			const target = this.tinyTarget(worm, tiny.slot, Math.max(count, 1), tiny.seed, now, reach)
-			if (still) tiny.head = target
-			else {
-				const k = 1 - Math.exp(-elapsed / (tiny.leaving ? 90 : 220))
-				const dx = (target.x - tiny.head.x) * k
-				const dy = (target.y - tiny.head.y) * k
-				tiny.head = { x: tiny.head.x + dx, y: tiny.head.y + dy }
-				const sp = Math.hypot(dx, dy)
-				if (sp > 0.05) tiny.heading = { x: dx / sp, y: dy / sp }
-				tiny.wigglePhase += (elapsed / 1000) * 14
-			}
-			// Follow the leader, in screen px.
-			tiny.joints[0] = tiny.head
-			for (let i = 1; i < tiny.joints.length; i++) {
-				const a = tiny.joints[i - 1]
-				const b = tiny.joints[i]
-				const d = Math.hypot(b.x - a.x, b.y - a.y) || 1
-				const spacing = TINY_SPACING * tiny.scale
-				if (still || d > spacing) tiny.joints[i] = { x: a.x + ((b.x - a.x) / d) * spacing, y: a.y + ((b.y - a.y) / d) * spacing }
-			}
+			if (move && !this.moveTiny(worm, tiny, now, elapsed, count)) continue
+			const fade = tiny.fade
 			const scale = tiny.scale * worm.scale * TINY_SIZE
 			if (scale < 0.02) continue
 			const amp = still ? 0 : 1.6
@@ -1036,6 +1204,50 @@ export class AgentWorms {
 		ctx.globalAlpha = alpha
 	}
 
+	/** One tiny worm's step around its parent; false once it has gone (and is removed). */
+	private moveTiny(worm: Worm, tiny: Tiny, now: number, elapsed: number, count: number) {
+		const still = this.reducedMotion.matches
+		let reach = 1
+		let fade = 1
+		if (tiny.leaving) {
+			const u = still ? 1 : (now - tiny.leaveStart) / TINY_LEAVE_MS
+			if (u >= 1 || worm.asleep) {
+				worm.tinies.delete(tiny.id)
+				if (this.tipFor === tiny) this.tipFor = null
+				return false
+			}
+			// Wriggles off outward and fades.
+			reach = 1 + 1.4 * u * u
+			fade = 1 - u
+			tiny.scale = 1 - 0.5 * u
+		} else {
+			const popT = Math.min(1, (now - tiny.popStart) / POP_MS)
+			tiny.scale = still ? 1 : easeOutBack(popT)
+		}
+		const target = this.tinyTarget(worm, tiny.slot, Math.max(count, 1), tiny.seed, now, reach)
+		if (still) tiny.head = target
+		else {
+			const k = 1 - Math.exp(-elapsed / (tiny.leaving ? 90 : 220))
+			const dx = (target.x - tiny.head.x) * k
+			const dy = (target.y - tiny.head.y) * k
+			tiny.head = { x: tiny.head.x + dx, y: tiny.head.y + dy }
+			const sp = Math.hypot(dx, dy)
+			if (sp > 0.05) tiny.heading = { x: dx / sp, y: dy / sp }
+			tiny.wigglePhase += (elapsed / 1000) * 14
+		}
+		// Follow the leader, in screen px.
+		tiny.joints[0] = tiny.head
+		for (let i = 1; i < tiny.joints.length; i++) {
+			const a = tiny.joints[i - 1]
+			const b = tiny.joints[i]
+			const d = Math.hypot(b.x - a.x, b.y - a.y) || 1
+			const spacing = TINY_SPACING * tiny.scale
+			if (still || d > spacing) tiny.joints[i] = { x: a.x + ((b.x - a.x) / d) * spacing, y: a.y + ((b.y - a.y) / d) * spacing }
+		}
+		tiny.fade = fade
+		return true
+	}
+
 	/** The tooltip of the tiny worm under the pointer, following it. */
 	private showTip() {
 		let best: Tiny | null = null
@@ -1065,21 +1277,70 @@ export class AgentWorms {
 	// ---------- drawing ----------
 
 	private draw(worm: Worm, now: number) {
+		if (worm.butterfly && worm.asleep) return this.drawFaded(worm, now)
 		this.ctx.save()
 		if (worm.asleep) this.ctx.globalAlpha = 0.45
 		try {
-			if (worm.tinies.size) this.drawTinies(worm, now)
-			this.drawWorm(worm, now)
+			if (worm.butterfly) this.drawButterfly(worm, now)
+			else {
+				if (worm.tinies.size) this.drawTinies(worm, now, this.middle(worm))
+				this.drawWorm(worm, now)
+			}
 		} finally {
 			this.ctx.restore()
 		}
 	}
 
-	private drawWorm(worm: Worm, now: number) {
+	/**
+	 * A sleeping butterfly, dimmed as a whole: drawn on a scratch layer first, so its overlapping
+	 * wings and body don't show through each other.
+	 */
+	private drawFaded(worm: Worm, now: number) {
+		const main = this.ctx
+		const dpr = window.devicePixelRatio || 1
+		if (!this.scratch) this.scratch = document.createElement('canvas')
+		const layer = this.scratch
+		if (layer.width !== this.canvas.width || layer.height !== this.canvas.height) {
+			layer.width = this.canvas.width
+			layer.height = this.canvas.height
+		}
+		const ctx = layer.getContext('2d')!
+		const head = this.editor.pageToScreen(worm.head)
+		const R = 160
+		const sx = Math.max(0, Math.floor((head.x - R) * dpr))
+		const sy = Math.max(0, Math.floor((head.y - R) * dpr))
+		const sw = Math.min(layer.width - sx, Math.ceil(R * 2 * dpr))
+		const sh = Math.min(layer.height - sy, Math.ceil(R * 2 * dpr))
+		ctx.setTransform(1, 0, 0, 1, 0, 0)
+		if (sw > 0 && sh > 0) ctx.clearRect(sx, sy, sw, sh)
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+		this.ctx = ctx
+		try {
+			ctx.save()
+			this.drawButterfly(worm, now)
+			ctx.restore()
+		} finally {
+			this.ctx = main
+		}
+		if (sw <= 0 || sh <= 0) return
+		main.save()
+		main.globalAlpha = 0.45
+		main.drawImage(layer, sx, sy, sw, sh, sx / dpr, sy / dpr, sw / dpr, sh / dpr)
+		main.restore()
+	}
+
+	/** The middle of a worm's body, on screen. */
+	private middle(worm: Worm): Vec {
+		const pts = worm.joints.map((j) => this.editor.pageToScreen(j))
+		return { x: pts.reduce((a, p) => a + p.x, 0) / pts.length, y: pts.reduce((a, p) => a + p.y, 0) / pts.length }
+	}
+
+	/** `shrink` scales it down (curling up into a chrysalis). */
+	private drawWorm(worm: Worm, now: number, shrink = 1) {
 		const ctx = this.ctx
 		const alpha = ctx.globalAlpha
 		const still = this.reducedMotion.matches
-		const scale = worm.scale * worm.size
+		const scale = worm.scale * worm.size * shrink
 		const { base, dark, light } = worm.palette
 		const startle = still ? 0 : startleAmount(worm, now)
 		const startleT = (now - worm.startledAt) / STARTLE_MS
@@ -1156,13 +1417,7 @@ export class AgentWorms {
 		const fwd = worm.heading
 		const hr = radius(0)
 		// The labels and speech bubble follow the head but not its nodding, so the text stays readable.
-		worm.el.style.transform = `translate(${head.x - wobble}px, ${head.y - nod - hop}px)`
-		// Zoomed out, the bubbles shrink toward where they attach (the worm and its name tag don't).
-		const bubbleScale = Math.min(1, this.editor.camera.peek().z / FULL_BUBBLE_ZOOM)
-		if (bubbleScale !== worm.bubbleScale) {
-			worm.bubbleScale = bubbleScale
-			worm.el.style.setProperty('--bubble-scale', String(bubbleScale))
-		}
+		this.placeLabels(worm, head.x - wobble, head.y - nod - hop)
 		if (scale < 0.05) return
 
 		// Antenna with a twinkling sparkle, like the robot avatar: bolt upright when startled.
@@ -1180,7 +1435,181 @@ export class AgentWorms {
 		ctx.stroke()
 		const twinkle = still ? 1 : 1 + 0.3 * Math.sin(now / 180 + worm.seed) + 0.5 * startle
 		sparkle(ctx, tipX, tipY, 3.6 * scale * twinkle, now / (900 - 650 * worm.think), light, dark)
+		this.drawFace(worm, head, fwd, hr, scale, now)
+	}
 
+	/**
+	 * A conjured session's butterfly: the worm grown up, with the same eye and colours. Freshly
+	 * conjured, it first hatches: worm, then a chrysalis that wobbles and bursts open.
+	 */
+	private drawButterfly(worm: Worm, now: number) {
+		const ctx = this.ctx
+		const bf = worm.bf
+		const still = this.reducedMotion.matches
+		const z = this.editor.camera.peek().z
+		const morph = still ? 1 : (now - bf.morphStart) / MORPH_MS
+		const morphing = morph >= 0 && morph < 1
+		const ground = this.editor.pageToScreen(worm.head)
+		const startle = still ? 0 : startleAmount(worm, now)
+		const startleT = (now - worm.startledAt) / STARTLE_MS
+		const hop = startle > 0 ? -Math.sin(Math.min(1, startleT * 2.2) * Math.PI) * 16 * worm.size : 0
+		const wobble = startle > 0 ? Math.sin(startleT * 42) * 4 * startle * worm.size : 0
+
+		// Up off the ground: hovering, an arc over the trip, an idle hop; bobbing with the wingbeat.
+		const trip = worm.trip
+		let arc = 0
+		if (trip && !still) {
+			const t = Math.min(1, (now - trip.start) / trip.duration)
+			arc = Math.sin(Math.PI * t) * Math.min(34, Math.hypot(trip.to.x - trip.from.x, trip.to.y - trip.from.y) * z * 0.12)
+		}
+		const energy = Math.max(worm.motion, worm.carry, worm.think)
+		const bob = still
+			? 0
+			: Math.sin(now / 520 + worm.seed) * (1.1 + 0.08 * bf.alt) * (1 - worm.carry) * (1 - bf.sleepy) + Math.sin(bf.flapPhase) * 1.5 * energy
+		const lift = bf.alt + arc + this.hopAmount(worm, now) * 10
+		const size = worm.scale * worm.size * BUTTERFLY_SIZE
+		const emerge = !morphing ? 1 : morph < MORPH_BURST ? 0 : 0.35 + 0.65 * easeOutBack((morph - MORPH_BURST) / (1 - MORPH_BURST))
+		const s = size * emerge
+		const tilt = bf.tilt + (still ? 0 : Math.sin(now / 700 + worm.seed) * 0.08 * worm.think)
+		const pose: Pose = {
+			o: { x: ground.x + wobble, y: ground.y - lift + bob + hop },
+			F: { x: bf.face * Math.cos(tilt), y: -Math.sin(tilt) },
+			U: { x: -bf.face * Math.sin(tilt), y: -Math.cos(tilt) },
+			s,
+		}
+		bf.center = { x: ground.x + bf.face * THORAX.x * size, y: ground.y + 4 * size }
+		if (worm.tinies.size) this.drawTinies(worm, now, bf.center, 'back')
+
+		const pod = pt({ ...pose, s: size }, THORAX.x, 0)
+		if (morphing && morph < MORPH_BURST) this.drawChrysalis(worm, now, morph, pod)
+		else if (s >= 0.05) {
+			this.drawWings(worm, now, pose, lift, energy, startle)
+			if (morphing) {
+				const t = (morph - MORPH_BURST) / (1 - MORPH_BURST)
+				drawShell(ctx, pod, size, t, bf.colors)
+				drawBurst(ctx, pod, size, t, worm.seed, bf.colors)
+			}
+		} else worm.hit = []
+
+		if (worm.tinies.size) this.drawTinies(worm, now, bf.center, 'front')
+		// The labels and bubbles hang off the head, without its bobbing and hopping.
+		this.placeLabels(worm, ground.x, ground.y - bf.alt - arc)
+	}
+
+	/** The butterfly itself: far wings, body, near wings, head. */
+	private drawWings(worm: Worm, now: number, pose: Pose, lift: number, energy: number, startle: number) {
+		const ctx = this.ctx
+		const alpha = ctx.globalAlpha
+		const still = this.reducedMotion.matches
+		const bf = worm.bf
+		const c = bf.colors
+		const { s } = pose
+
+		// Its shadow on the ground, smaller and fainter the higher it flies.
+		const ground = { x: pose.o.x + pose.F.x * THORAX.x * s, y: pose.o.y + lift + 8 * s }
+		ctx.globalAlpha = alpha * 0.2 * Math.max(0.3, 1 - lift / 50)
+		ctx.fillStyle = '#000'
+		ellipse(ctx, ground.x, ground.y, 15 * s * (1 - Math.min(0.4, lift / 80)), 3.2 * s)
+		ctx.globalAlpha = alpha
+
+		const farRoot = pt(pose, THORAX.x + 2.5, THORAX.y + 2.5)
+		const root = pt(pose, THORAX.x + 1, THORAX.y + 2)
+		const farSpan = wingSpan(bf.phi, true) * 0.95
+		const nearSpan = wingSpan(bf.phi, false)
+		// Folded up asleep, they stand straight up.
+		const sweep = SWEEP * (1 - 0.9 * bf.sleepy)
+		drawWing(ctx, pose, 'hind', farRoot, farSpan, true, c, sweep)
+		drawWing(ctx, pose, 'fore', farRoot, farSpan, true, c, sweep)
+		drawBody(ctx, pose, c, bf.sleepy + 0.4 * worm.carry)
+		drawWing(ctx, pose, 'hind', root, nearSpan, false, c, sweep)
+		drawWing(ctx, pose, 'fore', root, nearSpan, false, c, sweep)
+
+		// Antennae (bolt upright when startled), the head, and the worm's sparkle on the near tip.
+		const sway = still ? 0 : (Math.sin(now / 300 + worm.seed) * 0.25 + energy * Math.sin(bf.flapPhase) * 0.3) * (1 - startle) - startle * 0.4
+		const tip = drawAntennae(ctx, pose, c, sway, 1)
+		const hr = BF_HEAD_R * s
+		ctx.fillStyle = c.dark
+		disc(ctx, pose.o.x, pose.o.y, hr + 1.5 * s)
+		ctx.fillStyle = c.base
+		disc(ctx, pose.o.x, pose.o.y, hr)
+		const twinkle = still ? 1 : 1 + 0.3 * Math.sin(now / 180 + worm.seed) + 0.5 * startle
+		sparkle(ctx, tip.x, tip.y, 2.8 * s * twinkle, now / (900 - 650 * worm.think), c.light, c.dark)
+		this.drawFace(worm, pose.o, { x: bf.face, y: 0 }, hr, s, now)
+
+		if (!worm.conjured) return
+		const hit = [
+			{ ...pose.o, r: hr + 1.5 * s },
+			{ ...pt(pose, THORAX.x, THORAX.y), r: 7 * s },
+			{ ...pt(pose, -19, -2), r: 6 * s },
+		]
+		for (const [r0, span] of [
+			[farRoot, farSpan],
+			[root, nearSpan],
+		] as const) {
+			for (const [p, q, r] of [
+				[-3, 13, 11],
+				[-11, 8, 8],
+			]) {
+				const back = sweep * Math.abs(span)
+				const w = s * WING
+				hit.push({
+					x: r0.x + (p * pose.F.x + q * (span * pose.U.x - back * pose.F.x)) * w,
+					y: r0.y + (p * pose.F.y + q * (span * pose.U.y - back * pose.F.y)) * w,
+					r: r * w * Math.max(0.55, Math.abs(span)),
+				})
+			}
+		}
+		worm.hit = hit
+	}
+
+	/** Hatching, before the butterfly bursts out: the worm wraps itself up, and the chrysalis wobbles. */
+	private drawChrysalis(worm: Worm, now: number, morph: number, pod: Vec) {
+		const ctx = this.ctx
+		const size = worm.scale * worm.size
+		const mid = this.middle(worm)
+		const head = this.editor.pageToScreen(worm.joints[0])
+		const tail = this.editor.pageToScreen(worm.joints[worm.joints.length - 1])
+		let along = Math.atan2(head.y - tail.y, head.x - tail.x)
+		if (along > Math.PI / 2) along -= Math.PI
+		if (along < -Math.PI / 2) along += Math.PI
+		const settle = easeInOutSine((morph - MORPH_WRAP) / (MORPH_BURST - MORPH_WRAP))
+		const at = lerp(mid, pod, settle)
+		const angle = along * (1 - settle)
+		if (morph < MORPH_POD) {
+			const wrap = Math.max(0, (morph - MORPH_WRAP) / (MORPH_POD - MORPH_WRAP))
+			this.drawWorm(worm, now, 1 - 0.45 * easeInOutSine(wrap))
+			if (wrap <= 0) return
+			const a = ctx.globalAlpha
+			ctx.globalAlpha = a * Math.min(1, wrap * 2.5)
+			drawCocoon(ctx, at, size * (0.55 + 0.45 * wrap), angle, wrap, 0, worm.bf.colors)
+			ctx.globalAlpha = a
+			return
+		}
+		const t = (morph - MORPH_POD) / (MORPH_BURST - MORPH_POD)
+		const shake = Math.sin(now / 38) * 0.2 * t * t
+		const crack = Math.max(0, (t - 0.5) / 0.5)
+		drawCocoon(ctx, at, size * (1 + 0.05 * Math.sin(now / 60) * t), angle + shake, 1, crack, worm.bf.colors)
+		worm.hit = worm.conjured ? [{ ...at, r: 15 * size }] : []
+	}
+
+	/** Where the name tag, bubbles and thought cloud hang (screen px), and their scale for the zoom. */
+	private placeLabels(worm: Worm, x: number, y: number) {
+		worm.el.style.transform = `translate(${x}px, ${y}px)`
+		// Zoomed out, the bubbles shrink toward where they attach (the worm and its name tag don't).
+		const bubbleScale = Math.min(1, this.editor.camera.peek().z / FULL_BUBBLE_ZOOM)
+		if (bubbleScale !== worm.bubbleScale) {
+			worm.bubbleScale = bubbleScale
+			worm.el.style.setProperty('--bubble-scale', String(bubbleScale))
+		}
+	}
+
+	/** The googly eye and the mouth (and "!" when startled), on a head of radius hr facing fwd. */
+	private drawFace(worm: Worm, head: Vec, fwd: Vec, hr: number, scale: number, now: number) {
+		const ctx = this.ctx
+		const alpha = ctx.globalAlpha
+		const still = this.reducedMotion.matches
+		const { dark, light } = worm.palette
+		const startle = still ? 0 : startleAmount(worm, now)
 		// One big googly eye, bulging when startled and a little wider while listening.
 		const ex = head.x + fwd.x * hr * 0.25
 		const ey = head.y - hr * 0.22 - hr * 0.12 * startle
@@ -1276,39 +1705,6 @@ function startleAmount(worm: Worm, now: number) {
 	return t >= 0 && t < 1 ? 1 - t * t : 0
 }
 
-function disc(ctx: CanvasRenderingContext2D, x: number, y: number, r: number) {
-	if (r <= 0) return
-	ctx.beginPath()
-	ctx.arc(x, y, r, 0, Math.PI * 2)
-	ctx.fill()
-}
-
-function ellipse(ctx: CanvasRenderingContext2D, x: number, y: number, rx: number, ry: number) {
-	if (rx <= 0 || ry <= 0) return
-	ctx.beginPath()
-	ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2)
-	ctx.fill()
-}
-
-function sparkle(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, spin: number, fill: string, stroke: string) {
-	if (r <= 0) return
-	ctx.beginPath()
-	for (let i = 0; i < 8; i++) {
-		const a = spin + (i * Math.PI) / 4
-		const d = i % 2 === 0 ? r : r * 0.32
-		const px = x + Math.cos(a) * d
-		const py = y + Math.sin(a) * d
-		if (i === 0) ctx.moveTo(px, py)
-		else ctx.lineTo(px, py)
-	}
-	ctx.closePath()
-	ctx.fillStyle = fill
-	ctx.strokeStyle = stroke
-	ctx.lineWidth = 0.9
-	ctx.fill()
-	ctx.stroke()
-}
-
 /** Unit normal of a polyline at sample i. */
 function normalAt(pts: Vec[], i: number) {
 	const a = pts[Math.max(0, i - 1)]
@@ -1375,6 +1771,16 @@ function easeInBack(t: number) {
 function palette(color: string) {
 	const rgb = parseHex(color) ?? [34, 211, 238]
 	return { base: `rgb(${rgb.join(', ')})`, dark: mixColor(color, 0, 0.62), light: mixColor(color, 255, 0.55) }
+}
+
+/** A butterfly's colours: the worm's, plus shaded far wings and a pale chrysalis. */
+function wingColors(color: string): Colors {
+	return {
+		...palette(color),
+		far: mixColor(color, 0, 0.14),
+		farLight: mixColor(color, 255, 0.4),
+		silk: mixColor(color, 255, 0.68),
+	}
 }
 
 /** The colour mixed toward black (0) or white (255) by k. */

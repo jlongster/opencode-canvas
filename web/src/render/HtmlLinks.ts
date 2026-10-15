@@ -8,7 +8,8 @@ import type { Box } from '../editor/geometry'
  * Protocol (iframe → parent, postMessage to the parent's origin):
  *   { type: 'canvas:links', nonce, width, height, links: [{ href, rects: [[x, y, w, h], …] }] }
  * Rects are in the document's viewport CSS px (the item's design size; scroll is already applied),
- * clipped to the viewport, and only for visible, unobscured http(s)/mailto links. The parent only
+ * clipped to the viewport, and only for visible, unobscured http(s)/mailto links: <a href>s, and
+ * URLs written as plain text (autolinked, bare hosts get https://). The parent only
  * accepts it from that iframe's contentWindow with the nonce it put in that document.
  */
 
@@ -22,6 +23,41 @@ const MAX_CACHED_DOCS = 48
 /** Runs inside the item's document; must not reference anything outside itself. */
 function linkReporter(nonce: string, parentOrigin: string, maxLinks: number, maxRects: number) {
 	document.currentScript?.remove()
+	const MAX_TEXT_NODES = 5000
+	const MAX_TEXT_CHARS = 500_000
+	// Plain-text URLs: http(s)://…, www.…, a bare host followed by a path (github.com/a/b), emails.
+	const urlPattern =
+		/(?<![\w@.\/-])(?:(https?:\/\/[^\s<>"'`]+)|(www\.[a-z0-9-]+(?:\.[a-z0-9-]+)+[^\s<>"'`]*)|((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+([a-z]{2,})(?::\d{1,5})?\/[^\s<>"'`]*)|([\w.+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\b))/gi
+	// "TLDs" that are really file extensions (package.json/x, foo.ts/bar): not bare hosts.
+	const fileExts = new Set(
+		'c h cc cpp hpp cs go rs rb py js jsx mjs cjs ts tsx mts cts json jsonc md mdx txt log sh bash zsh css scss less html htm xml yml yaml toml ini lock java kt swift php sql vue svelte png jpg jpeg gif svg webp zip tar gz tgz'.split(' '),
+	)
+	const skip = 'a,script,style,noscript,template,textarea,input,select,option,[contenteditable]:not([contenteditable="false"])'
+	const textCache = new WeakMap<Text, { data: string; found: [number, number, string][] }>()
+	const findUrls = (text: string) => {
+		const found: [number, number, string][] = []
+		if (!/[./@]/.test(text)) return found
+		for (const m of text.matchAll(urlPattern)) {
+			if (m[4] && fileExts.has(m[4].toLowerCase())) continue
+			let url = m[0]
+			// Trailing punctuation isn't part of it, nor are closing brackets it didn't open.
+			for (;;) {
+				const last = url[url.length - 1]
+				if ('.,;:!?\'"'.includes(last)) url = url.slice(0, -1)
+				else if (last && ')]}'.includes(last) && url.split(last).length > url.split('([{'[')]}'.indexOf(last)]).length)
+					url = url.slice(0, -1)
+				else break
+			}
+			if (!/[\w/=#)\]}-]$/.test(url)) continue
+			if (m[5]) {
+				if (!/\.[a-z]{2,}$/i.test(url)) continue
+				found.push([m.index!, url.length, 'mailto:' + url])
+			} else {
+				found.push([m.index!, url.length, m[1] ? url : 'https://' + url])
+			}
+		}
+		return found
+	}
 	let timer = 0
 	let lastAt = 0
 	let last = ''
@@ -31,6 +67,23 @@ function linkReporter(nonce: string, parentOrigin: string, maxLinks: number, max
 		const vw = innerWidth
 		const vh = innerHeight
 		const links: { href: string; rects: number[][] }[] = []
+		// The visible, unobscured parts of rects (clipped to the viewport), in document px.
+		const visibleRects = (list: DOMRectList, owner: Element) => {
+			const rects: number[][] = []
+			for (const r of Array.from(list)) {
+				if (rects.length >= maxRects) break
+				const x = Math.max(0, r.left)
+				const y = Math.max(0, r.top)
+				const w = Math.min(vw, r.right) - x
+				const h = Math.min(vh, r.bottom) - y
+				if (w < 1 || h < 1) continue
+				// Hidden, clipped away (e.g. scrolled out of its box) or covered by something else.
+				const hit = document.elementFromPoint(x + w / 2, y + h / 2)
+				if (!hit || !owner.contains(hit)) continue
+				rects.push([x, y, w, h].map((n) => Math.round(n * 10) / 10))
+			}
+			return rects
+		}
 		for (const a of Array.from(document.querySelectorAll('a'))) {
 			if (links.length >= maxLinks) break
 			const raw = (a.getAttribute('href') ?? a.getAttributeNS('http://www.w3.org/1999/xlink', 'href') ?? '').trim()
@@ -42,20 +95,35 @@ function linkReporter(nonce: string, parentOrigin: string, maxLinks: number, max
 				continue
 			}
 			if (url.protocol !== 'http:' && url.protocol !== 'https:' && url.protocol !== 'mailto:') continue
-			const rects: number[][] = []
-			for (const r of Array.from(a.getClientRects())) {
-				if (rects.length >= maxRects) break
-				const x = Math.max(0, r.left)
-				const y = Math.max(0, r.top)
-				const w = Math.min(vw, r.right) - x
-				const h = Math.min(vh, r.bottom) - y
-				if (w < 1 || h < 1) continue
-				// Hidden, clipped away (e.g. scrolled out of its box) or covered by something else.
-				const hit = document.elementFromPoint(x + w / 2, y + h / 2)
-				if (!hit || !a.contains(hit)) continue
-				rects.push([x, y, w, h].map((n) => Math.round(n * 10) / 10))
-			}
+			const rects = visibleRects(a.getClientRects(), a)
 			if (rects.length) links.push({ href: url.href, rects })
+		}
+		if (document.body && links.length < maxLinks) {
+			const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+				acceptNode: (node) =>
+					node.nodeType === 1 && (node as Element).matches(skip) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+			})
+			const range = document.createRange()
+			let nodes = 0
+			let chars = 0
+			for (let node = walker.nextNode(); node && links.length < maxLinks; node = walker.nextNode()) {
+				if (node.nodeType !== 3) continue
+				const text = node as Text
+				const data = text.data
+				if (++nodes > MAX_TEXT_NODES || (chars += data.length) > MAX_TEXT_CHARS) break
+				let cached = textCache.get(text)
+				if (!cached || cached.data !== data) textCache.set(text, (cached = { data, found: findUrls(data) }))
+				const owner = text.parentElement
+				if (!owner) continue
+				for (const [start, length, href] of cached.found) {
+					if (links.length >= maxLinks) break
+					range.setStart(text, start)
+					range.setEnd(text, start + length)
+					const rects = visibleRects(range.getClientRects(), owner)
+					if (rects.length) links.push({ href, rects })
+				}
+			}
+			range.detach()
 		}
 		const json = JSON.stringify([vw, vh, links])
 		if (json === last) return

@@ -1057,8 +1057,16 @@ body,
 	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
 	color: #e4e4e7;
 	font-size: 13px;
-	animation: agent-speech-in 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
+	/* Positioned with left/top (inline) so this scale-in never animates where the box is. */
+	animation: conjure-prompt-in 140ms ease-out;
 	transform-origin: 24px 0;
+}
+
+@keyframes conjure-prompt-in {
+	from {
+		opacity: 0;
+		transform: scale(0.96);
+	}
 }
 
 .conjure-prompt-head {

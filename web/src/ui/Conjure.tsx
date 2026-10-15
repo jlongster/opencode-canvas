@@ -233,7 +233,7 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 	return (
 		<div
 			className="conjure-prompt"
-			style={{ transform: `translate(${Number(x) - 24}px, ${Number(y) + 44}px)`, ['--agent-color' as string]: color }}
+			style={{ left: Number(x) - 24, top: Number(y) + 44, ['--agent-color' as string]: color }}
 			onPointerDown={(e) => e.stopPropagation()}
 			onWheel={(e) => e.stopPropagation()}
 		>

@@ -14,8 +14,8 @@ On the canvas you can then:
 
 - **Conjure** a session (toolbar → Conjure): it appears as a worm. Click it to prompt the session;
   everyone on the canvas sees it think and reply. Drag it anywhere.
-- **Seed** an empty canvas from sessions: each gets a frame with the images and videos it output in
-  the last 24 hours.
+- **Seed** an empty canvas from sessions: each gets a frame with its images and videos from the last
+  24 hours, or its latest 10 if there are fewer.
 
 ## How it works
 

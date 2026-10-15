@@ -10,7 +10,7 @@ type RowStatus = { state: 'waiting' } | { state: 'seeding' } | { state: 'done'; 
 /**
  * The empty canvas's session picker (edit links): pick OpenCode sessions on the servers paired in
  * this browser and seed the canvas with a frame for each, holding the media it output in the last
- * day. The browser reads the sessions from OpenCode and uploads the media itself. Sessions are
+ * day (or its latest 10 if there are fewer). The browser reads the sessions from OpenCode and uploads the media itself. Sessions are
  * seeded one at a time, in list order, so each row shows its own progress and errors; frames fill
  * in live meanwhile. `onBusy` is true from the start of seeding until the results are dismissed,
  * so the picker stays up after the canvas stops being empty. With no server paired yet, it asks for
@@ -116,7 +116,7 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 			<div className="seed-picker" onPointerDown={(e) => e.stopPropagation()} onWheel={(e) => e.stopPropagation()}>
 				<div className="seed-head">
 					<h2>Seed this canvas from OpenCode</h2>
-					<p>Connect your OpenCode, then pick sessions: each gets a frame with the images and videos it output in the last 24 hours.</p>
+					<p>Connect your OpenCode, then pick sessions: each gets a frame with its images and videos from the last 24 hours, or its latest 10 if there are fewer.</p>
 				</div>
 				<PairForm onPaired={() => load()} />
 			</div>
@@ -144,7 +144,7 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 		<div className="seed-picker" onPointerDown={(e) => e.stopPropagation()} onWheel={(e) => e.stopPropagation()}>
 			<div className="seed-head">
 				<h2>Seed this canvas from OpenCode</h2>
-				<p>Pick sessions: each gets a frame with the images and videos it output in the last 24 hours.</p>
+				<p>Pick sessions: each gets a frame with its images and videos from the last 24 hours, or its latest 10 if there are fewer.</p>
 			</div>
 			<div className="seed-filters">
 				<input className="seed-search" placeholder="Filter sessions" value={query} onChange={(e) => setQuery(e.target.value)} />

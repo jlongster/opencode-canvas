@@ -1,6 +1,7 @@
 /**
  * Seeding a canvas from OpenCode sessions, in the browser: finds the images and videos a session
- * output recently, in the order it output them, and uploads each to the canvas server. Read-only on
+ * output in the last 24 hours (or its latest SEED_FILL if there are fewer), in the order it output
+ * them, and uploads each to the canvas server. Read-only on
  * OpenCode: it only reads the session, its messages and the files they point at.
  *
  * Where media turns up in a session's messages (OpenCode v2 message.list):
@@ -11,7 +12,8 @@
  *   (metadata {source: "opencode.image_generate", status, path}).
  * - paths ending in an image/video extension in a tool's input or text output (shell commands that
  *   write screenshots or renders, image_generate/image_edit's "path", files posted elsewhere...). These are
- *   only weak hints, so they count only when the file exists and was modified within the window.
+ *   only weak hints, so they count only when the file exists and was modified within the window (for
+ *   older media, around or after the time it was mentioned).
  * Media the user attached to their own prompts isn't included: the session didn't produce it.
  *
  * Files are read through OpenCode's file API (GET /api/fs/read/<path>, which also answers HEAD with
@@ -31,6 +33,8 @@ const MAX_FILE_BYTES = 200 * 1024 * 1024
 const REQUEST_MS = 30_000
 export const SEED_WINDOW_MS = 24 * 60 * 60 * 1000
 export const SEED_MAX_ITEMS = 100
+/** fewer than this in the window: top up with the latest older media */
+export const SEED_FILL = 10
 export const SEED_GROUP = 'Latest media'
 
 interface SeedMedia {
@@ -68,8 +72,8 @@ interface ToolFile {
 }
 
 /**
- * Seeds one session: a frame titled like it, with the media it output in the last day in group
- * "Latest media". Items already there (same name and time) aren't added twice.
+ * Seeds one session: a frame titled like it, with the media it output in the last day (topped up
+ * with its latest older media to SEED_FILL items) in group "Latest media". Items already there (same name and time) aren't added twice.
  */
 export async function seedSession(
 	canvasId: string,
@@ -79,11 +83,11 @@ export async function seedSession(
 ): Promise<SeedResult> {
 	const result: SeedResult = { sessionId, title: '', added: 0, skipped: 0 }
 	try {
-		const found = await findSessionMedia(serverKey, sessionId, { since: Date.now() - SEED_WINDOW_MS, limit: SEED_MAX_ITEMS })
+		const found = await findSessionMedia(serverKey, sessionId, { since: Date.now() - SEED_WINDOW_MS, limit: SEED_MAX_ITEMS, fill: SEED_FILL })
 		result.title = found.title
 		result.skipped = found.skipped
 		if (!found.media.length) {
-			result.error = found.skipped ? 'its media from the last 24 hours is gone' : 'no media found in the last 24 hours'
+			result.error = found.skipped ? 'its media is gone' : 'no media found in this session'
 			return result
 		}
 		let lastAt = 0
@@ -126,91 +130,57 @@ function seedCaption(at: number, via: string, path: string | undefined, gone: bo
 	return `${when} · via ${via}${path ? `\n${path}${gone ? ' (since deleted; this is the copy in the session)' : ''}` : ''}`
 }
 
+interface Message {
+	id: string
+	type: string
+	time: { created: number }
+	metadata?: Record<string, unknown>
+	content?: unknown[]
+}
+
+type Usable = SeedMedia & { hash: string }
+
 /**
  * The image/video media the session output since `since`, oldest first, de-duplicated, at most
- * `limit` (the latest ones).
+ * `limit` (the latest ones). When that's fewer than `fill`, the latest media it output before
+ * `since` tops it up to `fill`: older messages are only fetched until that many are found.
  */
-async function findSessionMedia(serverKey: string, sessionId: string, opts: { since: number; limit: number }) {
-	const { session, messages } = await withServer(serverKey, async (c) => {
-		const signal = AbortSignal.timeout(REQUEST_MS)
-		const session = await c.session.get({ sessionID: sessionId }, { signal })
-		const messages: unknown[] = []
-		let cursor: string | null | undefined
-		for (let page = 0; page < MAX_PAGES; page++) {
-			const res = await c.message.list(
-				cursor ? { sessionID: sessionId, cursor, limit: PAGE_SIZE } : { sessionID: sessionId, order: 'desc', limit: PAGE_SIZE },
-				{ signal },
-			)
-			messages.push(...res.data)
-			cursor = res.cursor.next
-			const oldest = res.data.at(-1) as { time?: { created?: number } } | undefined
-			if (!cursor || !res.data.length || (oldest?.time?.created ?? 0) < opts.since - PAGE_SLACK_MS) break
-		}
-		return { session, messages: messages.reverse() }
-	})
+async function findSessionMedia(serverKey: string, sessionId: string, opts: { since: number; limit: number; fill: number }) {
+	const session = await withServer(serverKey, (c) => c.session.get({ sessionID: sessionId }, { signal: AbortSignal.timeout(REQUEST_MS) }))
 	const p = pairing(serverKey)!
 	const directory = session.location.directory
 	const home = homeOf(directory)
-	const candidates: Candidate[] = []
+
+	// Messages newest first, a page at a time.
+	let cursor: string | null | undefined
+	let pages = 0
+	let exhausted = false
+	const nextPage = async (): Promise<Message[]> => {
+		if (exhausted) return []
+		const res = await withServer(serverKey, (c) =>
+			c.message.list(cursor ? { sessionID: sessionId, cursor, limit: PAGE_SIZE } : { sessionID: sessionId, order: 'desc', limit: PAGE_SIZE }, {
+				signal: AbortSignal.timeout(REQUEST_MS),
+			}),
+		)
+		cursor = res.cursor.next
+		if (!cursor || !res.data.length || ++pages >= MAX_PAGES) exhausted = true
+		return res.data as unknown as Message[]
+	}
+
+	const recentMessages: Message[] = []
+	while (!exhausted) {
+		const page = await nextPage()
+		recentMessages.push(...page)
+		if ((page.at(-1)?.time?.created ?? 0) < opts.since - PAGE_SLACK_MS) break
+	}
 	let order = 0
-	const add = (c: Omit<Candidate, 'order'>) => {
-		if (c.at >= opts.since) candidates.push({ ...c, order: order++ })
-	}
-
-	for (const raw of messages) {
-		const m = raw as { id: string; type: string; time: { created: number }; metadata?: Record<string, unknown>; content?: unknown[] }
-		if (m.type === 'synthetic') {
-			const md = m.metadata ?? {}
-			const path = typeof md.path === 'string' ? md.path : undefined
-			if (path && isMediaPath(path) && md.status !== 'error') {
-				const source = typeof md.source === 'string' ? md.source.replace(/^opencode\./, '') : 'background task'
-				add({ at: m.time.created, path: resolvePath(path, directory, home), label: basename(path), via: `${source} (finished)`, strong: true })
-			}
-			continue
-		}
-		if (m.type !== 'assistant' || !Array.isArray(m.content)) continue
-		for (const part of m.content) {
-			const t = part as {
-				type: string
-				name?: string
-				time?: { created: number; ran?: number; completed?: number }
-				state?: { status: string; input?: Record<string, unknown>; content?: unknown[]; metadata?: Record<string, unknown> }
-			}
-			if (t.type !== 'tool' || t.state?.status !== 'completed' || !t.name) continue
-			const at = t.time?.completed ?? t.time?.ran ?? t.time?.created ?? m.time.created
-			const via = toolLabel(t.name, t.state.metadata)
-			const base = baseDir(t.state.input, directory, home)
-			const content = t.state.content ?? []
-
-			for (const item of content) {
-				const f = item as ToolFile
-				if (f.type !== 'file' || !/^(image|video)\//.test(f.mime)) continue
-				const named = f.name && isMediaPath(f.name) ? resolvePath(f.name, base, home) : undefined
-				const fromUri = f.uri.startsWith('file://') ? decodeURIComponent(new URL(f.uri).pathname) : undefined
-				const data = f.uri.startsWith('data:') ? decodeDataUrl(f.uri) : null
-				const path = named ?? fromUri
-				const label = path ? basename(path) : f.name ? basename(f.name) : /browser|screenshot/i.test(via) ? 'Screenshot' : f.mime.startsWith('video/') ? 'Video' : 'Image'
-				add({ at, path, data: data ?? undefined, label, via, strong: true })
-			}
-
-			// weak hints: media paths mentioned in the input or the text output
-			const texts = [...stringsIn(t.state.input), ...content.filter((c) => (c as { type: string }).type === 'text').map((c) => (c as { text: string }).text)]
-			for (const text of texts) {
-				for (const match of text.matchAll(PATH_IN_TEXT)) {
-					const ref = match[0]
-					const before = text[(match.index ?? 0) - 1]
-					if (before === ':' || before === '@' || before === '$' || /[{}<>*]/.test(ref) || ref.startsWith('//')) continue
-					const path = resolvePath(ref, base, home)
-					add({ at, path, label: basename(path), via, strong: false })
-				}
-			}
-		}
-	}
+	const candidates = recentMessages.reverse().flatMap((m) => messageCandidates(m, directory, home, () => order++))
+	const recent = candidates.filter((c) => c.at >= opts.since)
 
 	// One per path: at the place it was first output, with its current file (or the latest copy in the session).
 	const byPath = new Map<string, Candidate>()
 	const unique: Candidate[] = []
-	for (const c of candidates) {
+	for (const c of recent) {
 		if (!c.path) {
 			unique.push(c)
 			continue
@@ -228,39 +198,137 @@ async function findSessionMedia(serverKey: string, sessionId: string, opts: { si
 		}
 	}
 
-	const usable: (SeedMedia & { hash: string })[] = []
+	const usable: Usable[] = []
 	let skipped = 0
 	for (const c of unique) {
-		if (c.path && c.path.split('/').includes('node_modules')) continue
-		let media: SeedMedia | null = null
-		if (c.path) {
-			const file = await readFile(p, c.path, directory, { strong: c.strong, since: opts.since }).catch(() => null)
-			if (file) media = { at: c.at, data: file, filename: basename(c.path), label: c.label, via: c.via, source: c.path, gone: false }
-		}
-		if (!media && c.data) {
-			let filename = c.path ? basename(c.path) : `${slug(c.label)}-${new Date(c.at).toISOString().replace(/[:.]/g, '-')}${extFromMime(c.data.type)}`
-			// several images from one tool call
-			const stem = filename.slice(0, filename.length - extname(filename).length)
-			for (let n = 2; usable.some((u) => u.filename === filename); n++) filename = `${stem}-${n}${extname(filename)}`
-			media = { at: c.at, data: c.data, filename, label: c.label, via: c.via, source: c.path, gone: !!c.path }
-		}
-		if (!media) {
+		const media = await resolveCandidate(p, c, directory, opts.since, usable)
+		if (media === 'gone') {
 			if (c.strong) skipped++
 			continue
 		}
-		const hash = await digest(media.data)
-		if (usable.some((u) => u.hash === hash)) continue
-		usable.push({ ...media, hash })
+		if (media && !usable.some((u) => u.hash === media.hash)) usable.push(media)
 	}
 
 	usable.sort((a, b) => a.at - b.at)
 	const kept = usable.slice(-opts.limit)
 	skipped += usable.length - kept.length
+
+	// Fewer than `fill` in the window: the latest older media, newest first, from the messages
+	// already fetched and then further pages until there are enough or the session runs out.
+	if (kept.length < opts.fill) {
+		const older: Usable[] = []
+		const triedPaths = new Set(byPath.keys())
+		const gonePaths = new Set<string>()
+		const queue = descending(candidates.filter((c) => c.at < opts.since))
+		while (kept.length + older.length < opts.fill) {
+			const c = queue.shift()
+			if (!c) {
+				if (exhausted) break
+				const page = await nextPage()
+				queue.push(...descending(page.reverse().flatMap((m) => messageCandidates(m, directory, home, () => order++))))
+				continue
+			}
+			if (c.path && triedPaths.has(c.path) && !(gonePaths.has(c.path) && c.data)) continue
+			// weak hints count when the file was modified around (or after) the time it was mentioned
+			const media = await resolveCandidate(p, c, directory, c.at - PAGE_SLACK_MS, [...kept, ...older])
+			if (c.path) triedPaths.add(c.path)
+			if (media === 'gone') {
+				if (c.path) gonePaths.add(c.path)
+				continue
+			}
+			if (c.path) gonePaths.delete(c.path)
+			if (media && !kept.some((u) => u.hash === media.hash) && !older.some((u) => u.hash === media.hash)) older.push(media)
+		}
+		kept.unshift(...older)
+		kept.sort((a, b) => a.at - b.at)
+	}
+
 	return {
 		title: session.title?.trim() || sessionId,
 		media: kept.map(({ hash: _, ...m }) => m),
 		skipped,
 	}
+}
+
+/** Newest first; within one instant, last output first. */
+function descending(candidates: Candidate[]): Candidate[] {
+	return candidates.sort((a, b) => b.at - a.at || b.order - a.order)
+}
+
+/**
+ * The media a candidate points at: its current file, else the copy in the session; 'gone' when
+ * neither is there, null when it's to be left out (node_modules). Copies from the session get a
+ * file name not yet taken in `taken`.
+ */
+async function resolveCandidate(p: Pairing, c: Candidate, directory: string, since: number, taken: SeedMedia[]): Promise<Usable | 'gone' | null> {
+	if (c.path && c.path.split('/').includes('node_modules')) return null
+	let media: SeedMedia | null = null
+	if (c.path) {
+		const file = await readFile(p, c.path, directory, { strong: c.strong, since }).catch(() => null)
+		if (file) media = { at: c.at, data: file, filename: basename(c.path), label: c.label, via: c.via, source: c.path, gone: false }
+	}
+	if (!media && c.data) {
+		let filename = c.path ? basename(c.path) : `${slug(c.label)}-${new Date(c.at).toISOString().replace(/[:.]/g, '-')}${extFromMime(c.data.type)}`
+		// several images from one tool call
+		const stem = filename.slice(0, filename.length - extname(filename).length)
+		for (let n = 2; taken.some((u) => u.filename === filename); n++) filename = `${stem}-${n}${extname(filename)}`
+		media = { at: c.at, data: c.data, filename, label: c.label, via: c.via, source: c.path, gone: !!c.path }
+	}
+	if (!media) return 'gone'
+	return { ...media, hash: await digest(media.data) }
+}
+
+/** The media one message points at, in the order it output them. */
+function messageCandidates(m: Message, directory: string, home: string | null, nextOrder: () => number): Candidate[] {
+	const out: Candidate[] = []
+	const add = (c: Omit<Candidate, 'order'>) => out.push({ ...c, order: nextOrder() })
+	if (m.type === 'synthetic') {
+		const md = m.metadata ?? {}
+		const path = typeof md.path === 'string' ? md.path : undefined
+		if (path && isMediaPath(path) && md.status !== 'error') {
+			const source = typeof md.source === 'string' ? md.source.replace(/^opencode\./, '') : 'background task'
+			add({ at: m.time.created, path: resolvePath(path, directory, home), label: basename(path), via: `${source} (finished)`, strong: true })
+		}
+		return out
+	}
+	if (m.type !== 'assistant' || !Array.isArray(m.content)) return out
+	for (const part of m.content) {
+		const t = part as {
+			type: string
+			name?: string
+			time?: { created: number; ran?: number; completed?: number }
+			state?: { status: string; input?: Record<string, unknown>; content?: unknown[]; metadata?: Record<string, unknown> }
+		}
+		if (t.type !== 'tool' || t.state?.status !== 'completed' || !t.name) continue
+		const at = t.time?.completed ?? t.time?.ran ?? t.time?.created ?? m.time.created
+		const via = toolLabel(t.name, t.state.metadata)
+		const base = baseDir(t.state.input, directory, home)
+		const content = t.state.content ?? []
+
+		for (const item of content) {
+			const f = item as ToolFile
+			if (f.type !== 'file' || !/^(image|video)\//.test(f.mime)) continue
+			const named = f.name && isMediaPath(f.name) ? resolvePath(f.name, base, home) : undefined
+			const fromUri = f.uri.startsWith('file://') ? decodeURIComponent(new URL(f.uri).pathname) : undefined
+			const data = f.uri.startsWith('data:') ? decodeDataUrl(f.uri) : null
+			const path = named ?? fromUri
+			const label = path ? basename(path) : f.name ? basename(f.name) : /browser|screenshot/i.test(via) ? 'Screenshot' : f.mime.startsWith('video/') ? 'Video' : 'Image'
+			add({ at, path, data: data ?? undefined, label, via, strong: true })
+		}
+
+		// weak hints: media paths mentioned in the input or the text output
+		const texts = [...stringsIn(t.state.input), ...content.filter((c) => (c as { type: string }).type === 'text').map((c) => (c as { text: string }).text)]
+		for (const text of texts) {
+			for (const match of text.matchAll(PATH_IN_TEXT)) {
+				const ref = match[0]
+				const before = text[(match.index ?? 0) - 1]
+				if (before === ':' || before === '@' || before === '$' || /[{}<>*]/.test(ref) || ref.startsWith('//')) continue
+				const path = resolvePath(ref, base, home)
+				add({ at, path, label: basename(path), via, strong: false })
+			}
+		}
+	}
+	return out
 }
 
 /**

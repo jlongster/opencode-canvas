@@ -2,7 +2,7 @@ import type { Editor } from '../editor/Editor'
 import { markdownToHtml } from '../ui/markdown'
 import type { Box, Vec } from '../editor/geometry'
 import type { Conjure } from './Conjure'
-import type { Peer } from './Presence'
+import type { Peer, SubagentInfo } from './Presence'
 
 /** Body joints, head first. Spacing and sizes are screen pixels, so worms look the same at any zoom. */
 const JOINTS = 9
@@ -35,6 +35,16 @@ const PIN_MS = 5000
 const GRAVITY = 2600
 /** a conjured worm's finished reply puts itself away (locally) after this long, unless it's pinned */
 const REPLY_HIDE_MS = 7000
+/** subagents' tiny worms: body size (of an MCP agent's worm), joints and spacing (screen px) */
+const TINY_SIZE = 0.56
+const TINY_JOINTS = 6
+const TINY_SPACING = 3.4
+/** how far from the middle of the parent's body they roam, screen px */
+const TINY_ORBIT = 54
+/** wriggling away when its subagent finishes */
+const TINY_LEAVE_MS = 520
+/** how close the pointer has to be to a tiny worm's head for its tooltip, screen px */
+const TINY_HOVER_PX = 11
 /** zoom at and above which speech bubbles are full size; below it they shrink with the canvas */
 const FULL_BUBBLE_ZOOM = 0.6
 
@@ -47,6 +57,25 @@ interface Trip {
 	duration: number
 	/** inchworm pulses over the trip; whole numbers so the warped clock still ends at 1 */
 	pulses: number
+}
+
+/** A subagent's tiny worm, roaming around its parent. Positions are screen px from the parent's middle. */
+interface Tiny {
+	id: string
+	tip: string
+	seed: number
+	/** its place among the parent's tiny worms, which spreads them around */
+	slot: number
+	scale: number
+	popStart: number
+	leaving: boolean
+	leaveStart: number
+	head: Vec
+	joints: Vec[]
+	wigglePhase: number
+	heading: Vec
+	/** its head on screen as last drawn, for hovering */
+	screen: Vec
 }
 
 interface Worm {
@@ -131,6 +160,9 @@ interface Worm {
 	pinned: { at: Vec; until: number } | null
 	/** joints on the previous frame, so a carried body swings with momentum */
 	prevJoints: Vec[]
+	/** conjured: tiny worms for its busy subagents, by session id, and when they last moved */
+	tinies: Map<string, Tiny>
+	tiniesAt?: number
 }
 
 /** A pointer that went down on a conjured worm: a click unless it moves, then a drag. */
@@ -161,6 +193,10 @@ export class AgentWorms {
 	private swallowed = new Set<number>()
 	private press: Press | null = null
 	private disposers: (() => void)[] = []
+	/** the pointer over the canvas (screen space), for tiny worms' tooltips */
+	private pointer: Vec | null = null
+	private tip: HTMLDivElement
+	private tipFor: Tiny | null = null
 
 	constructor(
 		parent: HTMLElement,
@@ -175,6 +211,22 @@ export class AgentWorms {
 		parent.append(this.canvas, this.labels)
 		this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
 		this.container = parent.closest<HTMLElement>('.canvas-container')
+		this.tip = document.createElement('div')
+		this.tip.className = 'agent-worm-tiny-tip'
+		this.tip.hidden = true
+		this.labels.appendChild(this.tip)
+		const track = (e: PointerEvent) => {
+			this.pointer = e.pointerType !== 'touch' && this.overCanvas(e) ? this.local(e) : null
+		}
+		const untrack = (e: PointerEvent) => {
+			if (!e.relatedTarget) this.pointer = null
+		}
+		window.addEventListener('pointermove', track, { capture: true, passive: true })
+		document.addEventListener('pointerout', untrack)
+		this.disposers.push(() => {
+			window.removeEventListener('pointermove', track, true)
+			document.removeEventListener('pointerout', untrack)
+		})
 		if (conjure?.canPrompt && this.container) {
 			// Capturing on window runs before the editor's own listeners on the container, so a click
 			// on a worm never reaches it; everywhere else passes straight through.
@@ -217,6 +269,7 @@ export class AgentWorms {
 				worm.focus = null
 			}
 			this.syncLabel(worm, peer, now)
+			if (worm.conjured) this.syncTinies(worm, peer.user.asleep ? [] : (peer.subagents ?? []), now)
 		}
 		for (const worm of this.worms.values()) {
 			if (!seen.has(worm.id) && !worm.leaving) this.leave(worm, now)
@@ -244,6 +297,7 @@ export class AgentWorms {
 			}
 			this.draw(worm, now)
 		}
+		this.showTip()
 	}
 
 	destroy() {
@@ -429,6 +483,7 @@ export class AgentWorms {
 			carryVel: { x: 0, y: 0 },
 			pinned: null,
 			prevJoints: [],
+			tinies: new Map(),
 		}
 		this.layOut(worm)
 		return worm
@@ -843,12 +898,177 @@ export class AgentWorms {
 		}
 	}
 
+	// ---------- subagents' tiny worms ----------
+
+	/** Adds tiny worms for subagents that started and sends off those whose subagent finished. */
+	private syncTinies(worm: Worm, subagents: SubagentInfo[], now: number) {
+		const ids = new Set(subagents.map((s) => s.id))
+		for (const tiny of worm.tinies.values()) {
+			if (!ids.has(tiny.id) && !tiny.leaving) {
+				tiny.leaving = true
+				tiny.leaveStart = now
+			}
+		}
+		subagents.forEach((s, slot) => {
+			const tip = s.agent ? `${s.title || 'Subagent'} · @${s.agent}` : s.title || 'Subagent'
+			let tiny = worm.tinies.get(s.id)
+			if (!tiny || tiny.leaving) {
+				const seed = Math.random() * 1000
+				const at = this.tinyTarget(worm, slot, subagents.length, seed, now, 0.4)
+				tiny = {
+					id: s.id,
+					tip,
+					seed,
+					slot,
+					scale: 0,
+					popStart: now,
+					leaving: false,
+					leaveStart: 0,
+					head: at,
+					joints: Array.from({ length: TINY_JOINTS }, (_, i) => ({ x: at.x - i * TINY_SPACING * 0.8, y: at.y + i * 0.6 })),
+					wigglePhase: seed,
+					heading: { x: 1, y: 0 },
+					screen: { x: -1e9, y: -1e9 },
+				}
+				worm.tinies.set(s.id, tiny)
+			}
+			tiny.slot = slot
+			tiny.tip = tip
+		})
+	}
+
+	/**
+	 * Where a tiny worm is headed: around the parent on a squashed loop, all circling the same way
+	 * (spread out by slot), wandering in and out a little. `reach` scales the distance (popping out).
+	 */
+	private tinyTarget(worm: Worm, slot: number, count: number, seed: number, now: number, reach = 1): Vec {
+		const still = this.reducedMotion.matches
+		const t = still ? 0 : now / 1000
+		const a = worm.seed + (slot / Math.max(1, count)) * Math.PI * 2 + t * 0.45 + (still ? 0 : 0.4 * Math.sin(t * 1.3 + seed))
+		const r = (TINY_ORBIT + (still ? 0 : 9 * Math.sin(t * 0.8 + seed * 2))) * reach
+		return { x: Math.cos(a) * r * 1.2, y: Math.sin(a) * r * 0.72 }
+	}
+
+	private drawTinies(worm: Worm, now: number) {
+		const ctx = this.ctx
+		const alpha = ctx.globalAlpha
+		const still = this.reducedMotion.matches
+		const elapsed = Math.min(100, now - (worm.tiniesAt ?? now))
+		worm.tiniesAt = now
+		// The middle of the parent's body, on screen.
+		const pts = worm.joints.map((j) => this.editor.pageToScreen(j))
+		const mid = { x: pts.reduce((a, p) => a + p.x, 0) / pts.length, y: pts.reduce((a, p) => a + p.y, 0) / pts.length }
+		const count = [...worm.tinies.values()].filter((t) => !t.leaving).length
+		const { dark } = worm.palette
+		const body = mixColor(worm.color, 255, 0.22)
+		for (const tiny of [...worm.tinies.values()]) {
+			let reach = 1
+			let fade = 1
+			if (tiny.leaving) {
+				const u = still ? 1 : (now - tiny.leaveStart) / TINY_LEAVE_MS
+				if (u >= 1 || worm.asleep) {
+					worm.tinies.delete(tiny.id)
+					if (this.tipFor === tiny) this.tipFor = null
+					continue
+				}
+				// Wriggles off outward and fades.
+				reach = 1 + 1.4 * u * u
+				fade = 1 - u
+				tiny.scale = 1 - 0.5 * u
+			} else {
+				const popT = Math.min(1, (now - tiny.popStart) / POP_MS)
+				tiny.scale = still ? 1 : easeOutBack(popT)
+			}
+			const target = this.tinyTarget(worm, tiny.slot, Math.max(count, 1), tiny.seed, now, reach)
+			if (still) tiny.head = target
+			else {
+				const k = 1 - Math.exp(-elapsed / (tiny.leaving ? 90 : 220))
+				const dx = (target.x - tiny.head.x) * k
+				const dy = (target.y - tiny.head.y) * k
+				tiny.head = { x: tiny.head.x + dx, y: tiny.head.y + dy }
+				const sp = Math.hypot(dx, dy)
+				if (sp > 0.05) tiny.heading = { x: dx / sp, y: dy / sp }
+				tiny.wigglePhase += (elapsed / 1000) * 14
+			}
+			// Follow the leader, in screen px.
+			tiny.joints[0] = tiny.head
+			for (let i = 1; i < tiny.joints.length; i++) {
+				const a = tiny.joints[i - 1]
+				const b = tiny.joints[i]
+				const d = Math.hypot(b.x - a.x, b.y - a.y) || 1
+				const spacing = TINY_SPACING * tiny.scale
+				if (still || d > spacing) tiny.joints[i] = { x: a.x + ((b.x - a.x) / d) * spacing, y: a.y + ((b.y - a.y) / d) * spacing }
+			}
+			const scale = tiny.scale * worm.scale * TINY_SIZE
+			if (scale < 0.02) continue
+			const amp = still ? 0 : 1.6
+			const wiggled = tiny.joints.map((p, i) => {
+				const a = tiny.joints[Math.max(0, i - 1)]
+				const b = tiny.joints[Math.min(tiny.joints.length - 1, i + 1)]
+				const tx = a.x - b.x
+				const ty = a.y - b.y
+				const tl = Math.hypot(tx, ty) || 1
+				const off = amp * Math.sin(tiny.wigglePhase - i * 1.1) * (0.3 + 0.7 * (i / (tiny.joints.length - 1)))
+				return { x: mid.x + p.x - (ty / tl) * off, y: mid.y + p.y + (tx / tl) * off }
+			})
+			const samples = catmullRom(wiggled, 4)
+			const n = samples.length
+			const radius = (f: number) => (HEAD_R + (TAIL_R - HEAD_R) * Math.pow(f, 1.15)) * scale
+			const outline = 1.1 * tiny.scale
+			ctx.globalAlpha = alpha * fade
+			ctx.fillStyle = 'rgba(0, 0, 0, 0.2)'
+			for (let i = n - 1; i >= 0; i--) disc(ctx, samples[i].x, samples[i].y + 1.5, radius(i / (n - 1)) + outline)
+			ctx.fillStyle = dark
+			for (let i = n - 1; i >= 0; i--) disc(ctx, samples[i].x, samples[i].y, radius(i / (n - 1)) + outline)
+			ctx.fillStyle = body
+			for (let i = n - 1; i >= 0; i--) disc(ctx, samples[i].x, samples[i].y, radius(i / (n - 1)))
+			// One eye, looking where it's going.
+			const head = samples[0]
+			const hr = radius(0)
+			const ex = head.x + tiny.heading.x * hr * 0.25
+			const ey = head.y - hr * 0.3
+			ctx.fillStyle = '#f8fafc'
+			disc(ctx, ex, ey, hr * 0.55)
+			ctx.fillStyle = '#111113'
+			disc(ctx, ex + tiny.heading.x * hr * 0.2, ey + tiny.heading.y * hr * 0.15, hr * 0.28)
+			tiny.screen = { x: head.x, y: head.y }
+		}
+		ctx.globalAlpha = alpha
+	}
+
+	/** The tooltip of the tiny worm under the pointer, following it. */
+	private showTip() {
+		let best: Tiny | null = null
+		const p = this.pointer
+		if (p && !this.press) {
+			let bestD = TINY_HOVER_PX + (this.tipFor ? 4 : 0)
+			for (const worm of this.worms.values()) {
+				if (worm.leaving || worm.asleep) continue
+				for (const tiny of worm.tinies.values()) {
+					if (tiny.leaving || tiny.scale < 0.5) continue
+					const d = Math.hypot(tiny.screen.x - p.x, tiny.screen.y - p.y)
+					if (d < bestD) {
+						bestD = d
+						best = tiny
+					}
+				}
+			}
+		}
+		if (best !== this.tipFor) {
+			this.tipFor = best
+			this.tip.hidden = !best
+			if (best) this.tip.textContent = best.tip
+		}
+		if (best) this.tip.style.transform = `translate(${best.screen.x}px, ${best.screen.y - 10}px) translate(-50%, -100%)`
+	}
+
 	// ---------- drawing ----------
 
 	private draw(worm: Worm, now: number) {
 		this.ctx.save()
 		if (worm.asleep) this.ctx.globalAlpha = 0.45
 		try {
+			if (worm.tinies.size) this.drawTinies(worm, now)
 			this.drawWorm(worm, now)
 		} finally {
 			this.ctx.restore()
@@ -1154,8 +1374,13 @@ function easeInBack(t: number) {
 /** Base colour plus a darker outline and a lighter belly, mixed from any #rgb / #rrggbb. */
 function palette(color: string) {
 	const rgb = parseHex(color) ?? [34, 211, 238]
-	const mix = (to: number, k: number) => `rgb(${rgb.map((c) => Math.round(c + (to - c) * k)).join(', ')})`
-	return { base: `rgb(${rgb.join(', ')})`, dark: mix(0, 0.62), light: mix(255, 0.55) }
+	return { base: `rgb(${rgb.join(', ')})`, dark: mixColor(color, 0, 0.62), light: mixColor(color, 255, 0.55) }
+}
+
+/** The colour mixed toward black (0) or white (255) by k. */
+function mixColor(color: string, to: number, k: number) {
+	const rgb = parseHex(color) ?? [34, 211, 238]
+	return `rgb(${rgb.map((c) => Math.round(c + (to - c) * k)).join(', ')})`
 }
 
 function parseHex(color: string): number[] | null {

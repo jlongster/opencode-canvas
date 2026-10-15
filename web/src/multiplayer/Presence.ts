@@ -35,6 +35,15 @@ export interface PresenceState {
 	speaking?: boolean
 	/** conjured worms: their session is working on a prompt */
 	thinking?: boolean
+	/** conjured worms: their busy subagents (child sessions), oldest first */
+	subagents?: SubagentInfo[]
+}
+
+export interface SubagentInfo {
+	id: string
+	title: string
+	/** the agent it runs as, e.g. "general" */
+	agent?: string
 }
 
 export interface Peer extends PresenceState {

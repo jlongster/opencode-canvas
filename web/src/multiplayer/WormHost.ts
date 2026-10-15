@@ -16,6 +16,9 @@
  * every RECONCILE_MS), whoever started the work: a prompt from the canvas, the TUI, anything. While
  * the session works the worm thinks and the assistant's text streams into its speech bubble; the
  * final reply stays up until the next turn or until someone dismisses it.
+ *
+ * Its subagents (child sessions, e.g. from the task tool, and their children) are tracked from the
+ * same stream: which are busy is published as `subagents`, and viewers draw a tiny worm for each.
  */
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
@@ -25,7 +28,7 @@ import { onOpenCodeEvents, type OpenCodeEvent } from '../opencode/events'
 import { errorText, ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { react, type Atom } from '../state/signals'
 import { updateConjured } from '../sync/client'
-import type { PresenceState } from './Presence'
+import type { PresenceState, SubagentInfo } from './Presence'
 
 const NAME_MAX = 40
 const CHAT_MAX = 2000
@@ -37,6 +40,10 @@ const IDLE_SETTLE_MS = 600
 /** busy/idle is checked against session.active() this often, in case the stream missed something */
 const RECONCILE_MS = 30_000
 const CHANNEL = 'opencode-canvas-worms'
+/** at most this many busy subagents are published (the oldest ones) */
+const SUBAGENTS_MAX = 8
+const SUBAGENT_TITLE_MAX = 80
+const CHILDREN_LIMIT = 50
 
 export function wormName(r: Pick<ConjuredAgent, 'title' | 'sessionId'>) {
 	const title = r.title.trim()
@@ -152,6 +159,18 @@ export class WormHost {
 	}
 }
 
+interface Subagent extends SubagentInfo {
+	parentId: string
+	busy: boolean
+	/** when it last turned busy */
+	since: number
+}
+
+const subTitle = (title: unknown) => {
+	const t = typeof title === 'string' ? title.trim() : ''
+	return t.length > SUBAGENT_TITLE_MAX ? t.slice(0, SUBAGENT_TITLE_MAX - 1) + '…' : t
+}
+
 /** One worm, running in this tab: its room presence and its OpenCode session's busy/idle and replies. */
 class WormRuntime {
 	private doc = new Y.Doc()
@@ -170,6 +189,9 @@ class WormRuntime {
 	private reconcileTimer = 0
 	private unwatch: () => void
 	private destroyed = false
+	/** descendant sessions (children, grandchildren…), by id */
+	private subs = new Map<string, Subagent>()
+	private subagents: SubagentInfo[] = []
 
 	constructor(private record: ConjuredAgent) {
 		// Read-only: a worm never writes the canvas's document, it only shares presence.
@@ -221,6 +243,7 @@ class WormRuntime {
 			chatSent: this.chatSent,
 			speaking: !!this.chat,
 			thinking: this.thinking,
+			...(this.subagents.length ? { subagents: this.subagents } : {}),
 		}
 		this.provider.awareness.setLocalState(state)
 	}
@@ -231,6 +254,7 @@ class WormRuntime {
 
 	private onEvent(ev: OpenCodeEvent) {
 		const data = ev.data
+		if (data && typeof data.sessionID === 'string' && data.sessionID !== this.record.sessionId) return this.onFamilyEvent(ev.type, data.sessionID, data)
 		if (data?.sessionID !== this.record.sessionId) return
 		switch (ev.type) {
 			case 'session.execution.started':
@@ -322,11 +346,108 @@ class WormRuntime {
 		void this.refreshTitle()
 	}
 
+	/** Events of other sessions: the worm's subagents starting, working and finishing. */
+	private onFamilyEvent(type: string, sessionId: string, data: Record<string, unknown>) {
+		if (type === 'session.created') {
+			const parentId = typeof data.parentID === 'string' ? data.parentID : ''
+			if (parentId !== this.record.sessionId && !this.subs.has(parentId)) return
+			if (!this.subs.has(sessionId)) {
+				const agent = typeof data.agent === 'string' && data.agent ? data.agent : undefined
+				this.subs.set(sessionId, { id: sessionId, parentId, title: subTitle(data.title), ...(agent ? { agent } : {}), busy: false, since: 0 })
+			}
+			return
+		}
+		const sub = this.subs.get(sessionId)
+		if (!sub) return
+		switch (type) {
+			case 'session.renamed':
+				sub.title = subTitle(data.title)
+				return this.publishSubagents(true)
+			case 'session.deleted':
+				this.subs.delete(sessionId)
+				return this.publishSubagents()
+			case 'session.status': {
+				const status = (data.status as { type?: unknown } | undefined)?.type
+				if (status === 'busy' || status === 'retry') this.setSubBusy(sub, true)
+				else if (status === 'idle') this.setSubBusy(sub, false)
+				return
+			}
+			case 'session.execution.started':
+			case 'session.step.started':
+			case 'session.text.started':
+			case 'session.tool.called':
+				return this.setSubBusy(sub, true)
+			case 'session.execution.succeeded':
+			case 'session.execution.failed':
+			case 'session.execution.interrupted':
+			case 'session.idle':
+				return this.setSubBusy(sub, false)
+		}
+	}
+
+	private setSubBusy(sub: Subagent, busy: boolean) {
+		if (sub.busy === busy) return
+		sub.busy = busy
+		if (busy) sub.since = Date.now()
+		this.publishSubagents()
+	}
+
+	/** Publishes the busy subagents, oldest first, if that list changed. */
+	private publishSubagents(force = false) {
+		const next = [...this.subs.values()]
+			.filter((s) => s.busy)
+			.sort((a, b) => a.since - b.since || (a.id < b.id ? -1 : 1))
+			.slice(0, SUBAGENTS_MAX)
+			.map(({ id, title, agent }) => ({ id, title, ...(agent ? { agent } : {}) }))
+		if (!force && JSON.stringify(next) === JSON.stringify(this.subagents)) return
+		this.subagents = next
+		this.schedulePublish()
+	}
+
 	/** Checks the worm against the sessions OpenCode says are running. */
 	private async reconcile() {
 		const active = await withServer(this.record.serverKey, (c) => c.session.active({ signal: AbortSignal.timeout(10_000) })).catch(() => null)
 		if (!active || this.destroyed) return
 		this.setBusy(this.record.sessionId in active)
+		await this.reconcileSubagents(active)
+	}
+
+	/** Lists the worm's children (and the children of busy ones) and marks which are running. */
+	private async reconcileSubagents(active: Record<string, unknown>) {
+		const list = (parentId: string) =>
+			withServer(this.record.serverKey, (c) => c.session.list({ parentID: parentId, limit: CHILDREN_LIMIT, order: 'desc' }, { signal: AbortSignal.timeout(10_000) }))
+				.then((res) => res.data)
+				.catch(() => null)
+		const seen = new Set<string>()
+		const add = (parentId: string, sessions: Awaited<ReturnType<typeof list>>) => {
+			for (const s of sessions ?? []) {
+				seen.add(s.id)
+				const sub = this.subs.get(s.id)
+				if (sub) sub.title = subTitle(s.title)
+				else this.subs.set(s.id, { id: s.id, parentId, title: subTitle(s.title), ...(s.agent ? { agent: s.agent } : {}), busy: false, since: 0 })
+			}
+		}
+		const children = await list(this.record.sessionId)
+		if (!children || this.destroyed) return
+		add(this.record.sessionId, children)
+		const busyChildren = children.filter((s) => s.id in active)
+		const grandchildren = await Promise.all(busyChildren.map((s) => list(s.id)))
+		if (this.destroyed) return
+		busyChildren.forEach((s, i) => add(s.id, grandchildren[i]))
+		for (const sub of this.subs.values()) {
+			// Gone from a listing we have (children; grandchildren of busy children): deleted.
+			const listed = sub.parentId === this.record.sessionId || busyChildren.some((c) => c.id === sub.parentId)
+			if (listed && !seen.has(sub.id)) {
+				this.subs.delete(sub.id)
+				continue
+			}
+			const busy = sub.id in active
+			if (sub.busy !== busy) {
+				sub.busy = busy
+				if (busy) sub.since = Date.now()
+			}
+		}
+		this.publishSubagents()
 	}
 
 	/** Sessions get their title after the first turn: keep the worm's name in step. */

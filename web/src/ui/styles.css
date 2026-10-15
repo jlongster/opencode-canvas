@@ -904,6 +904,30 @@ body,
 	background: rgba(0, 0, 0, 0.25);
 }
 
+/* the title of the subagent whose tiny worm is under the pointer */
+.agent-worm-tiny-tip {
+	position: absolute;
+	left: 0;
+	top: 0;
+	z-index: 1;
+	max-width: 260px;
+	padding: 3px 8px;
+	border-radius: 6px;
+	background: rgba(28, 28, 32, 0.94);
+	color: #e4e4e7;
+	font-size: 11px;
+	line-height: 1.35;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+	pointer-events: none;
+}
+
+.agent-worm-tiny-tip[hidden] {
+	display: none;
+}
+
 /* the "•••" thought cloud, with a trail of puffs up from the head, while a conjured worm's session works */
 .agent-worm-thought {
 	display: none;

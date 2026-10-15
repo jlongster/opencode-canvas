@@ -8,9 +8,16 @@
  * and the assistant's reply streams into its chat (chatSent false while streaming, speaking so
  * browsers draw a speech bubble). The finished reply stays up until the next prompt or until
  * someone dismisses it.
+ *
+ * Work started anywhere else (the TUI, another client) shows too: OpenCode's shared event stream
+ * tells us when each conjured session turns busy or idle (reconciled with session.active() on
+ * connect and every RECONCILE_MS, so it can't get stuck), the worm thinks meanwhile, and the
+ * turn's final text shows when it's done.
+ *
+ * People on edit links can drag a worm somewhere else (move), which moves its presence cursor.
  */
 import type { ConjuredAgent } from '../shared/types'
-import { errorText, opencode, OpenCodeUnavailable, withOpenCode, type OpenCodeClient } from './opencode'
+import { errorText, onOpenCodeEvents, opencode, OpenCodeUnavailable, withOpenCode, type OpenCodeClient, type OpenCodeEvent } from './opencode'
 import { SERVER_PRESENCE_RENEW_MS, ServerPresence } from './presence'
 
 export class ConjureError extends Error {
@@ -37,6 +44,12 @@ const STREAM_PUBLISH_MS = 80
 const CONNECT_MS = 10_000
 /** a dropped event stream is resumed this many times while the session still runs */
 const RESUBSCRIBE_TRIES = 5
+/** an idle session that turns busy again within this long (its next queued turn) keeps thinking */
+const IDLE_SETTLE_MS = 600
+/** busy/idle is checked against session.active() this often, in case the stream missed something */
+const RECONCILE_MS = 30_000
+/** a canvas prompt's session can still be listed active this long after its run ends */
+const RUN_LINGER_MS = 5000
 
 interface Run {
 	abort: AbortController
@@ -52,6 +65,12 @@ interface Worm {
 	chatSent: boolean
 	thinking: boolean
 	run: Run | null
+	/** its session is busy with work started somewhere other than this canvas */
+	external: boolean
+	/** that work failed, with this error */
+	externalError: string | null
+	idleTimer?: Timer
+	runEndedAt: number
 	publishTimer?: Timer
 }
 
@@ -79,10 +98,23 @@ const short = (text: string) => (text.length > ERROR_MAX ? text.slice(0, ERROR_M
 
 export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 	const worms = new Map<string, Worm>()
+	let unwatch: (() => void) | null = null
+	let reconcileTimer: Timer | undefined
 
 	function add(record: ConjuredAgent) {
-		const w: Worm = { record, presence: new ServerPresence(record.canvasId), chat: null, chatSent: true, thinking: false, run: null }
+		const w: Worm = {
+			record,
+			presence: new ServerPresence(record.canvasId),
+			chat: null,
+			chatSent: true,
+			thinking: false,
+			run: null,
+			external: false,
+			externalError: null,
+			runEndedAt: 0,
+		}
 		worms.set(key(record.canvasId, record.sessionId), w)
+		syncWatch()
 		return w
 	}
 
@@ -113,10 +145,12 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 		if (worms.get(k) !== w) return
 		worms.delete(k)
 		clearTimeout(w.publishTimer)
+		clearTimeout(w.idleTimer)
 		w.run?.abort.abort()
 		w.run = null
 		w.presence.leave().catch((e) => console.error('conjured worm leave failed:', e))
 		deps.save()
+		syncWatch()
 	}
 
 	function get(canvasId: string, sessionId: string): Worm {
@@ -131,6 +165,100 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 	setInterval(() => {
 		for (const w of worms.values()) if (!w.publishTimer) publish(w).catch(() => {})
 	}, SERVER_PRESENCE_RENEW_MS)
+
+	// ---------- busy / idle, wherever the work comes from ----------
+
+	/** Follows OpenCode's events while any worm is conjured. */
+	function syncWatch() {
+		if (worms.size > 0 && !unwatch) {
+			unwatch = onOpenCodeEvents({ onEvent, onConnect: () => reconcile().catch(() => {}) })
+			reconcileTimer = setInterval(() => reconcile().catch(() => {}), RECONCILE_MS)
+		} else if (worms.size === 0 && unwatch) {
+			unwatch()
+			unwatch = null
+			clearInterval(reconcileTimer)
+		}
+	}
+
+	function onEvent(ev: OpenCodeEvent) {
+		const sessionId = ev.data?.sessionID
+		if (typeof sessionId !== 'string') return
+		let busy: boolean | null = null
+		switch (ev.type) {
+			case 'session.execution.started':
+				busy = true
+				break
+			case 'session.status': {
+				const status = (ev.data?.status as { type?: unknown } | undefined)?.type
+				busy = status === 'busy' || status === 'retry' ? true : status === 'idle' ? false : null
+				break
+			}
+			case 'session.execution.failed':
+			case 'session.execution.succeeded':
+			case 'session.execution.interrupted':
+			case 'session.idle':
+				busy = false
+				break
+		}
+		if (busy === null) return
+		for (const w of worms.values()) {
+			if (w.record.sessionId !== sessionId) continue
+			if (ev.type === 'session.execution.failed' && w.external) w.externalError = errorText(ev.data?.error)
+			setBusy(w, busy)
+		}
+	}
+
+	/** Checks every worm against the sessions OpenCode says are running. */
+	async function reconcile() {
+		if (worms.size === 0) return
+		const active = await withOpenCode((c) => c.session.active({ signal: AbortSignal.timeout(CONNECT_MS) }))
+		for (const w of worms.values()) {
+			const busy = w.record.sessionId in active
+			if (busy && Date.now() - w.runEndedAt < RUN_LINGER_MS) continue
+			setBusy(w, busy)
+		}
+	}
+
+	/** A canvas prompt (w.run) handles its own thinking; this is everything else. */
+	function setBusy(w: Worm, busy: boolean) {
+		if (w.run || worms.get(key(w.record.canvasId, w.record.sessionId)) !== w) return
+		if (busy) {
+			clearTimeout(w.idleTimer)
+			w.idleTimer = undefined
+			if (w.external) return
+			w.external = true
+			w.externalError = null
+			w.thinking = true
+			w.chat = null
+			w.chatSent = true
+			publish(w).catch(() => {})
+		} else if (w.external) {
+			w.idleTimer ??= setTimeout(() => settle(w).catch(() => {}), IDLE_SETTLE_MS)
+		} else if (w.thinking) {
+			w.thinking = false
+			publish(w).catch(() => {})
+		}
+	}
+
+	/** Work from elsewhere finished: stop thinking and say how the turn ended. */
+	async function settle(w: Worm) {
+		w.idleTimer = undefined
+		if (!w.external || w.run) return
+		w.external = false
+		const error = w.externalError
+		w.externalError = null
+		const text = await lastReply(w.record.sessionId).catch(() => '')
+		// Something new started meanwhile: that owns the worm now.
+		if (w.external || w.run) return
+		w.thinking = false
+		const chat = error ? `${text ? text + '\n\n' : ''}⚠️ ${short(error)}` : text
+		if (chat) {
+			w.chat = capChat(chat)
+			w.chatSent = true
+		}
+		await publish(w)
+		refreshTitle(w).catch(() => {})
+	}
 
 	// ---------- prompting ----------
 
@@ -148,6 +276,7 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 	function finish(w: Worm, run: Run, chat: string | null) {
 		if (w.run !== run) return
 		w.run = null
+		w.runEndedAt = Date.now()
 		w.thinking = false
 		w.chat = chat ? capChat(chat) : null
 		w.chatSent = true
@@ -286,7 +415,20 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 			const w = add(record)
 			deps.save()
 			await publish(w)
+			reconcile().catch(() => {})
 			return record
+		},
+
+		/** Puts the worm somewhere else on the page (it was dragged there). */
+		async move(canvasId: string, sessionId: string, x: unknown, y: unknown): Promise<ConjuredAgent> {
+			const w = get(canvasId, sessionId)
+			if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
+				throw new ConjureError(400, 'send {"x", "y"} with the new page position')
+			}
+			w.record = { ...w.record, x: Math.round(x), y: Math.round(y) }
+			deps.save()
+			await publish(w)
+			return w.record
 		},
 
 		banish(canvasId: string, sessionId: string) {
@@ -319,11 +461,16 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 
 			const run: Run = { abort: new AbortController(), messageId: null, blocks: new Map() }
 			w.run = run
+			clearTimeout(w.idleTimer)
+			w.idleTimer = undefined
+			w.external = false
 			const fail = (status: number, message: string): never => {
 				if (w.run === run) {
 					run.abort.abort()
 					w.run = null
 					w.thinking = false
+					// it may be busy with something else: the next check (or event) says so
+					reconcile().catch(() => {})
 					w.chat = status === 409 ? null : `⚠️ ${short(message)}`
 					w.chatSent = true
 					publish(w).catch(() => {})

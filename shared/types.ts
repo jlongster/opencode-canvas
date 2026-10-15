@@ -93,7 +93,7 @@ export interface PresenceEntry {
 	chat: string | null
 	/** false while the chat message is still being typed (or, for agents, streamed) */
 	chatSent?: boolean
-	/** conjured worms: their OpenCode session is working on a prompt */
+	/** conjured worms: their OpenCode session is working (on a canvas prompt or anything else) */
 	thinking?: boolean
 }
 

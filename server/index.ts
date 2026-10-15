@@ -799,6 +799,7 @@ const API_INDEX = {
 		'POST /api/canvases/:cid/conjured':
 			'Conjure an OpenCode session as a worm. Body: {"sessionId", "x", "y"} (page position). 409 if that session is already here',
 		'DELETE /api/canvases/:cid/conjured/:sessionId': 'Banish a conjured worm',
+		'PATCH /api/canvases/:cid/conjured/:sessionId': 'Move a conjured worm. Body: {"x", "y"} (page position)',
 		'POST /api/canvases/:cid/conjured/:sessionId/prompt':
 			'Prompt the worm\'s OpenCode session. Body: {"text", "from"?}. The worm thinks, then its reply streams into its ' +
 			'presence chat. 409 while the session is busy, 502 when OpenCode refuses',
@@ -990,6 +991,11 @@ async function handle(req: Request): Promise<Response> {
 		const canvas = getCanvas(decodeURIComponent(m[1]))
 		conjured.banish(canvas.id, decodeURIComponent(m[2]))
 		return json({ ok: true })
+	}
+	if (m && method === 'PATCH') {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		const body = (await req.json().catch(() => ({}))) as { x?: unknown; y?: unknown }
+		return json(await conjured.move(canvas.id, decodeURIComponent(m[2]), body?.x, body?.y))
 	}
 
 	m = /^\/api\/canvases\/([^/]+)\/conjured\/([^/]+)\/(prompt|dismiss)$/.exec(p)

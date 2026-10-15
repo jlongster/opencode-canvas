@@ -59,6 +59,8 @@ export async function conjure(canvasId: string, sessionId: string, at: { x: numb
 }
 export const banishConjured = (canvasId: string, sessionId: string) =>
 	request<unknown>(conjuredPath(canvasId, sessionId), { method: 'DELETE' })
+export const moveConjured = (canvasId: string, sessionId: string, at: { x: number; y: number }) =>
+	request<ConjuredAgent>(conjuredPath(canvasId, sessionId), json('PATCH', { x: at.x, y: at.y }))
 export const promptConjured = (canvasId: string, sessionId: string, text: string, from?: string) =>
 	request<unknown>(`${conjuredPath(canvasId, sessionId)}/prompt`, json('POST', { text, from }))
 export const dismissConjured = (canvasId: string, sessionId: string) =>

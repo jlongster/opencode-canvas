@@ -78,6 +78,74 @@ export async function withOpenCode<T>(fn: (client: OpenCodeClient) => Promise<T>
 	}
 }
 
+// ---------- the shared event stream ----------
+
+export interface OpenCodeEvent {
+	type: string
+	data?: Record<string, unknown>
+}
+
+export interface OpenCodeEventListener {
+	onEvent(ev: OpenCodeEvent): void
+	/** the stream (re)connected: events may have been missed while it was down */
+	onConnect?(): void
+}
+
+/** a dropped or unreachable stream is retried this often */
+const STREAM_RETRY_MS = 5000
+const listeners = new Set<OpenCodeEventListener>()
+let stream: AbortController | null = null
+
+/**
+ * Listens to OpenCode's global event stream. One stream is shared by every listener and stays open
+ * (reconnecting as needed) while any is registered. Returns the unsubscribe function.
+ */
+export function onOpenCodeEvents(listener: OpenCodeEventListener): () => void {
+	listeners.add(listener)
+	if (!stream) {
+		stream = new AbortController()
+		runStream(stream.signal)
+	}
+	return () => {
+		listeners.delete(listener)
+		if (listeners.size === 0) {
+			stream?.abort()
+			stream = null
+		}
+	}
+}
+
+async function runStream(signal: AbortSignal) {
+	let failing = false
+	while (!signal.aborted) {
+		try {
+			const client = await opencode()
+			let connected = false
+			for await (const ev of client.event.subscribe({ signal })) {
+				if (!connected) {
+					connected = true
+					if (failing) console.log('opencode event stream reconnected')
+					failing = false
+					for (const l of [...listeners]) l.onConnect?.()
+				}
+				for (const l of [...listeners]) {
+					try {
+						l.onEvent(ev as OpenCodeEvent)
+					} catch (e) {
+						console.error('opencode event listener failed:', e)
+					}
+				}
+			}
+		} catch (e) {
+			if (signal.aborted) return
+			if (isTransportError(e)) resetOpenCode()
+			if (!failing && !(e instanceof OpenCodeUnavailable)) console.error('opencode event stream failed:', errorText(e))
+			failing = true
+		}
+		if (!signal.aborted) await Bun.sleep(STREAM_RETRY_MS)
+	}
+}
+
 export async function openCodeStatus(): Promise<OpenCodeStatus> {
 	try {
 		await withOpenCode((c) => c.server.info({ signal: AbortSignal.timeout(REQUEST_MS) }))

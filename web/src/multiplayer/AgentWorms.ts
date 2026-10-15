@@ -26,6 +26,12 @@ const CONJURED_SIZE = 1.4
 const STARTLE_MS = 1100
 /** extra screen px around the body that still counts as clicking the worm */
 const HIT_SLOP = 4
+/** a press on a conjured worm that moves further than this (screen px) drags it instead of clicking */
+const DRAG_PX = 5
+/** a dropped worm stays where it was put this long at most while waiting for its new position to come back */
+const PIN_MS = 5000
+/** pull on a carried worm's body, in screen px/s², so it dangles and swings */
+const GRAVITY = 2600
 
 interface Trip {
 	from: Vec
@@ -93,7 +99,7 @@ interface Worm {
 	startledAt: number
 	/** its prompt box is open */
 	listening: boolean
-	/** the "…" thought bubble while thinking */
+	/** the "•••" thought cloud while thinking */
 	thought: HTMLDivElement
 	bubbleScroll: HTMLDivElement | null
 	/** a reply dismissed with × (locally), hidden until the worm says something else */
@@ -102,6 +108,26 @@ interface Worm {
 	speechText: string | null
 	/** screen-space discs covering the body as last drawn, for clicks */
 	hit: { x: number; y: number; r: number }[]
+	/** where it's being dragged to (page space), while someone here carries it */
+	carried: Vec | null
+	/** 0..1 how much it's being carried, eased */
+	carry: number
+	/** head velocity while carried, screen px/s, smoothed */
+	carryVel: Vec
+	/** where it was dropped, held until its presence catches up */
+	pinned: { at: Vec; until: number } | null
+	/** joints on the previous frame, so a carried body swings with momentum */
+	prevJoints: Vec[]
+}
+
+/** A pointer that went down on a conjured worm: a click unless it moves, then a drag. */
+interface Press {
+	pointerId: number
+	worm: Worm
+	start: Vec
+	/** head minus pointer, screen px, so the worm stays where it was grabbed */
+	offset: Vec
+	dragging: boolean
 }
 
 /**
@@ -120,6 +146,7 @@ export class AgentWorms {
 	private container: HTMLElement | null
 	/** pointers that went down on a worm: their pointerup isn't the editor's either */
 	private swallowed = new Set<number>()
+	private press: Press | null = null
 	private disposers: (() => void)[] = []
 
 	constructor(
@@ -163,8 +190,9 @@ export class AgentWorms {
 				this.worms.set(peer.clientId, worm)
 			}
 			if (worm.leaving) this.revive(worm, now)
+			if (worm.pinned && (now > worm.pinned.until || (peer.cursor && near(peer.cursor, worm.pinned.at)))) worm.pinned = null
 			if (target) {
-				worm.goal = target.point
+				worm.goal = worm.carried ?? worm.pinned?.at ?? target.point
 				worm.focus = target.box
 			} else {
 				worm.focus = null
@@ -201,13 +229,13 @@ export class AgentWorms {
 
 	destroy() {
 		for (const d of this.disposers.splice(0)) d()
-		this.container?.classList.remove('conjure-hover')
+		this.container?.classList.remove('conjure-hover', 'conjure-dragging')
 		this.canvas.remove()
 		this.labels.remove()
 		this.worms.clear()
 	}
 
-	// ---------- clicking conjured worms ----------
+	// ---------- clicking and dragging conjured worms ----------
 
 	/** The topmost conjured worm under a point in client coordinates. */
 	private hitTest(clientX: number, clientY: number): Worm | null {
@@ -228,24 +256,71 @@ export class AgentWorms {
 		return !!target && !!this.container?.contains(target) && !target.closest('.agent-worm-speech, .conjure-prompt, .note')
 	}
 
+	/** Client coordinates to this layer's screen space (the editor's). */
+	private local(e: PointerEvent): Vec {
+		const rect = this.canvas.getBoundingClientRect()
+		return { x: e.clientX - rect.left, y: e.clientY - rect.top }
+	}
+
 	private onPointerDown = (e: PointerEvent) => {
 		if (e.pointerType === 'mouse' && e.button !== 0) return
-		if (!this.overCanvas(e)) return
+		if (this.press || !this.overCanvas(e)) return
 		const worm = this.hitTest(e.clientX, e.clientY)
 		const peer = worm && this.conjure?.peer(worm.id)
 		if (!worm || !peer) return
 		e.stopPropagation()
 		e.preventDefault()
 		this.swallowed.add(e.pointerId)
-		this.conjure!.open(peer)
+		const at = this.local(e)
+		const head = this.editor.pageToScreen(worm.head)
+		this.press = { pointerId: e.pointerId, worm, start: at, offset: { x: head.x - at.x, y: head.y - at.y }, dragging: false }
+		try {
+			;(e.target as Element).setPointerCapture?.(e.pointerId)
+		} catch {}
 	}
 
 	private onPointerUp = (e: PointerEvent) => {
 		if (!this.swallowed.delete(e.pointerId)) return
 		e.stopPropagation()
+		const press = this.press
+		if (press?.pointerId !== e.pointerId) return
+		this.press = null
+		this.container?.classList.remove('conjure-dragging')
+		const worm = press.worm
+		const peer = this.conjure?.peer(worm.id)
+		if (!press.dragging) {
+			if (peer && e.type === 'pointerup') this.conjure!.open(peer)
+			return
+		}
+		const at = worm.carried
+		worm.carried = null
+		const sessionId = peer?.user.sessionId
+		// A cancelled drag (or a worm that left meanwhile) goes back where it was.
+		if (!at || !sessionId || e.type !== 'pointerup') return
+		const drop = { x: Math.round(at.x), y: Math.round(at.y) }
+		worm.pinned = { at: drop, until: performance.now() + PIN_MS }
+		this.conjure!.move(sessionId, drop).catch((err) => {
+			console.error('moving the worm failed', err)
+			worm.pinned = null
+		})
 	}
 
 	private onPointerMove = (e: PointerEvent) => {
+		const press = this.press
+		if (press?.pointerId === e.pointerId) {
+			e.stopPropagation()
+			const at = this.local(e)
+			if (!press.dragging) {
+				if (Math.hypot(at.x - press.start.x, at.y - press.start.y) < DRAG_PX) return
+				press.dragging = true
+				press.worm.pinned = null
+				if (this.conjure?.prompting.peek()?.clientId === press.worm.id) this.conjure.close()
+				this.container?.classList.remove('conjure-hover')
+				this.container?.classList.add('conjure-dragging')
+			}
+			press.worm.carried = this.editor.screenToPage({ x: at.x + press.offset.x, y: at.y + press.offset.y })
+			return
+		}
 		if (this.swallowed.has(e.pointerId)) return e.stopPropagation()
 		const over = e.buttons === 0 && this.overCanvas(e) && !!this.hitTest(e.clientX, e.clientY)
 		this.container?.classList.toggle('conjure-hover', over)
@@ -270,7 +345,7 @@ export class AgentWorms {
 		el.className = 'agent-worm'
 		el.innerHTML =
 			'<span class="peer-cursor-label agent-worm-label"><span class="peer-cursor-name"></span></span>' +
-			'<div class="agent-worm-thought" aria-hidden="true"><i></i><i></i><i></i></div>'
+			'<div class="agent-worm-thought" aria-hidden="true"><b></b><b></b><span class="agent-worm-thought-cloud"><i></i><i></i><i></i></span></div>'
 		const label = el.querySelector<HTMLSpanElement>('.agent-worm-label')!
 		const name = el.querySelector<HTMLSpanElement>('.peer-cursor-name')!
 		const thought = el.querySelector<HTMLDivElement>('.agent-worm-thought')!
@@ -325,6 +400,11 @@ export class AgentWorms {
 			dismissed: null,
 			speechText: null,
 			hit: [],
+			carried: null,
+			carry: 0,
+			carryVel: { x: 0, y: 0 },
+			pinned: null,
+			prevJoints: [],
 		}
 		this.layOut(worm)
 		return worm
@@ -491,6 +571,7 @@ export class AgentWorms {
 		const talking = worm.bubble ? this.typeSpeech(worm, elapsed) : false
 		worm.talk += ((talking ? 1 : 0) - worm.talk) * (1 - Math.exp(-elapsed / 90))
 		worm.think += ((worm.thinking && !talking ? 1 : 0) - worm.think) * (1 - Math.exp(-elapsed / 200))
+		worm.carry += ((worm.carried ? 1 : 0) - worm.carry) * (1 - Math.exp(-elapsed / 120))
 
 		// Scale: pop in, burrow out.
 		const popT = Math.min(1, (now - worm.popStart) / POP_MS)
@@ -498,9 +579,20 @@ export class AgentWorms {
 		worm.scale = still ? popTo : worm.popFrom + (popTo - worm.popFrom) * (worm.leaving ? easeInBack(popT) : easeOutBack(popT))
 		if (popT >= 1) worm.scale = popTo
 
-		// Plan or adjust a trip toward the goal.
+		// Plan or adjust a trip toward the goal; carried, the head just follows the pointer.
 		const goal = worm.goal
-		if (goal && !worm.leaving) {
+		if (worm.carried && !worm.leaving) {
+			worm.trip = null
+			const k = 1 - Math.exp(-elapsed / 35)
+			const dx = (worm.carried.x - worm.head.x) * k
+			const dy = (worm.carried.y - worm.head.y) * k
+			worm.head = { x: worm.head.x + dx, y: worm.head.y + dy }
+			if (dt > 0) {
+				const v = 1 - Math.exp(-elapsed / 80)
+				worm.carryVel.x += ((dx * z) / dt - worm.carryVel.x) * v
+				worm.carryVel.y += ((dy * z) / dt - worm.carryVel.y) * v
+			}
+		} else if (goal && !worm.leaving) {
 			const screenDist = Math.hypot(goal.x - worm.head.x, goal.y - worm.head.y) * z
 			if (worm.trip) {
 				const moved = Math.hypot(goal.x - worm.trip.to.x, goal.y - worm.trip.to.y) * z
@@ -544,18 +636,35 @@ export class AgentWorms {
 				worm.trip = null
 			}
 		}
-		const moving = worm.trip ? 1 : 0
+		// Carried, it wriggles (a bit less frantically than crawling).
+		const moving = worm.trip ? 1 : worm.carried ? 0.6 : 0
 		worm.motion += (moving - worm.motion) * (1 - Math.exp(-elapsed / 160))
+		if (!worm.carried) worm.carryVel = { x: worm.carryVel.x * 0.9, y: worm.carryVel.y * 0.9 }
 
-		// Stretch with the inchworm surge (and breathe a little at rest).
+		// Stretch with the inchworm surge (and breathe a little at rest); dangling, it hangs long and thin.
 		const breathe = still ? 0 : 0.05 * Math.sin(now / 600 + worm.seed)
-		const targetStretch = still ? 1 : 1 + 0.32 * pulse * worm.motion + breathe * (1 - worm.motion)
+		const speed = Math.hypot(worm.carryVel.x, worm.carryVel.y)
+		const hang = worm.carry * (0.22 + Math.min(0.25, speed / 4000))
+		const targetStretch = still ? 1 : 1 + 0.32 * pulse * worm.motion * (1 - worm.carry) + breathe * (1 - worm.motion) + hang
 		worm.stretch += (targetStretch - worm.stretch) * (1 - Math.exp(-elapsed / 50))
 		worm.wigglePhase += dt * (still ? 0 : 2.6 + 11 * worm.motion)
 
-		// Follow-the-leader chain in page space, spaced in screen pixels.
+		// Follow-the-leader chain in page space, spaced in screen pixels. Carried, the joints keep
+		// their momentum and fall, so the body trails behind the pointer and swings below the head.
 		const spacing = (SPACING * worm.size * worm.stretch * (worm.leaving ? worm.scale : 1)) / z
 		const joints = worm.joints
+		const before = joints.map((j) => ({ ...j }))
+		if (worm.carried && !still && worm.prevJoints.length === joints.length) {
+			const h = Math.min(dt, 0.05)
+			const damp = Math.exp(-h * 2.2)
+			const fall = (GRAVITY * h * h) / z
+			for (let i = 1; i < joints.length; i++) {
+				const j = joints[i]
+				const p = worm.prevJoints[i]
+				joints[i] = { x: j.x + (j.x - p.x) * damp, y: j.y + (j.y - p.y) * damp + fall }
+			}
+		}
+		worm.prevJoints = before
 		joints[0] = { ...worm.head }
 		for (let i = 1; i < joints.length; i++) {
 			const prev = joints[i - 1]
@@ -587,6 +696,8 @@ export class AgentWorms {
 		let look: Vec
 		const startle = startleAmount(worm, now)
 		if (startle > 0) look = { x: 0, y: 0.0001 }
+		// Carried: peering down at the drop, glancing the way it's swung.
+		else if (worm.carry > 0.3) look = { x: -worm.carryVel.x / 900, y: 1 }
 		else if (worm.think > 0.3) {
 			// Thinking: the eye rolls round and round.
 			const a = now / 260 + worm.seed
@@ -800,6 +911,10 @@ export class AgentWorms {
 			ctx.strokeText('!', bx, by)
 			ctx.fillText('!', bx, by)
 			ctx.restore()
+		} else if (worm.carry > 0.3) {
+			// a little "o" of surprise at being picked up
+			ctx.fillStyle = dark
+			ellipse(ctx, mx, my + 0.4 * scale, 1.7 * scale, 2.2 * scale * worm.carry)
 		} else if (worm.think > 0.3 && worm.talk <= 0.05) {
 			ctx.strokeStyle = dark
 			ctx.lineWidth = 1.2 * scale
@@ -823,6 +938,11 @@ export class AgentWorms {
 			ctx.stroke()
 		}
 	}
+}
+
+/** Same spot, give or take the server rounding it to whole page units. */
+function near(a: Vec, b: Vec) {
+	return Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1
 }
 
 /** 1 right after a worm is startled, easing to 0 over STARTLE_MS. */

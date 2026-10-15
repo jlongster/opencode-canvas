@@ -1,6 +1,6 @@
 import type { Editor } from '../editor/Editor'
 import { atom } from '../state/signals'
-import { banishConjured, dismissConjured, promptConjured } from '../sync/client'
+import { banishConjured, dismissConjured, moveConjured, promptConjured } from '../sync/client'
 import type { Peer, Presence } from './Presence'
 
 export interface PromptTarget {
@@ -10,8 +10,9 @@ export interface PromptTarget {
 
 /**
  * Talking to conjured worms (OpenCode sessions brought onto the canvas, see server/conjured.ts).
- * On edit links, clicking one opens a prompt box under it (see ConjurePrompt); everything they do
- * comes back through presence, so everyone sees it. View links (canvasId null) only watch.
+ * On edit links, clicking one opens a prompt box under it (see ConjurePrompt) and dragging one moves
+ * it; everything they do comes back through presence, so everyone sees it. View links (canvasId
+ * null) only watch.
  */
 export class Conjure {
 	/** the worm whose prompt box is open */
@@ -58,6 +59,12 @@ export class Conjure {
 	async send(target: PromptTarget, text: string) {
 		if (!this.canvasId) return
 		await promptConjured(this.canvasId, target.sessionId, text, this.presence.me.peek().name)
+	}
+
+	/** Puts the worm down at a new page position, for everyone. */
+	async move(sessionId: string, at: { x: number; y: number }) {
+		if (!this.canvasId) return
+		await moveConjured(this.canvasId, sessionId, at)
 	}
 
 	async banish(sessionId: string) {

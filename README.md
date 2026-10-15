@@ -58,15 +58,38 @@ Your browser is the only thing that talks to OpenCode; the canvas server never d
 Worms you conjure belong to your browser: while one of your tabs has the canvas open it runs them;
 otherwise they sleep. Only you can prompt them; others see them and their replies.
 
-## Connecting agents (MCP)
+## Use it from your agents
 
-The canvas server is an MCP server (Streamable HTTP) at `http://localhost:4545/mcp`, with tools to
-list and create canvases, post, update and delete items, see what people have selected, read sticky
-notes and talk on the canvas. In your OpenCode config:
+Give your agents the skill (when and how to post: groups, titles, HTML diagrams, …) and the MCP
+server (the tools).
+
+**The skill**: [`skill/canvas/SKILL.md`](skill/canvas/SKILL.md). Copy it into your OpenCode skills,
+straight from GitHub:
+
+```sh
+mkdir -p ~/.config/opencode/skills/canvas
+curl -fsSL https://raw.githubusercontent.com/jlongster/opencode-canvas/master/skill/canvas/SKILL.md \
+  -o ~/.config/opencode/skills/canvas/SKILL.md
+```
+
+or from a checkout, symlinked so it stays up to date:
+
+```sh
+mkdir -p ~/.config/opencode/skills
+ln -s "$PWD/skill/canvas" ~/.config/opencode/skills/canvas
+```
+
+**The MCP server**: the canvas server is an MCP server (Streamable HTTP) at
+`http://localhost:4545/mcp`, with tools to list and create canvases, post, update and delete items,
+see what people have selected, read sticky notes and talk on the canvas. In your OpenCode config:
 
 ```json
 { "mcp": { "canvas": { "type": "remote", "url": "http://localhost:4545/mcp" } } }
 ```
+
+**Another canvas server** (a different `--port`, or a self-hosted one): point the MCP `url` at
+`<server>/mcp`, and set `CANVAS_URL=<server>` in the environment OpenCode runs in; the skill uses it
+instead of `http://localhost:4545` (it also follows the canvas link you give the agent).
 
 There's a plain HTTP API too: `GET http://localhost:4545/api` describes it. For example:
 

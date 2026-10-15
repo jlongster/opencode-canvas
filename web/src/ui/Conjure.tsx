@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { OpenCodeSessionSummary, OpenCodeStatus } from '../../../shared/types'
+import type { OpenCodeSessionSummary } from '../../../shared/types'
+import { OPENCODE_ALLOWED } from '../base'
 import type { Editor } from '../editor/Editor'
 import type { Conjure } from '../multiplayer/Conjure'
-import { conjure as conjureSession, listConjured, listOpenCodeSessions, openCodeStatus } from '../sync/client'
+import { ownerId } from '../opencode/pairings'
+import { conjure as conjureSession } from '../sync/client'
+import { OpenCodeHint, PairForm, ServerList, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
 import { useValue } from './useValue'
 
 /** The toolbar's Conjure button (edit links): pick an OpenCode session to bring onto the canvas as a worm. */
@@ -31,34 +34,19 @@ export function ConjureButton({
 }
 
 function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor; conjure: Conjure; canvasId: string; onClose: () => void }) {
-	const [status, setStatus] = useState<OpenCodeStatus | null>(null)
-	const [sessions, setSessions] = useState<OpenCodeSessionSummary[] | null>(null)
-	const [saved, setSaved] = useState<Set<string>>(new Set())
+	const { servers, sessions, errors, reload } = useOpenCode()
 	const [error, setError] = useState<string | null>(null)
 	const [pending, setPending] = useState<string | null>(null)
 	const [query, setQuery] = useState('')
-	const live = useValue(
-		() => conjure.presence.peers.get().filter((p) => p.user.conjured && p.user.sessionId).map((p) => p.user.sessionId!).sort().join(' '),
+	const [managing, setManaging] = useState(false)
+	const hereKey = useValue(
+		() =>
+			[...conjure.records.get().map((r) => r.sessionId), ...conjure.presence.peers.get().filter((p) => p.user.conjured && p.user.sessionId).map((p) => p.user.sessionId!)]
+				.sort()
+				.join(' '),
 		[conjure],
 	)
-	const here = useMemo(() => new Set([...saved, ...live.split(' ').filter(Boolean)]), [saved, live])
-
-	const load = async () => {
-		setError(null)
-		const s = await openCodeStatus().catch((e: Error) => ({ connected: false, error: e.message }) as OpenCodeStatus)
-		setStatus(s)
-		if (!s.connected) return
-		try {
-			const [list, conjured] = await Promise.all([listOpenCodeSessions(), listConjured(canvasId)])
-			setSessions(list)
-			setSaved(new Set(conjured.map((c) => c.sessionId)))
-		} catch (e) {
-			setError((e as Error).message)
-		}
-	}
-	useEffect(() => {
-		load()
-	}, [canvasId])
+	const here = useMemo(() => new Set(hereKey.split(' ').filter(Boolean)), [hereKey])
 
 	const pick = async (s: OpenCodeSessionSummary) => {
 		if (here.has(s.id)) {
@@ -66,10 +54,17 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 			return onClose()
 		}
 		const view = editor.viewportPageBounds.get()
-		setPending(s.id)
+		setPending(sessionKey(s))
 		setError(null)
 		try {
-			await conjureSession(canvasId, s.id, { x: view.x + view.w / 2, y: view.y + view.h / 2 })
+			await conjureSession(canvasId, {
+				sessionId: s.id,
+				serverKey: s.serverKey,
+				ownerId,
+				title: s.title,
+				x: Math.round(view.x + view.w / 2),
+				y: Math.round(view.y + view.h / 2),
+			})
 			onClose()
 		} catch (e) {
 			if ((e as { status?: number }).status === 409) {
@@ -84,6 +79,7 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 
 	const q = query.trim().toLowerCase()
 	const shown = (sessions ?? []).filter((s) => !q || s.title.toLowerCase().includes(q) || s.directory.toLowerCase().includes(q))
+	const failing = Object.keys(errors).length
 
 	return (
 		<div className="share-popover conjure-popover" onKeyDown={(e) => e.key === 'Escape' && onClose()}>
@@ -95,43 +91,55 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 					×
 				</button>
 			</div>
-			<p className="conjure-hint">Brings an OpenCode session onto the canvas as a worm. Click it to talk to it.</p>
-			{status === null ? (
-				<div className="conjure-empty">Looking for OpenCode…</div>
-			) : !status.connected ? (
-				<div className="conjure-error">
-					<strong>OpenCode isn't reachable.</strong>
-					{status.error && <span>{status.error}</span>}
-					<button onClick={load}>Try again</button>
-				</div>
+			{!OPENCODE_ALLOWED ? (
+				<OpenCodeHint />
+			) : servers.length === 0 ? (
+				<PairForm autoFocus onPaired={() => reload()} />
 			) : (
 				<>
+					<p className="conjure-hint">Brings an OpenCode session onto the canvas as a worm. Click it to talk to it; it sleeps while this browser isn't on the canvas.</p>
 					<input className="conjure-search" autoFocus placeholder="Filter sessions" value={query} onChange={(e) => setQuery(e.target.value)} />
 					<div className="conjure-list">
-						{sessions === null && !error && <div className="conjure-empty">Loading sessions…</div>}
-						{sessions !== null && shown.length === 0 && <div className="conjure-empty">No sessions{q ? ' match' : ''}</div>}
-						{shown.map((s) => {
-							const isHere = here.has(s.id)
-							return (
-								<button
-									key={s.id}
-									className={`conjure-row${isHere ? ' here' : ''}`}
-									disabled={pending !== null}
-									title={isHere ? 'Already on this canvas: show it' : `Conjure ${s.title || s.id}`}
-									onClick={() => pick(s)}
-								>
-									<span className={`conjure-dot${s.busy ? ' busy' : ''}`} title={s.busy ? 'Working' : 'Idle'} />
-									<span className="conjure-row-main">
-										<span className="conjure-row-title">{s.title || 'Untitled session'}</span>
-										<span className="conjure-row-meta">
-											{shortDir(s.directory)} · {relativeTime(s.updatedAt)}
-											{s.parentId ? ' · subagent' : ''}
-										</span>
-									</span>
-									{pending === s.id ? <span className="conjure-tag">…</span> : isHere && <span className="conjure-tag">on canvas</span>}
-								</button>
-							)
-						})}
+						{sessions === null && <div className="conjure-empty">Loading sessions…</div>}
+						{sessions !== null && shown.length === 0 && servers.length === 1 && !failing && <div className="conjure-empty">No sessions{q ? ' match' : ''}</div>}
+						{sessions !== null && (
+							<SessionGroups
+								servers={servers}
+								sessions={shown}
+								errors={errors}
+								render={(s) => {
+									const isHere = here.has(s.id)
+									const k = sessionKey(s)
+									return (
+										<button
+											key={k}
+											className={`conjure-row${isHere ? ' here' : ''}`}
+											disabled={pending !== null}
+											title={isHere ? 'Already on this canvas: show it' : `Conjure ${s.title || s.id}`}
+											onClick={() => pick(s)}
+										>
+											<span className={`conjure-dot${s.busy ? ' busy' : ''}`} title={s.busy ? 'Working' : 'Idle'} />
+											<span className="conjure-row-main">
+												<span className="conjure-row-title">{s.title || 'Untitled session'}</span>
+												<span className="conjure-row-meta">
+													{shortDir(s.directory)} · {relativeTime(s.updatedAt)}
+													{s.parentId ? ' · subagent' : ''}
+												</span>
+											</span>
+											{pending === k ? <span className="conjure-tag">…</span> : isHere && <span className="conjure-tag">on canvas</span>}
+										</button>
+									)
+								}}
+							/>
+						)}
+					</div>
+					<div className="oc-manage">
+						<button className="oc-manage-toggle" aria-expanded={managing} onClick={() => setManaging(!managing)}>
+							<span className="oc-manage-caret">{managing ? '▾' : '▸'}</span>
+							Servers ({servers.length})
+							{failing > 0 && <span className="oc-manage-warn">{failing} not reachable</span>}
+						</button>
+						{managing && <ServerList servers={servers} errors={errors} />}
 					</div>
 				</>
 			)}
@@ -140,7 +148,10 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 	)
 }
 
-/** The box under a clicked conjured worm: type a prompt for its OpenCode session. */
+/**
+ * The box under a clicked conjured worm: its owner types a prompt for its OpenCode session; anyone
+ * else learns whose it is (and whether it's asleep).
+ */
 export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Conjure }) {
 	const target = useValue(() => conjure.prompting.get(), [conjure])
 	const info = useValue(() => {
@@ -148,10 +159,12 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 		if (!t) return null
 		editor.camera.get()
 		editor.viewport.get()
-		const peer = conjure.presence.peers.get().find((p) => p.clientId === t.clientId)
+		const peer =
+			conjure.presence.peers.get().find((p) => p.clientId === t.clientId) ?? conjure.sleepers.get().find((p) => p.clientId === t.clientId)
 		if (!peer?.cursor) return 'gone'
 		const p = editor.pageToScreen(peer.cursor)
-		return `${Math.round(p.x)}|${Math.round(p.y)}|${peer.thinking ? 1 : 0}|${peer.user.color}|${peer.user.name}`
+		const block = conjure.talkBlock(t.sessionId) ?? ''
+		return `${Math.round(p.x)}|${Math.round(p.y)}|${peer.thinking ? 1 : 0}|${peer.user.asleep ? 1 : 0}|${block}|${peer.user.color}|${peer.user.name}`
 	}, [editor, conjure])
 	const [text, setText] = useState('')
 	const [error, setError] = useState<string | null>(null)
@@ -162,14 +175,17 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 		setText('')
 		setError(null)
 		if (target) inputRef.current?.focus()
-	}, [target?.clientId])
-	// The worm was banished (or left): nothing to talk to.
+	}, [target?.sessionId])
+	// The worm was banished: nothing to talk to. (Waking up or falling asleep changes its client id.)
 	useEffect(() => {
-		if (info === 'gone') conjure.close()
+		if (info !== 'gone' || !target) return
+		const worm = conjure.worms().find((p) => p.user.sessionId === target.sessionId)
+		if (worm) conjure.prompting.set({ clientId: worm.clientId, sessionId: target.sessionId })
+		else conjure.close()
 	}, [info])
 
 	if (!target || !info || info === 'gone') return null
-	const [x, y, thinking, color, ...name] = info.split('|')
+	const [x, y, thinking, asleep, block, color, ...name] = info.split('|')
 
 	const send = async () => {
 		const prompt = text.trim()
@@ -205,11 +221,39 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 			onWheel={(e) => e.stopPropagation()}
 		>
 			<div className="conjure-prompt-head">
-				<span>Ask {name.join('|')}</span>
+				<span>
+					{block ? '' : 'Ask '}
+					{name.join('|')}
+					{asleep === '1' ? ' (asleep)' : ''}
+				</span>
 				<button title="Close (Esc)" onClick={() => conjure.close()}>
 					×
 				</button>
 			</div>
+			{block ? (
+				<div className="conjure-note" onKeyDown={(e) => e.key === 'Escape' && conjure.close()}>
+					{block === 'not-yours' ? (
+						<>
+							<strong>{asleep === '1' ? 'Asleep · owned by someone else' : 'Owned by someone else'}</strong>
+							<span>
+								Only the browser that conjured it can talk to it.
+								{asleep === '1' ? ' It wakes up when its owner opens this canvas.' : ' You can watch it think and reply.'}
+							</span>
+						</>
+					) : block === 'not-paired' ? (
+						<>
+							<strong>Its OpenCode isn't paired here</strong>
+							<span>You conjured it, but this browser no longer has its OpenCode. Pair it again (Conjure → Servers) to wake it.</span>
+						</>
+					) : (
+						<>
+							<strong>Asleep here</strong>
+							<span>You conjured it, but this page can't reach OpenCode.</span>
+							<OpenCodeHint />
+						</>
+					)}
+				</div>
+			) : (
 			<textarea
 				ref={inputRef}
 				value={text}
@@ -225,14 +269,17 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 					}
 				}}
 			/>
+			)}
 			{error && <div className="conjure-prompt-error">{error}</div>}
 			<div className="conjure-prompt-actions">
-				<button className="conjure-banish" title="Send this worm away (the session itself stays)" disabled={busy} onClick={banish}>
+				<button className="conjure-banish" title="Send this worm away for everyone (the session itself stays)" disabled={busy} onClick={banish}>
 					Banish
 				</button>
-				<button className="conjure-send" disabled={busy || !text.trim()} onClick={send}>
-					{busy ? 'Sending…' : 'Send'}
-				</button>
+				{!block && (
+					<button className="conjure-send" disabled={busy || !text.trim()} onClick={send}>
+						{busy ? 'Sending…' : 'Send'}
+					</button>
+				)}
 			</div>
 		</div>
 	)

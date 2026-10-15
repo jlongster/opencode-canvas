@@ -3,14 +3,12 @@ import { existsSync } from 'node:fs'
 import { basename, extname, join, resolve } from 'node:path'
 import * as Y from 'yjs'
 import type {
-	Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, SeedResult, ServerEvent, Session, SessionView,
+	Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, ServerEvent, Session, SessionView,
 } from '../shared/types'
 import { ConjureError, createConjured } from './conjured'
 import { createCanvasMcp } from './mcp'
-import { errorText, listOpenCodeSessions, OpenCodeUnavailable, openCodeStatus } from './opencode'
-import { findSessionMedia } from './seed'
 import { discardRoom, getRoomSnapshot, readRoomDoc, roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
-import type { ServerWebSocket } from 'bun'
+import type { Server, ServerWebSocket } from 'bun'
 
 const PORT = Number(process.env.PORT ?? 4410)
 const DATA_DIR = resolve(process.env.CANVAS_DATA ?? join(import.meta.dir, '../data'))
@@ -135,11 +133,17 @@ function storedIndex(): StoredIndex {
 const conjured = createConjured(
 	{
 		canvasExists: (id) => db.canvases.has(id),
-		canvasTitle: (id) => db.canvases.get(id)?.title ?? '',
 		save,
+		broadcast: (event) => broadcast(event),
 	},
 	storedConjured,
 )
+
+/** A canvas's conjured worms, each awake while its owner's tab publishes its presence in the room. */
+function conjuredWorms(canvasId: string): ConjuredAgent[] {
+	const awake = new Set(presence(canvasId).filter((p) => p.user.conjured && p.user.sessionId).map((p) => p.user.sessionId))
+	return conjured.list(canvasId).map((r) => ({ ...r, awake: awake.has(r.sessionId) }))
+}
 
 // ---------- live events (WebSocket) ----------
 // Every change is pushed to open canvases over /api/live. (This used to be server-sent events,
@@ -170,6 +174,8 @@ function eventCanvas(event: ServerEvent): string {
 			return event.session.canvasId
 		case 'item':
 			return event.item.canvasId
+		case 'conjured':
+			return event.agent.canvasId
 		default:
 			return event.canvasId
 	}
@@ -279,6 +285,7 @@ function canvasData(canvas: Canvas): CanvasData {
 		canvas,
 		sessions: [...db.sessions.values()].filter((s) => s.canvasId === canvas.id),
 		items: [...db.items.values()].filter((i) => i.canvasId === canvas.id),
+		conjured: conjuredWorms(canvas.id),
 	}
 }
 
@@ -336,6 +343,14 @@ function itemChanges(body: Record<string, unknown>): Partial<Pick<Item, 'group' 
 	}
 	if (!Object.keys(changes).length) throw new HttpError(400, 'send any of {"group", "title", "caption", "name"} (null clears, except name)')
 	return changes
+}
+
+/** A multipart "createdAt": ms since the epoch, not in the future. */
+function timeField(value: unknown): number | undefined {
+	if (value === undefined || value === null || value === '') return undefined
+	const n = Number(value)
+	if (!Number.isFinite(n) || n <= 0) throw new HttpError(400, '"createdAt" must be a time in ms since the epoch')
+	return Math.min(Math.round(n), Date.now())
 }
 
 function textField(value: unknown): string | undefined {
@@ -475,7 +490,7 @@ async function addHtmlItem(canvasId: string, sessionId: string, html: string, op
 	const file = `${id}.html`
 	await Bun.write(join(MEDIA_DIR, file), htmlDocument(html))
 	getCanvas(canvasId)
-	ensureSession(canvasId, sessionId)
+	ensureSession(canvasId, sessionId, opts.sessionTitle)
 	const item: Item = {
 		id,
 		canvasId,
@@ -489,7 +504,7 @@ async function addHtmlItem(canvasId: string, sessionId: string, html: string, op
 		...(opts.group ? { group: opts.group } : {}),
 		title: opts.title,
 		caption: opts.caption,
-		createdAt: Date.now(),
+		createdAt: opts.createdAt ?? Date.now(),
 	}
 	db.items.set(id, item)
 	save()
@@ -630,84 +645,6 @@ function idList(value: unknown, name: string): string[] {
 	return value as string[]
 }
 
-// ---------- seeding from OpenCode sessions ----------
-
-const SEED_WINDOW_MS = 24 * 60 * 60 * 1000
-const SEED_MAX_ITEMS = 100
-const SEED_MAX_SESSIONS = 50
-const SEED_GROUP = 'Latest media'
-
-/**
- * One frame per OpenCode session (in the order given), holding the images and videos it output in
- * the last day, in output order. Sessions without any get no frame (frames only exist with items).
- */
-async function seedCanvas(canvasId: string, sessionIds: string[], timeZone?: string): Promise<SeedResult[]> {
-	const results: SeedResult[] = []
-	for (const sessionId of sessionIds) {
-		const result: SeedResult = { sessionId, title: '', added: 0, skipped: 0 }
-		results.push(result)
-		if (!SESSION_ID.test(sessionId)) {
-			result.error = 'not an OpenCode session id ("ses_" + 26 characters)'
-			continue
-		}
-		try {
-			getCanvas(canvasId)
-			const found = await findSessionMedia(sessionId, {
-				since: Date.now() - SEED_WINDOW_MS,
-				limit: SEED_MAX_ITEMS,
-				excludeDirs: [DATA_DIR],
-			})
-			result.title = found.title
-			result.skipped = found.skipped
-			if (!found.media.length) {
-				result.error = found.skipped ? 'its media from the last 24 hours is gone' : 'no media found in the last 24 hours'
-				continue
-			}
-			// Already seeded items (same name and time) aren't added twice.
-			const existing = new Set(sessionItems(canvasId, sessionId).map((i) => `${i.name}@${i.createdAt}`))
-			let lastAt = 0
-			const failures: string[] = []
-			for (const media of found.media) {
-				// Strictly increasing, so items output in the same instant keep their order.
-				const createdAt = (lastAt = Math.max(Math.round(media.at), lastAt + 1))
-				if (existing.has(`${media.filename}@${createdAt}`)) continue
-				const data = media.path ? Bun.file(media.path) : new Blob([media.data!.bytes as BlobPart], { type: media.data!.mime })
-				try {
-					await addItem(canvasId, sessionId, data, {
-						filename: media.filename,
-						group: SEED_GROUP,
-						title: media.label,
-						caption: seedCaption(media.at, media.via, media.source, !media.path, timeZone),
-						createdAt,
-						sessionTitle: found.title,
-					})
-					result.added++
-				} catch (e) {
-					if (e instanceof HttpError && e.status === 404) throw e
-					result.skipped++
-					failures.push(`${media.filename}: ${(e as Error).message}`)
-				}
-			}
-			if (!result.added && failures.length) result.error = failures[0]
-		} catch (e) {
-			result.error =
-				e instanceof OpenCodeUnavailable ? e.message : e instanceof HttpError ? e.message : `OpenCode: ${errorText(e)}`
-		}
-	}
-	return results
-}
-
-/** "Oct 15, 2026, 2:32:05 PM · via read", then the file's path (noting when it's gone and the copy is from the session) */
-function seedCaption(at: number, via: string, path: string | undefined, gone: boolean, timeZone?: string) {
-	let when: string
-	try {
-		when = new Date(at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'medium', timeZone })
-	} catch {
-		when = new Date(at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'medium' })
-	}
-	return `${when} · via ${via}${path ? `\n${path}${gone ? ' (since deleted; this is the copy in the session)' : ''}` : ''}`
-}
-
 // ---------- canvases ----------
 
 function randomId(length: number) {
@@ -768,6 +705,7 @@ function presence(canvasId: string): PresenceEntry[] {
 				...(user.agent === true ? { agent: true } : {}),
 				...(user.conjured === true ? { conjured: true } : {}),
 				...(typeof user.sessionId === 'string' ? { sessionId: user.sessionId } : {}),
+				...(typeof user.serverKey === 'string' ? { serverKey: user.serverKey } : {}),
 			},
 			selection: Array.isArray(state.selection) ? state.selection.filter((s): s is string => typeof s === 'string') : [],
 			cursor: (state.cursor as PresenceEntry['cursor']) ?? null,
@@ -855,7 +793,8 @@ const API_INDEX = {
 		'POST /api/canvases/:cid/sessions/:sessionId/items':
 			'Add an image, video or HTML page. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
 			'or JSON {"html": "<html source>"} for an HTML item. Plus optional "group", "title", "caption", "name". ' +
-			'Creates the session if needed.',
+			'Multipart uploads may also send "createdAt" (ms; orders the item in its group) and "sessionTitle" (names a ' +
+			'session this creates). Creates the session if needed.',
 		'GET /api/items/:itemId': 'One item',
 		'PATCH /api/items/:itemId': 'Change an item\'s "group", "title", "caption" (null clears) or "name"',
 		'DELETE /api/items/:itemId':
@@ -876,23 +815,15 @@ const API_INDEX = {
 			'What each person on the canvas has selected, resolved: {"users": [{"user", "selection", "items" (full items ' +
 			'with absolute "url"/"thumbUrl"), "sessions" (with "itemCount"), "notes", "missing"}]}. Use this to answer ' +
 			'"what have I selected?"',
-		'GET /api/opencode/status': 'Whether the canvas server can reach OpenCode: {"connected", "url"?, "error"?}',
-		'GET /api/opencode/sessions': 'Recent OpenCode sessions across projects, newest first: [{"id", "title", "directory", "updatedAt", "busy"}]',
-		'POST /api/canvases/:cid/seed':
-			'Fill a canvas from OpenCode sessions (read-only on OpenCode). Body: {"sessionIds": ["ses_…", …], "timeZone"?}. ' +
-			`For each session, in order: a frame titled like the session, with the images and videos it output in the last 24 hours ` +
-			`(tool results such as read/screenshots, finished image generations, files its tools wrote) in group "${SEED_GROUP}", ` +
-			`in output order, de-duplicated, at most ${SEED_MAX_ITEMS}; captions say when (in "timeZone", an IANA name) and which tool. ` +
-			'Sessions without media get no frame. Returns {"results": [{"sessionId", "title", "added", "skipped", "error"?}]}',
-		'GET /api/canvases/:cid/conjured': 'OpenCode sessions conjured onto the canvas as worms people can talk to',
+		'GET /api/canvases/:cid/conjured':
+			'OpenCode sessions conjured onto the canvas as worms: [{"sessionId", "serverKey", "title", "color", "x", "y", "ownerId", "awake"}]. ' +
+			'The canvas server never talks to OpenCode: the owner\'s browser does, and publishes the worm\'s presence (thinking, replies) ' +
+			'into the room while its tab is open ("awake"); otherwise it sleeps',
 		'POST /api/canvases/:cid/conjured':
-			'Conjure an OpenCode session as a worm. Body: {"sessionId", "x", "y"} (page position). 409 if that session is already here',
+			'Conjure an OpenCode session as a worm. Body: {"sessionId", "serverKey" (non-secret id of its OpenCode), "ownerId" ' +
+			'(the owner browser\'s random id), "title"?, "x", "y"} (page position). 409 if that session is already here',
+		'PATCH /api/canvases/:cid/conjured/:sessionId': 'Move and/or rename a conjured worm. Body: {"x", "y"} and/or {"title"}',
 		'DELETE /api/canvases/:cid/conjured/:sessionId': 'Banish a conjured worm',
-		'PATCH /api/canvases/:cid/conjured/:sessionId': 'Move a conjured worm. Body: {"x", "y"} (page position)',
-		'POST /api/canvases/:cid/conjured/:sessionId/prompt':
-			'Prompt the worm\'s OpenCode session. Body: {"text", "from"?}. The worm thinks, then its reply streams into its ' +
-			'presence chat. 409 while the session is busy, 502 when OpenCode refuses',
-		'POST /api/canvases/:cid/conjured/:sessionId/dismiss': 'Clear the worm\'s speech bubble for everyone',
 	},
 	items:
 		'Every item has a "name": its file name. On upload it is the original file name (the path\'s basename, the ' +
@@ -924,6 +855,78 @@ class HttpError extends Error {
  */
 function stripBase(pathname: string) {
 	return pathname === BASE_PATH ? '/' : pathname.startsWith(BASE_PATH + '/') ? pathname.slice(BASE_PATH.length) : pathname
+}
+
+// ---------- cross-origin access ----------
+// The app can also be served from the user's own machine (`bunx opencode-canvas` serves it on
+// http://localhost:<port>, so it can talk to their local OpenCode), and then uses this server's API,
+// media and WebSockets from there. So besides this server's own pages, http://localhost:* and
+// http://127.0.0.1:* may use it too. Nothing here is behind cookies, so this exposes nothing new.
+
+const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$/
+/** origins of this server's own pages: where people open canvases (CANVAS_WEB), plus CANVAS_ORIGINS (comma separated) */
+const OWN_ORIGINS = new Set(
+	[WEB_BASE, ...(process.env.CANVAS_ORIGINS ?? '').split(',')]
+		.map((u) => {
+			try {
+				return new URL(u.trim()).origin
+			} catch {
+				return ''
+			}
+		})
+		.filter(Boolean),
+)
+
+/** The request's Origin when it may use this server cross-origin (localhost pages), else null. */
+function corsOrigin(req: Request): string | null {
+	const origin = req.headers.get('origin')
+	return origin && LOCAL_ORIGIN.test(origin) ? origin : null
+}
+
+/**
+ * WebSockets aren't covered by CORS, so rooms and live events check the Origin themselves: no
+ * Origin (not a browser), the page's own host, this server's public pages, or localhost.
+ */
+function socketOriginAllowed(req: Request): boolean {
+	const origin = req.headers.get('origin')
+	if (!origin || LOCAL_ORIGIN.test(origin) || OWN_ORIGINS.has(origin)) return true
+	try {
+		const host = new URL(origin).host
+		return host === req.headers.get('host') || host === req.headers.get('x-forwarded-host')
+	} catch {
+		return false
+	}
+}
+
+function withCors(req: Request, res: Response): Response {
+	const origin = corsOrigin(req)
+	if (!origin) return res
+	try {
+		res.headers.set('access-control-allow-origin', origin)
+		res.headers.append('vary', 'Origin')
+		res.headers.set('access-control-expose-headers', 'content-length, content-range, accept-ranges')
+		// Private Network Access: a page on localhost may reach this server's private address.
+		if (req.headers.get('access-control-request-private-network') === 'true') res.headers.set('access-control-allow-private-network', 'true')
+		return res
+	} catch {
+		// immutable headers (a static Response): copy it
+		const copy = new Response(res.body, res)
+		return withCors(req, copy)
+	}
+}
+
+function preflight(req: Request): Response {
+	const origin = corsOrigin(req)
+	if (!origin) return new Response(null, { status: 204 })
+	const headers: Record<string, string> = {
+		'access-control-allow-origin': origin,
+		'access-control-allow-methods': 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS',
+		'access-control-allow-headers': req.headers.get('access-control-request-headers') ?? 'content-type',
+		'access-control-max-age': '86400',
+		vary: 'Origin',
+	}
+	if (req.headers.get('access-control-request-private-network') === 'true') headers['access-control-allow-private-network'] = 'true'
+	return new Response(null, { status: 204, headers })
 }
 
 const json = (body: unknown, status = 200) =>
@@ -1053,36 +1056,15 @@ async function handle(req: Request): Promise<Response> {
 		return json({ canvasId: canvas.id, users: await resolveSelections(canvas.id) })
 	}
 
-	// ---- OpenCode: conjured worms ----
-
-	if (p === '/api/opencode/status' && method === 'GET') return json(await openCodeStatus())
-	if (p === '/api/opencode/sessions' && method === 'GET') {
-		try {
-			return json(await listOpenCodeSessions())
-		} catch (e) {
-			if (e instanceof OpenCodeUnavailable) throw new HttpError(503, e.message)
-			throw new HttpError(502, `OpenCode: ${(e as Error).message ?? e}`)
-		}
-	}
-
-	m = /^\/api\/canvases\/([^/]+)\/seed$/.exec(p)
-	if (m && method === 'POST') {
-		const canvas = getCanvas(decodeURIComponent(m[1]))
-		const body = (await req.json().catch(() => ({}))) as { sessionIds?: unknown; timeZone?: unknown }
-		const sessionIds = [...new Set(idList(body?.sessionIds, 'sessionIds'))]
-		if (!sessionIds.length) throw new HttpError(400, 'send {"sessionIds": ["ses_…", …]}')
-		if (sessionIds.length > SEED_MAX_SESSIONS) throw new HttpError(400, `at most ${SEED_MAX_SESSIONS} sessions at a time`)
-		const timeZone = typeof body?.timeZone === 'string' ? body.timeZone : undefined
-		return json({ results: await seedCanvas(canvas.id, sessionIds, timeZone) })
-	}
+	// ---- conjured worms (records only: owners' browsers run them) ----
 
 	m = /^\/api\/canvases\/([^/]+)\/conjured$/.exec(p)
 	if (m) {
 		const canvas = getCanvas(decodeURIComponent(m[1]))
-		if (method === 'GET') return json(conjured.list(canvas.id))
+		if (method === 'GET') return json(conjuredWorms(canvas.id))
 		if (method === 'POST') {
-			const body = (await req.json().catch(() => ({}))) as { sessionId?: unknown; x?: unknown; y?: unknown }
-			return json(await conjured.conjure(canvas.id, body?.sessionId, body?.x, body?.y), 201)
+			const body = (await req.json().catch(() => null)) as Record<string, unknown> | null
+			return json(conjured.conjure(canvas.id, body), 201)
 		}
 	}
 
@@ -1094,20 +1076,8 @@ async function handle(req: Request): Promise<Response> {
 	}
 	if (m && method === 'PATCH') {
 		const canvas = getCanvas(decodeURIComponent(m[1]))
-		const body = (await req.json().catch(() => ({}))) as { x?: unknown; y?: unknown }
-		return json(await conjured.move(canvas.id, decodeURIComponent(m[2]), body?.x, body?.y))
-	}
-
-	m = /^\/api\/canvases\/([^/]+)\/conjured\/([^/]+)\/(prompt|dismiss)$/.exec(p)
-	if (m && method === 'POST') {
-		const canvas = getCanvas(decodeURIComponent(m[1]))
-		const sessionId = decodeURIComponent(m[2])
-		if (m[3] === 'dismiss') {
-			await conjured.dismiss(canvas.id, sessionId)
-			return json({ ok: true })
-		}
-		const body = (await req.json().catch(() => ({}))) as { text?: unknown; from?: unknown }
-		return json(await conjured.prompt(canvas.id, sessionId, body?.text, body?.from), 202)
+		const body = (await req.json().catch(() => null)) as Record<string, unknown> | null
+		return json(conjured.update(canvas.id, decodeURIComponent(m[2]), body))
 	}
 
 	// ---- groups (named sets of items within a session) ----
@@ -1149,10 +1119,13 @@ async function handle(req: Request): Promise<Response> {
 			const meta = {
 				group: groupField(form.get('group') ?? undefined),
 				title: textField(form.get('title')),
-				caption: textField(form.get('caption')),
+				// browsers send multipart text with CRLF line breaks
+				caption: textField(form.get('caption'))?.replace(/\r\n?/g, '\n'),
 				name: nameField(form.get('name') ?? undefined),
 				width: sizeField(form.get('width') ?? undefined, 'width'),
 				height: sizeField(form.get('height') ?? undefined, 'height'),
+				createdAt: timeField(form.get('createdAt')),
+				sessionTitle: textField(form.get('sessionTitle'))?.slice(0, TITLE_MAX),
 			}
 			const filename = file instanceof File ? file.name : undefined
 			return json(await addItem(canvasId, sessionId, file, { filename, ...meta }), 201)
@@ -1241,23 +1214,11 @@ Bun.serve<SocketData, never>({
 	},
 	async fetch(req, server) {
 		const reqUrl = new URL(req.url)
-		if (stripBase(reqUrl.pathname) === '/api/live') {
-			const canvasId = reqUrl.searchParams.get('canvas')
-			if (canvasId !== null && !db.canvases.has(canvasId)) return json({ error: `no canvas ${canvasId}` }, 404)
-			if (server.upgrade(req, { data: { kind: 'live', canvasId } })) return
-			return json({ error: 'expected a websocket upgrade' }, 426)
-		}
-		const room = /^\/api\/rooms\/([^/]+)$/.exec(stripBase(reqUrl.pathname))?.[1]
-		if (room !== undefined) {
-			// One room per canvas: "canvas-<id>". View links join with ?view=1 and are read-only:
-			// they get live notes and presence, but can't change anything.
-			const canvasId = CANVAS_ROOM.exec(room)?.[1]
-			if (!canvasId || !db.canvases.has(canvasId)) return json({ error: 'no such room' }, 404)
-			const readOnly = reqUrl.searchParams.get('view') === '1'
-			if (server.upgrade(req, { data: { kind: 'room', room, readOnly } })) return
-			return json({ error: 'expected a websocket upgrade' }, 426)
-		}
-		if (stripBase(reqUrl.pathname) === '/mcp') {
+		const path = stripBase(reqUrl.pathname)
+		const upgrade = path === '/api/live' || path.startsWith('/api/rooms/')
+		if (upgrade && !socketOriginAllowed(req)) return json({ error: 'this origin may not connect' }, 403)
+		if (req.method === 'OPTIONS' && path !== '/mcp') return preflight(req)
+		if (path === '/mcp') {
 			try {
 				return await mcp.handle(req)
 			} catch (e) {
@@ -1265,14 +1226,37 @@ Bun.serve<SocketData, never>({
 				return json({ jsonrpc: '2.0', error: { code: -32603, message: 'internal error' }, id: null }, 500)
 			}
 		}
-		try {
-			return await handle(req)
-		} catch (e) {
-			if (e instanceof HttpError || e instanceof ConjureError) return json({ error: e.message }, e.status)
-			console.error(e)
-			return json({ error: 'internal error' }, 500)
-		}
+		const res = await route(req, server, reqUrl)
+		return res && withCors(req, res)
 	},
 })
+
+/** Everything but /mcp and preflights: WebSocket upgrades (undefined once upgraded), then the HTTP API and files. */
+/** Everything but /mcp and preflights: WebSocket upgrades (undefined once upgraded), then the HTTP API and files. */
+async function route(req: Request, server: Server<SocketData>, reqUrl: URL): Promise<Response | undefined> {
+	if (stripBase(reqUrl.pathname) === '/api/live') {
+		const canvasId = reqUrl.searchParams.get('canvas')
+		if (canvasId !== null && !db.canvases.has(canvasId)) return json({ error: `no canvas ${canvasId}` }, 404)
+		if (server.upgrade(req, { data: { kind: 'live', canvasId } })) return
+		return json({ error: 'expected a websocket upgrade' }, 426)
+	}
+	const room = /^\/api\/rooms\/([^/]+)$/.exec(stripBase(reqUrl.pathname))?.[1]
+	if (room !== undefined) {
+		// One room per canvas: "canvas-<id>". View links join with ?view=1 and are read-only:
+		// they get live notes and presence, but can't change anything.
+		const canvasId = CANVAS_ROOM.exec(room)?.[1]
+		if (!canvasId || !db.canvases.has(canvasId)) return json({ error: 'no such room' }, 404)
+		const readOnly = reqUrl.searchParams.get('view') === '1'
+		if (server.upgrade(req, { data: { kind: 'room', room, readOnly } })) return
+		return json({ error: 'expected a websocket upgrade' }, 426)
+	}
+	try {
+		return await handle(req)
+	} catch (e) {
+		if (e instanceof HttpError || e instanceof ConjureError) return json({ error: e.message }, e.status)
+		console.error(e)
+		return json({ error: 'internal error' }, 500)
+	}
+}
 
 console.log(`canvas server on http://localhost:${PORT}  (data: ${DATA_DIR})`)

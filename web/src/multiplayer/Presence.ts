@@ -3,7 +3,7 @@ import * as Y from 'yjs'
 import type { Camera, Editor } from '../editor/Editor'
 import { clamp, type Box, type Vec } from '../editor/geometry'
 import { atom, react } from '../state/signals'
-import { BASE } from '../base'
+import { url, wsUrl } from '../base'
 
 export interface PeerUser {
 	name: string
@@ -12,12 +12,15 @@ export interface PeerUser {
 	agent?: boolean
 	/** a conjured worm: an OpenCode session brought onto the canvas, which edit links can prompt */
 	conjured?: boolean
-	/** conjured worms: their OpenCode session */
+	/** conjured worms: their OpenCode session, and the (non-secret key of the) OpenCode it lives on */
 	sessionId?: string
+	serverKey?: string
+	/** conjured worms nobody is running right now (drawn locally from their record, never broadcast) */
+	asleep?: boolean
 }
 
 /** What each person broadcasts through Yjs awareness. */
-interface PresenceState {
+export interface PresenceState {
 	user: PeerUser
 	/** page coordinates, or null when their pointer is off the canvas */
 	cursor: Vec | null
@@ -75,9 +78,8 @@ export class Presence {
 		/** view links join read-only */
 		viewOnly = false,
 	) {
-		const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${BASE}/api/rooms`
 		const params: Record<string, string> = viewOnly ? { view: '1' } : {}
-		this.provider = new WebsocketProvider(url, room, this.doc, { disableBc: true, params })
+		this.provider = new WebsocketProvider(wsUrl('/api/rooms'), room, this.doc, { disableBc: true, params })
 		const awareness = this.provider.awareness
 
 		this.provider.on('status', ({ status }: { status: string }) => {
@@ -197,7 +199,7 @@ export class Presence {
 	private async adoptExeIdentity() {
 		let name = ''
 		try {
-			const { email } = (await (await fetch(`${BASE}/api/me`)).json()) as { email: string | null }
+			const { email } = (await (await fetch(url('/api/me'))).json()) as { email: string | null }
 			name = (email ?? '')
 				.split('@')[0]
 				.split(/[._-]+/)

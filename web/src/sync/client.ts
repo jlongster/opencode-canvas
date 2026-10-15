@@ -1,19 +1,23 @@
-import type { Canvas, CanvasData, CanvasSummary, ConjuredAgent, OpenCodeSessionSummary, OpenCodeStatus, SeedResult, ServerEvent } from '../../../shared/types'
+import type { Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, ServerEvent } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
-import { BASE, url as withBase } from '../base'
+import { API_BASE, BASE, url as withBase, wsUrl } from '../base'
 
 /** Edit links (/c/:id) open a canvas by id; view links (/v/:viewKey) by its secret view key. */
 export type CanvasLink = { role: 'edit'; id: string } | { role: 'view'; viewKey: string }
 export type Role = CanvasLink['role']
 
-/** Share links for a canvas, as shown in the UI. */
-export const editUrl = (canvas: Canvas) => `${location.origin}${BASE}/c/${canvas.id}`
-export const viewUrl = (canvas: Canvas) => `${location.origin}${BASE}/v/${canvas.viewKey}`
+/** Share links for a canvas, as shown in the UI: on the canvas server, which serves the app too. */
+export const editUrl = (canvas: Canvas) => `${API_BASE}/c/${canvas.id}`
+export const viewUrl = (canvas: Canvas) => `${API_BASE}/v/${canvas.viewKey}`
 export const listUrl = () => `${BASE}/`
 
+/** Fails with an Error carrying the response's status. */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const res = await fetch(withBase(path), init)
-	if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? `request failed: ${res.status}`)
+	if (!res.ok) {
+		const message = (await res.json().catch(() => null))?.error ?? `request failed: ${res.status}`
+		throw Object.assign(new Error(message), { status: res.status })
+	}
 	return (await res.json()) as T
 }
 
@@ -41,37 +45,38 @@ export const deleteItem = (id: string) => request<unknown>(`/api/items/${encodeU
 export const restoreDeleted = (canvasId: string, ids: { itemIds: string[]; sessionIds: string[] }) =>
 	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/restore`, json('POST', ids))
 
-// ---------- OpenCode: conjured worms ----------
+/** Uploads media as an item (multipart). createdAt orders it in its group; sessionTitle names a session this creates. */
+export function uploadItem(
+	canvasId: string,
+	sessionId: string,
+	data: Blob,
+	meta: { filename: string; group?: string; title?: string; caption?: string; createdAt?: number; sessionTitle?: string },
+) {
+	const form = new FormData()
+	form.set('file', data, meta.filename)
+	for (const key of ['group', 'title', 'caption', 'createdAt', 'sessionTitle'] as const) {
+		const value = meta[key]
+		if (value !== undefined && value !== '') form.set(key, String(value))
+	}
+	return request<Item>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/items`, { method: 'POST', body: form })
+}
 
-export const openCodeStatus = () => request<OpenCodeStatus>('/api/opencode/status')
-export const listOpenCodeSessions = () => request<OpenCodeSessionSummary[]>('/api/opencode/sessions')
-
-/** Fills a canvas with frames for these OpenCode sessions and the media they output in the last day. */
-export const seedCanvas = (canvasId: string, sessionIds: string[]) =>
-	request<{ results: SeedResult[] }>(
-		`/api/canvases/${encodeURIComponent(canvasId)}/seed`,
-		json('POST', { sessionIds, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
-	)
+// ---------- conjured worms (records; the owner's browser runs them, see multiplayer/WormHost.ts) ----------
 
 const conjuredPath = (canvasId: string, sessionId?: string) =>
 	`/api/canvases/${encodeURIComponent(canvasId)}/conjured${sessionId ? `/${encodeURIComponent(sessionId)}` : ''}`
 
 export const listConjured = (canvasId: string) => request<ConjuredAgent[]>(conjuredPath(canvasId))
 /** Brings an OpenCode session onto the canvas as a worm at page position (x, y). Fails with status 409 if it's already here. */
-export async function conjure(canvasId: string, sessionId: string, at: { x: number; y: number }) {
-	const res = await fetch(withBase(conjuredPath(canvasId)), json('POST', { sessionId, x: at.x, y: at.y }))
-	const body = await res.json().catch(() => null)
-	if (!res.ok) throw Object.assign(new Error(body?.error ?? `request failed: ${res.status}`), { status: res.status })
-	return body as ConjuredAgent
-}
+export const conjure = (
+	canvasId: string,
+	worm: { sessionId: string; serverKey: string; ownerId: string; title: string; x: number; y: number },
+) => request<ConjuredAgent>(conjuredPath(canvasId), json('POST', worm))
 export const banishConjured = (canvasId: string, sessionId: string) =>
 	request<unknown>(conjuredPath(canvasId, sessionId), { method: 'DELETE' })
-export const moveConjured = (canvasId: string, sessionId: string, at: { x: number; y: number }) =>
-	request<ConjuredAgent>(conjuredPath(canvasId, sessionId), json('PATCH', { x: at.x, y: at.y }))
-export const promptConjured = (canvasId: string, sessionId: string, text: string, from?: string) =>
-	request<unknown>(`${conjuredPath(canvasId, sessionId)}/prompt`, json('POST', { text, from }))
-export const dismissConjured = (canvasId: string, sessionId: string) =>
-	request<unknown>(`${conjuredPath(canvasId, sessionId)}/dismiss`, json('POST', {}))
+/** Moves the worm and/or renames it. */
+export const updateConjured = (canvasId: string, sessionId: string, changes: { x?: number; y?: number; title?: string }) =>
+	request<ConjuredAgent>(conjuredPath(canvasId, sessionId), json('PATCH', changes))
 
 /** Thrown when a canvas doesn't exist (or was deleted). */
 export class CanvasNotFound extends Error {}
@@ -110,7 +115,7 @@ export function liveSocket(
 	let retryTimer = 0
 	let heartbeat = 0
 	let lastHeard = 0
-	const path = withBase(canvasId ? `/api/live?canvas=${encodeURIComponent(canvasId)}` : '/api/live')
+	const path = wsUrl(canvasId ? `/api/live?canvas=${encodeURIComponent(canvasId)}` : '/api/live')
 
 	const reconnect = (delay: number) => {
 		clearInterval(heartbeat)
@@ -121,7 +126,7 @@ export function liveSocket(
 	}
 
 	const open = () => {
-		const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${path}`)
+		const ws = new WebSocket(path)
 		socket = ws
 		ws.onopen = () => {
 			retryMs = 500
@@ -187,6 +192,8 @@ export function connectCanvas(
 	handlers: {
 		onLoad: (canvas: Canvas, first: boolean) => void
 		onCanvas: (canvas: Canvas) => void
+		/** the canvas's conjured worms: all of them on every load, then each change */
+		onConjured?: (change: { all: ConjuredAgent[] } | { put: ConjuredAgent } | { deleted: string }) => void
 		onGone: () => void
 		onError: (error: Error) => void
 	},
@@ -212,6 +219,7 @@ export function connectCanvas(
 			editor.loadSnapshot(data.sessions, data.items)
 			const first = !loaded
 			loaded = true
+			handlers.onConjured?.({ all: data.conjured ?? [] })
 			handlers.onLoad(data.canvas, first)
 		} catch (e) {
 			if (closed) return
@@ -240,6 +248,12 @@ export function connectCanvas(
 				return
 			case 'item_deleted':
 				if (event.canvasId === canvasId) editor.deleteItem(event.id)
+				return
+			case 'conjured':
+				if (event.agent.canvasId === canvasId) handlers.onConjured?.({ put: event.agent })
+				return
+			case 'conjured_deleted':
+				if (event.canvasId === canvasId) handlers.onConjured?.({ deleted: event.sessionId })
 				return
 		}
 	}

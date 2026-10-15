@@ -24,7 +24,7 @@ export class PeerCursors {
 		parent: HTMLElement,
 		private editor: Editor,
 		private presence: Presence,
-		conjure: Conjure | null = null,
+		private conjure: Conjure | null = null,
 	) {
 		this.host = document.createElement('div')
 		this.host.className = 'peer-cursors'
@@ -88,6 +88,8 @@ export class PeerCursors {
 			this.cursors.delete(id)
 		}
 
+		// Conjured worms nobody runs right now sleep where they were put.
+		if (this.conjure) agents.push(...this.conjure.sleepers.get())
 		this.worms.update(now, elapsed, agents)
 	}
 

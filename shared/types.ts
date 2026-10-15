@@ -23,6 +23,8 @@ export interface CanvasData {
 	canvas: Canvas
 	sessions: Session[]
 	items: Item[]
+	/** OpenCode sessions conjured onto it as worms */
+	conjured: ConjuredAgent[]
 }
 
 /** Sessions belong to a canvas; the same OpenCode session id may appear in several canvases. */
@@ -83,7 +85,7 @@ export interface Note {
 export interface PresenceEntry {
 	clientId: number
 	/** agent: an AI agent (no pointer); conjured: a worm for an OpenCode session you can talk to (see ConjuredAgent) */
-	user: { name: string; color: string; agent?: boolean; conjured?: boolean; sessionId?: string }
+	user: { name: string; color: string; agent?: boolean; conjured?: boolean; sessionId?: string; serverKey?: string }
 	/** item ids as they are, "frame:<sessionId>" for session frames, "note:<noteId>" for sticky notes */
 	selection: string[]
 	/** page coordinates, or null when their pointer is off the canvas */
@@ -97,16 +99,12 @@ export interface PresenceEntry {
 	thinking?: boolean
 }
 
-/** GET /api/opencode/status */
-export interface OpenCodeStatus {
-	connected: boolean
-	url?: string
-	error?: string
-}
-
-/** One OpenCode session as GET /api/opencode/sessions lists it. */
+/** One OpenCode session, as the browser lists it from a paired OpenCode (see web/src/opencode). */
 export interface OpenCodeSessionSummary {
 	id: string
+	/** the pairing (OpenCode server) it lives on */
+	serverKey: string
+	serverName: string
 	title: string
 	directory: string
 	updatedAt: number
@@ -116,7 +114,7 @@ export interface OpenCodeSessionSummary {
 	parentId?: string
 }
 
-/** One session's outcome of POST /api/canvases/:cid/seed. */
+/** One session's outcome of seeding a canvas from it (done in the browser, see web/src/opencode/seed.ts). */
 export interface SeedResult {
 	sessionId: string
 	/** the OpenCode session's title ("" when it couldn't be read) */
@@ -130,18 +128,25 @@ export interface SeedResult {
 }
 
 /**
- * An OpenCode session brought onto a canvas as a worm people can prompt (at most one per session
- * per canvas). It sits at (x, y) in page coordinates and is present in the canvas's room.
+ * An OpenCode session brought onto a canvas as a worm (at most one per session per canvas). It
+ * sits at (x, y) in page coordinates. The canvas server keeps only this record, with no
+ * credentials: the owner's browser (ownerId) talks to OpenCode and publishes the worm's presence
+ * into the room while its tab is open; otherwise the worm sleeps.
  */
 export interface ConjuredAgent {
 	canvasId: string
 	sessionId: string
+	/** non-secret id of the OpenCode server the session lives on (a hash of its URL) */
+	serverKey: string
 	title: string
-	directory: string
 	color: string
 	x: number
 	y: number
 	createdAt: number
+	/** random id kept in the owner browser's localStorage; only that browser can prompt it */
+	ownerId: string
+	/** in list responses: an owner tab is publishing its presence right now */
+	awake?: boolean
 }
 
 /** One person's selection, resolved into objects (GET /api/canvases/:cid/selection). */
@@ -165,3 +170,5 @@ export type ServerEvent =
 	| { type: 'session_deleted'; canvasId: string; id: string }
 	| { type: 'item'; item: Item }
 	| { type: 'item_deleted'; canvasId: string; id: string }
+	| { type: 'conjured'; agent: ConjuredAgent }
+	| { type: 'conjured_deleted'; canvasId: string; sessionId: string }

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
 import { Editor, type ToolId } from '../editor/Editor'
 import { describeError, Renderer } from '../render/Renderer'
-import { react } from '../state/signals'
-import type { Canvas } from '../../../shared/types'
+import { atom, react } from '../state/signals'
+import type { Canvas, ConjuredAgent } from '../../../shared/types'
 import { frameKey } from '../editor/selection'
-import { connectCanvas, deleteItem, deleteSession, editUrl, openCodeStatus, restoreDeleted, listUrl, renameCanvas, viewUrl, type CanvasLink } from '../sync/client'
+import { connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, viewUrl, type CanvasLink } from '../sync/client'
 import { Conjure } from '../multiplayer/Conjure'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
@@ -16,7 +16,7 @@ import { NotFound } from './NotFound'
 import { SeedPicker } from './SeedPicker'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
-import { BASE } from '../base'
+import { API_BASE } from '../base'
 
 /** The last used select/hand tool is remembered across reloads; the one-shot note tool never is. */
 const TOOL_KEY = 'canvas.tool'
@@ -70,6 +70,9 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 		let disposed = false
 		let loaded = false
 		const disposers: (() => void)[] = []
+		// The canvas's conjured worms, from the canvas server (loaded with the canvas, then live).
+		const conjured = atom<ConjuredAgent[]>('conjured', [])
+		let canvasTitle = ''
 
 		editor.mount(container)
 		editor.setCurrentTool(loadTool())
@@ -123,7 +126,13 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 
 		disposers.push(
 			connectCanvas(editor, link, {
+				onConjured: (change) => {
+					if ('all' in change) conjured.set(change.all)
+					else if ('put' in change) conjured.set([...conjured.peek().filter((r) => r.sessionId !== change.put.sessionId), change.put])
+					else conjured.set(conjured.peek().filter((r) => r.sessionId !== change.deleted))
+				},
 				onLoad: (c, first) => {
+					canvasTitle = c.title
 					setCanvas(c)
 					if (!first) return
 					loaded = true
@@ -136,14 +145,18 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					const p = live
 					const notes = new SharedNotes(overlayRef.current!, editor, p, link.role)
 					// Edit links can talk to conjured worms; view links just watch them.
-					const spells = new Conjure(editor, p, link.role === 'edit' ? c.id : null)
+					const spells = new Conjure(editor, p, c.id, link.role === 'edit', conjured, () => canvasTitle)
 					const cursors = new PeerCursors(overlayRef.current!, editor, p, spells)
-					disposers.push(() => cursors.destroy(), () => notes.destroy(), () => p.destroy())
+					disposers.push(() => cursors.destroy(), () => spells.destroy(), () => notes.destroy(), () => p.destroy())
 					setPresence(p)
 					setConjure(spells)
 					;(window as any).presence = p
+					;(window as any).conjure = spells
 				},
-				onCanvas: setCanvas,
+				onCanvas: (c) => {
+					canvasTitle = c.title
+					setCanvas(c)
+				},
 				onGone: () => {
 					if (!disposed) onGoneRef.current(loaded)
 				},
@@ -473,20 +486,10 @@ function UndoToast({ editor }: { editor: Editor }) {
 
 function EmptyState({ editor, canvas, role }: { editor: Editor; canvas: Canvas; role: CanvasLink['role'] }) {
 	const empty = useValue(() => editor.connection.get() === 'open' && Object.keys(editor.sessions.get()).length === 0)
-	const [openCode, setOpenCode] = useState<boolean | null>(null)
-	// Seeding fills the canvas, but the picker stays up with its progress until it's done.
+	// Seeding fills the canvas, but the picker stays up with its progress until it's done. With no
+	// OpenCode paired in this browser, the picker asks to connect one first.
 	const [seeding, setSeeding] = useState(false)
-	const showPicker = role === 'edit' && openCode === true && (empty || seeding)
-	useEffect(() => {
-		if (role !== 'edit' || !empty || openCode !== null) return
-		let cancelled = false
-		openCodeStatus()
-			.then((s) => !cancelled && setOpenCode(s.connected))
-			.catch(() => !cancelled && setOpenCode(false))
-		return () => {
-			cancelled = true
-		}
-	}, [role, empty, openCode])
+	const showPicker = role === 'edit' && (empty || seeding)
 	if (!empty && !showPicker) return null
 	if (role === 'view') {
 		return (
@@ -496,26 +499,17 @@ function EmptyState({ editor, canvas, role }: { editor: Editor; canvas: Canvas; 
 			</div>
 		)
 	}
-	const curl = `curl -X POST ${location.origin}${BASE}/api/canvases/${canvas.id}/sessions/$SESSION_ID/items \\
+	const curl = `curl -X POST ${API_BASE}/api/canvases/${canvas.id}/sessions/$SESSION_ID/items \\
   -F file=@output.png -F caption="first try"`
-	if (showPicker) {
-		return (
-			<div className="empty seeding">
-				<SeedPicker editor={editor} canvasId={canvas.id} onBusy={setSeeding} />
-				{empty && !seeding && (
-					<div className="seed-curl">
-						<p>Or post media from a session yourself:</p>
-						<pre>{curl}</pre>
-					</div>
-				)}
-			</div>
-		)
-	}
 	return (
-		<div className="empty">
-			<h2>No sessions yet</h2>
-			<p>Post media from a session and it shows up here live:</p>
-			<pre>{curl}</pre>
+		<div className="empty seeding">
+			<SeedPicker editor={editor} canvasId={canvas.id} onBusy={setSeeding} />
+			{empty && !seeding && (
+				<div className="seed-curl">
+					<p>Or post media from a session yourself:</p>
+					<pre>{curl}</pre>
+				</div>
+			)}
 		</div>
 	)
 }

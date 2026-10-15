@@ -92,6 +92,8 @@ interface Worm {
 	conjured: boolean
 	/** body size multiplier */
 	size: number
+	/** conjured: nobody runs it right now (no owner tab open): drawn dimmed, eyes shut, snoozing */
+	asleep: boolean
 	/** conjured: its session is working on a prompt, and 0..1 eased for the animation */
 	thinking: boolean
 	think: number
@@ -345,7 +347,8 @@ export class AgentWorms {
 		el.className = 'agent-worm'
 		el.innerHTML =
 			'<span class="peer-cursor-label agent-worm-label"><span class="peer-cursor-name"></span></span>' +
-			'<div class="agent-worm-thought" aria-hidden="true"><b></b><b></b><span class="agent-worm-thought-cloud"><i></i><i></i><i></i></span></div>'
+			'<div class="agent-worm-thought" aria-hidden="true"><b></b><b></b><span class="agent-worm-thought-cloud"><i></i><i></i><i></i></span></div>' +
+			'<div class="agent-worm-zzz" aria-hidden="true"><i>z</i><i>z</i><i>z</i></div>'
 		const label = el.querySelector<HTMLSpanElement>('.agent-worm-label')!
 		const name = el.querySelector<HTMLSpanElement>('.peer-cursor-name')!
 		const thought = el.querySelector<HTMLDivElement>('.agent-worm-thought')!
@@ -391,6 +394,7 @@ export class AgentWorms {
 			talk: 0,
 			conjured,
 			size: conjured ? CONJURED_SIZE : 1,
+			asleep: false,
 			thinking: false,
 			think: 0,
 			startledAt: -1e9,
@@ -452,6 +456,11 @@ export class AgentWorms {
 		}
 		const speaking = !!peer.speaking && !!peer.chat
 		if (worm.conjured) {
+			if (worm.asleep !== !!peer.user.asleep) {
+				worm.asleep = !!peer.user.asleep
+				worm.el.classList.toggle('asleep', worm.asleep)
+				worm.label.title = worm.asleep ? 'Asleep: its owner\'s tab isn\'t open' : ''
+			}
 			worm.thinking = !!peer.thinking
 			worm.startledAt = this.conjure?.startled.get(worm.id) ?? worm.startledAt
 			worm.listening = this.conjure?.prompting.peek()?.clientId === worm.id
@@ -534,7 +543,7 @@ export class AgentWorms {
 			worm.dismissed = text
 			this.syncSpeech(worm, null, true)
 			const sessionId = this.conjure?.peer(worm.id)?.user.sessionId
-			if (sessionId && this.conjure?.canPrompt) this.conjure.dismiss(sessionId).catch((e) => console.error('dismiss failed', e))
+			if (sessionId) this.conjure?.dismiss(sessionId)
 		})
 		bubble.appendChild(close)
 		// Scrolling and clicking the bubble shouldn't pan or select on the canvas underneath.
@@ -771,7 +780,18 @@ export class AgentWorms {
 	// ---------- drawing ----------
 
 	private draw(worm: Worm, now: number) {
+		this.ctx.save()
+		if (worm.asleep) this.ctx.globalAlpha = 0.45
+		try {
+			this.drawWorm(worm, now)
+		} finally {
+			this.ctx.restore()
+		}
+	}
+
+	private drawWorm(worm: Worm, now: number) {
 		const ctx = this.ctx
+		const alpha = ctx.globalAlpha
 		const still = this.reducedMotion.matches
 		const scale = worm.scale * worm.size
 		const { base, dark, light } = worm.palette
@@ -820,7 +840,7 @@ export class AgentWorms {
 		// Belly stripe along the lower side, then segment rings.
 		ctx.lineCap = 'round'
 		ctx.strokeStyle = light
-		ctx.globalAlpha = 0.55
+		ctx.globalAlpha = 0.55 * alpha
 		ctx.lineWidth = 2.2 * scale
 		ctx.beginPath()
 		const side = normalAt(samples, Math.floor(n / 2)).ny >= 0 ? 1 : -1
@@ -833,7 +853,7 @@ export class AgentWorms {
 			else ctx.lineTo(x, y)
 		}
 		ctx.stroke()
-		ctx.globalAlpha = 0.8
+		ctx.globalAlpha = 0.8 * alpha
 		ctx.lineWidth = 1.3 * scale
 		for (let i = Math.floor(n * 0.25); i < n - 3; i += 4) {
 			const { nx, ny } = normalAt(samples, i)
@@ -843,7 +863,7 @@ export class AgentWorms {
 			ctx.lineTo(samples[i].x + nx * r, samples[i].y + ny * r)
 			ctx.stroke()
 		}
-		ctx.globalAlpha = 1
+		ctx.globalAlpha = alpha
 
 		// Head features. "Up" is screen-up, so the eye stays on top whichever way it faces.
 		const head = samples[0]
@@ -874,7 +894,8 @@ export class AgentWorms {
 		const ey = head.y - hr * 0.22 - hr * 0.12 * startle
 		const er = hr * 0.72 * (1 + 0.5 * startle + (worm.listening ? 0.08 : 0))
 		const blinkT = (now - worm.blinkStart) / 150
-		const open = blinkT >= 0 && blinkT < 1 ? Math.abs(1 - 2 * blinkT) : 1
+		// asleep: eyes shut (unless something startles it)
+		const open = worm.asleep ? Math.max(0, startle) : blinkT >= 0 && blinkT < 1 ? Math.abs(1 - 2 * blinkT) : 1
 		ctx.fillStyle = dark
 		ellipse(ctx, ex, ey, er + 1.3 * scale, (er + 1.3 * scale) * Math.max(open, 0.25))
 		ctx.fillStyle = '#f8fafc'
@@ -900,7 +921,7 @@ export class AgentWorms {
 			ellipse(ctx, mx, my + 0.5 * scale, 2.1 * scale * (0.6 + 0.4 * startle), 2.8 * scale * startle)
 			// and a "!" popping out above
 			ctx.save()
-			ctx.globalAlpha = Math.min(1, startle * 1.5)
+			ctx.globalAlpha = Math.min(1, startle * 1.5) * alpha
 			ctx.fillStyle = light
 			ctx.strokeStyle = dark
 			ctx.lineWidth = 2.5

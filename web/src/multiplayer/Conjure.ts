@@ -1,42 +1,97 @@
+import type { ConjuredAgent } from '../../../shared/types'
+import { OPENCODE_ALLOWED } from '../base'
 import type { Editor } from '../editor/Editor'
-import { atom } from '../state/signals'
-import { banishConjured, dismissConjured, moveConjured, promptConjured } from '../sync/client'
+import { ownerId, pairing, pairings, withServer } from '../opencode/pairings'
+import { atom, computed, type Atom } from '../state/signals'
+import { banishConjured, updateConjured } from '../sync/client'
 import type { Peer, Presence } from './Presence'
+import { runsHere, WormHost, wormName } from './WormHost'
 
 export interface PromptTarget {
 	clientId: number
 	sessionId: string
 }
 
+/** Why this browser can't talk to a worm, or null when it can. */
+export type TalkBlock = 'not-yours' | 'not-paired' | 'not-allowed' | null
+
+const PROMPT_MAX = 20_000
+
 /**
- * Talking to conjured worms (OpenCode sessions brought onto the canvas, see server/conjured.ts).
- * On edit links, clicking one opens a prompt box under it (see ConjurePrompt) and dragging one moves
- * it; everything they do comes back through presence, so everyone sees it. View links (canvasId
- * null) only watch.
+ * Conjured worms on a canvas: OpenCode sessions brought onto it (records from the canvas server,
+ * see server/conjured.ts). The browser that conjured a worm owns it and runs it (WormHost) while
+ * one of its tabs is open; everyone else sees its presence, or, with no owner tab, a sleeping worm
+ * drawn from its record.
+ *
+ * On edit links, dragging a worm moves it for everyone and clicking one opens a box under it (see
+ * ConjurePrompt): the prompt box for its owner, a note about whose it is for everyone else. View
+ * links (canEdit false) only watch.
  */
 export class Conjure {
-	/** the worm whose prompt box is open */
+	/** the worm whose box is open */
 	readonly prompting = atom<PromptTarget | null>('conjurePrompting', null)
 	/** when each worm was last startled (clicked or focused), by awareness client id */
 	readonly startled = new Map<number, number>()
+	/** worms with no live presence (nobody runs them), as made-up peers to draw asleep */
+	readonly sleepers = computed<Peer[]>('conjureSleepers', () => {
+		const awake = new Set(this.presence.peers.get().filter((p) => p.user.conjured && p.user.sessionId).map((p) => p.user.sessionId))
+		return this.records
+			.get()
+			.filter((r) => !awake.has(r.sessionId))
+			.map((r) => ({
+				clientId: sleeperId(r.sessionId),
+				user: { name: wormName(r), color: r.color, agent: true, conjured: true, sessionId: r.sessionId, serverKey: r.serverKey, asleep: true },
+				cursor: { x: r.x, y: r.y },
+				selection: [],
+				view: null,
+				chat: null,
+				chatSent: true,
+			}))
+	})
+	private host: WormHost | null
 
 	constructor(
 		readonly editor: Editor,
 		readonly presence: Presence,
-		/** the canvas, on edit links; null on view links, which can't prompt */
-		readonly canvasId: string | null,
-	) {}
+		readonly canvasId: string,
+		/** edit links can drag and click worms; view links only watch */
+		readonly canEdit: boolean,
+		readonly records: Atom<ConjuredAgent[]>,
+		private canvasTitle: () => string,
+	) {
+		// Only pages OpenCode allows (localhost) can run worms.
+		this.host = OPENCODE_ALLOWED ? new WormHost(canvasId, records) : null
+	}
 
 	get canPrompt() {
-		return this.canvasId !== null
+		return this.canEdit
 	}
 
-	/** The worm's presence, by awareness client id. */
+	record(sessionId: string): ConjuredAgent | undefined {
+		return this.records.peek().find((r) => r.sessionId === sessionId)
+	}
+
+	/** Why we can't prompt this worm (reactive on pairings), or null when we can. */
+	talkBlock(sessionId: string): TalkBlock {
+		pairings.get()
+		const r = this.records.get().find((x) => x.sessionId === sessionId)
+		if (!r || r.ownerId !== ownerId) return 'not-yours'
+		if (!OPENCODE_ALLOWED) return 'not-allowed'
+		if (!runsHere(r)) return 'not-paired'
+		return null
+	}
+
+	/** Every worm: live presences and sleeping records. */
+	worms(): Peer[] {
+		return [...this.presence.peers.peek().filter((p) => p.user.conjured), ...this.sleepers.get()]
+	}
+
+	/** The worm's presence (or sleeping stand-in), by awareness client id. */
 	peer(clientId: number): Peer | undefined {
-		return this.presence.peers.peek().find((p) => p.clientId === clientId && p.user.conjured)
+		return this.worms().find((p) => p.clientId === clientId)
 	}
 
-	/** Startles the worm and opens its prompt box. */
+	/** Startles the worm and opens its box. */
 	open(peer: Peer) {
 		if (!this.canPrompt || !peer.user.sessionId) return
 		this.startled.set(peer.clientId, performance.now())
@@ -49,33 +104,67 @@ export class Conjure {
 
 	/** Brings an already conjured worm into view and gives it a jolt. False if it isn't here (yet). */
 	focus(sessionId: string): boolean {
-		const peer = this.presence.peers.peek().find((p) => p.user.conjured && p.user.sessionId === sessionId)
+		const peer = this.worms().find((p) => p.user.sessionId === sessionId)
 		if (!peer?.cursor) return false
 		this.editor.centerOn({ x: peer.cursor.x, y: peer.cursor.y, w: 0, h: 0 })
 		this.startled.set(peer.clientId, performance.now())
 		return true
 	}
 
+	/** Prompts the worm's session, straight from this browser; whoever runs the worm shows the reply. */
 	async send(target: PromptTarget, text: string) {
-		if (!this.canvasId) return
-		await promptConjured(this.canvasId, target.sessionId, text, this.presence.me.peek().name)
+		const r = this.record(target.sessionId)
+		if (!r) throw new Error('that worm was banished')
+		const block = this.talkBlock(r.sessionId)
+		if (block === 'not-yours') throw new Error('only the browser that conjured this worm can prompt it')
+		if (block) throw new Error(`its OpenCode isn't paired in this browser`)
+		const prompt = text.trim()
+		if (prompt.length > PROMPT_MAX) throw new Error(`that's longer than ${PROMPT_MAX} characters`)
+		const from = this.presence.me.peek().name.trim().slice(0, 60)
+		const title = this.canvasTitle()
+		await withServer(r.serverKey, async (c) => {
+			const active = await c.session.active({ signal: AbortSignal.timeout(10_000) })
+			if (r.sessionId in active) throw new Error(`${wormName(r)} is busy right now (its session is already running); try again when it's done`)
+			await c.session.prompt({
+				sessionID: r.sessionId,
+				text: from ? `${from} (on the canvas "${title}"): ${prompt}` : prompt,
+				metadata: { source: 'canvas', canvasId: this.canvasId, ...(from ? { from } : {}) },
+			})
+		})
 	}
 
 	/** Puts the worm down at a new page position, for everyone. */
 	async move(sessionId: string, at: { x: number; y: number }) {
-		if (!this.canvasId) return
-		await moveConjured(this.canvasId, sessionId, at)
+		if (!this.canEdit) return
+		await updateConjured(this.canvasId, sessionId, at)
 	}
 
 	async banish(sessionId: string) {
-		if (!this.canvasId) return
+		if (!this.canEdit) return
 		if (this.prompting.peek()?.sessionId === sessionId) this.close()
 		await banishConjured(this.canvasId, sessionId)
 	}
 
-	/** Clears the worm's reply for everyone (edit links only; view links hide it locally). */
-	async dismiss(sessionId: string) {
-		if (!this.canvasId) return
-		await dismissConjured(this.canvasId, sessionId)
+	/** Clears the worm's reply for everyone when we run it (others just hide it locally). */
+	dismiss(sessionId: string) {
+		this.host?.dismiss(sessionId)
 	}
+
+	/** Our own worm, with its OpenCode paired here. */
+	ours(sessionId: string) {
+		const r = this.record(sessionId)
+		return !!r && r.ownerId === ownerId && !!pairing(r.serverKey)
+	}
+
+	destroy() {
+		this.host?.destroy()
+		this.host = null
+	}
+}
+
+/** A stable made-up awareness id for a sleeping worm (negative, so it never clashes with real ones). */
+function sleeperId(sessionId: string) {
+	let h = 0
+	for (const ch of sessionId) h = (Math.imul(h, 31) + ch.charCodeAt(0)) >>> 0
+	return -1 - (h % 1_000_000_000)
 }

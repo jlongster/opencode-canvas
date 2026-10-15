@@ -32,6 +32,8 @@ export class VideoPool {
 			video.loop = true
 			video.playsInline = true
 			video.preload = 'auto'
+			// media may come from another origin (the app served on localhost): frames must stay readable for the GPU
+			video.crossOrigin = 'anonymous'
 			video.src = src
 			this.host.appendChild(video)
 			video.play().catch(() => {})

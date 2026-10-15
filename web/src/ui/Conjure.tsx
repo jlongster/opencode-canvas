@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { OpenCodeSessionSummary } from '../../../shared/types'
-import { OPENCODE_ALLOWED } from '../base'
 import type { Editor } from '../editor/Editor'
 import type { Conjure } from '../multiplayer/Conjure'
 import { ownerId } from '../opencode/pairings'
 import { conjure as conjureSession } from '../sync/client'
-import { OpenCodeHint, PairForm, ServerList, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
+import { PairForm, ServerList, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
 import { useValue } from './useValue'
 
 /** The toolbar's Conjure button (edit links): pick an OpenCode session to bring onto the canvas as a worm. */
@@ -91,9 +90,7 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 					×
 				</button>
 			</div>
-			{!OPENCODE_ALLOWED ? (
-				<OpenCodeHint />
-			) : servers.length === 0 ? (
+			{servers.length === 0 ? (
 				<PairForm autoFocus onPaired={() => reload()} />
 			) : (
 				<>
@@ -260,16 +257,10 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 								{asleep === '1' ? ' It wakes up when its owner opens this canvas.' : ' You can watch it think and reply.'}
 							</span>
 						</>
-					) : block === 'not-paired' ? (
+					) : (
 						<>
 							<strong>Its OpenCode isn't paired here</strong>
 							<span>You conjured it, but this browser no longer has its OpenCode. Pair it again (Conjure → Servers) to wake it.</span>
-						</>
-					) : (
-						<>
-							<strong>Asleep here</strong>
-							<span>You conjured it, but this page can't reach OpenCode.</span>
-							<OpenCodeHint />
 						</>
 					)}
 				</div>

@@ -1,5 +1,4 @@
 import type { ConjuredAgent } from '../../../shared/types'
-import { OPENCODE_ALLOWED, OPENCODE_HINT } from '../base'
 import type { Editor } from '../editor/Editor'
 import type { Vec } from '../editor/geometry'
 import { ownerId, pairing, pairings, withServer } from '../opencode/pairings'
@@ -14,7 +13,7 @@ export interface PromptTarget {
 }
 
 /** Why this browser can't talk to a worm, or null when it can. */
-export type TalkBlock = 'not-yours' | 'not-paired' | 'not-allowed' | null
+export type TalkBlock = 'not-yours' | 'not-paired' | null
 
 const PROMPT_MAX = 20_000
 const FIND_SESSION_MS = 8_000
@@ -68,8 +67,7 @@ export class Conjure {
 		readonly records: Atom<ConjuredAgent[]>,
 		private canvasTitle: () => string,
 	) {
-		// Only pages OpenCode allows (localhost) can run worms.
-		this.host = OPENCODE_ALLOWED ? new WormHost(canvasId, records) : null
+		this.host = new WormHost(canvasId, records)
 	}
 
 	get canPrompt() {
@@ -85,7 +83,6 @@ export class Conjure {
 		pairings.get()
 		const r = this.records.get().find((x) => x.sessionId === sessionId)
 		if (!r || r.ownerId !== ownerId) return 'not-yours'
-		if (!OPENCODE_ALLOWED) return 'not-allowed'
 		if (!runsHere(r)) return 'not-paired'
 		return null
 	}
@@ -158,7 +155,6 @@ export class Conjure {
 			await this.move(sessionId, spot)
 			return null
 		}
-		if (!OPENCODE_ALLOWED) return OPENCODE_HINT
 		const found = await findSession(sessionId)
 		if (!found) return pairings.peek().length ? 'No paired OpenCode has this session' : 'Pair an OpenCode (Conjure) to summon its sessions'
 		try {
@@ -179,7 +175,7 @@ export class Conjure {
 		const said = this.saying(sessionId)
 		if (said) return said
 		const r = this.record(sessionId)
-		if (!r || !this.ours(sessionId) || !OPENCODE_ALLOWED) return ''
+		if (!r || !this.ours(sessionId)) return ''
 		return lastAssistantText(r.serverKey, sessionId)
 	}
 

@@ -2,7 +2,7 @@ import { createRoot } from 'react-dom/client'
 import { App } from './ui/App'
 import { CanvasList } from './ui/CanvasList'
 import { NotFound } from './ui/NotFound'
-import { PairNotice, redeemPairFragment } from './ui/PairNotice'
+import { PairNotice, readPairFragment } from './ui/PairNotice'
 import type { CanvasLink } from './sync/client'
 import { APP_PATH } from './base'
 import './ui/styles.css'
@@ -16,15 +16,15 @@ function route(): CanvasLink | 'list' | null {
 	return viewKey ? { role: 'view', viewKey } : null
 }
 
-// `bunx opencode-canvas` opens the page with a one-time pairing code in the fragment: take it out
-// of the URL before anything else reads the hash, and redeem it.
-redeemPairFragment()
+// `bunx opencode-canvas` (or a handoff link) opens the page with a one-time pairing code in the
+// fragment: take it out of the URL before anything else reads the hash, and offer it.
+readPairFragment()
 
 const page = route()
 
 createRoot(document.getElementById('root')!).render(
 	<>
 		{page === 'list' ? <CanvasList /> : page ? <App link={page} /> : <NotFound message="There's no page here." />}
-		<PairNotice />
+		<PairNotice offers={page === 'list' || page?.role === 'edit'} />
 	</>,
 )

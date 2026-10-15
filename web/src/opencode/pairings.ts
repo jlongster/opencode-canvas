@@ -2,16 +2,21 @@
  * The browser's connections to OpenCode servers. The browser is the only OpenCode client: the
  * canvas server never talks to OpenCode or sees its credentials.
  *
- * Pairing: `opencode pair` prints a one-time link, http(s)://<host>/auth/connect/<code>, and
- * `bunx opencode-canvas` hands the browser the same thing in the URL fragment (#pair=…). Either way
- * we redeem the code (GET with Accept: application/json) for a session token, and authenticate
- * every request with HTTP Basic auth: username "opencode", the token as the password. Pairings are
- * kept in this browser's localStorage only.
+ * Pairing: `opencode pair` prints a one-time link, http(s)://<host>/auth/connect/<code>, which is
+ * pasted into the canvas or handed over in the URL fragment (#pair=…, by `bunx opencode-canvas` or
+ * by hand; the user accepts it first). Either way we redeem the code (GET with Accept:
+ * application/json) for a session token,
+ * and authenticate every request with HTTP Basic auth: username "opencode", the token as the
+ * password. Pairings are kept in this browser's localStorage only.
+ *
+ * OpenCode only answers pages it allows by CORS: localhost, 127.0.0.1 and *.opencode.ai, plus the
+ * origins added with `opencode service set cors <origin>`.
  *
  * Each pairing has a key: a non-secret id derived from the server's URL, which conjured worm
  * records on the canvas server use to say which OpenCode a session lives on.
  */
 import { OpenCode, type OpenCodeClient } from '@opencode/client'
+import { CORS_COMMAND } from '../base'
 import { atom } from '../state/signals'
 
 export type { OpenCodeClient }
@@ -37,7 +42,11 @@ const STORE_KEY = 'canvas.opencode.pairings'
 const OWNER_KEY = 'canvas.ownerId'
 const REQUEST_MS = 10_000
 const NAME_MAX = 60
-const PAIR_LINK = /^(https?:\/\/[^\s]*?)\/auth\/connect\/([^\s/?#]+)\/?(?:[?#]\S*)?$/
+/** a pairing link anywhere in some text: base URL and code */
+const PAIR_LINK = /(https?:\/\/[^\s"'<>()]+?)\/auth\/connect\/([A-Za-z0-9_%~.-]*[A-Za-z0-9_~-])/
+/** the pair= part of a fragment, a whole URL or a bare one */
+const PAIR_PARAM = /(?:^|[#&])pair=([^&\s]+)/
+const LOOPBACK = ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '[::]']
 
 export const pairings = atom<Pairing[]>('opencodePairings', load())
 export const health = atom<Record<string, PairingHealth>>('opencodeHealth', {})
@@ -136,32 +145,80 @@ export async function withServer<T>(key: string, fn: (client: OpenCodeClient, p:
 
 // ---------- pairing ----------
 
-export class PairingError extends Error {}
+/** A pairing code from the URL: `bunx opencode-canvas`'s own, or a pairing link someone handed over. */
+export interface PairOffer {
+	url: string
+	code: string
+	from: 'cli' | 'link'
+}
 
-/** The {url, code} in a pairing link `opencode pair` prints (…/auth/connect/<code>), or null. */
+/** Why pairing failed; `command` is one to run that fixes it; `used`: the code expired or was used. */
+export class PairingError extends Error {
+	constructor(
+		message: string,
+		readonly command?: string,
+		readonly used = false,
+	) {
+		super(message)
+	}
+}
+
+/**
+ * The {url, code} in some pasted text: the first pairing link `opencode pair` prints
+ * (…/auth/connect/<code>) in it, or a canvas URL with a #pair= handoff. Null when there's neither.
+ */
 export function parsePairLink(text: string): { url: string; code: string } | null {
-	const link = /https?:\/\/\S+/.exec(text.trim())?.[0] ?? ''
-	const m = PAIR_LINK.exec(link)
+	const m = PAIR_LINK.exec(text)
+	if (m) {
+		try {
+			return { url: normalizeUrl(m[1]), code: decodeURIComponent(m[2]) }
+		} catch {
+			return null
+		}
+	}
+	const hash = /[#&]pair=\S+/.exec(text)?.[0]
+	return hash ? parsePairFragment(hash) : null
+}
+
+/**
+ * The {url, code} in a "#pair=…" fragment: base64url of {url, code} (as `bunx opencode-canvas`
+ * opens the page with), or a pairing link itself, URL-encoded (a handoff anyone can make).
+ */
+export function parsePairFragment(hash: string): PairOffer | null {
+	const m = PAIR_PARAM.exec(hash)
 	if (!m) return null
 	try {
-		return { url: normalizeUrl(m[1]), code: decodeURIComponent(m[2]) }
+		const value = decodeURIComponent(m[1])
+		if (/^https?:/i.test(value)) {
+			const target = parsePairLink(value.split(/\s/)[0])
+			return target && { ...target, from: 'link' }
+		}
+		const json = atob(value.replace(/-/g, '+').replace(/_/g, '/'))
+		const { url, code } = JSON.parse(json) as { url?: unknown; code?: unknown }
+		if (typeof url !== 'string' || typeof code !== 'string' || !code) return null
+		return { url: normalizeUrl(url), code, from: 'cli' }
 	} catch {
 		return null
 	}
 }
 
-/** "#pair=<base64url of {url, code}>", as `bunx opencode-canvas` opens the page with. */
-export function parsePairFragment(hash: string): { url: string; code: string } | null {
-	const m = /(?:^#|&)pair=([A-Za-z0-9_-]+)/.exec(hash)
-	if (!m) return null
-	try {
-		const json = atob(m[1].replace(/-/g, '+').replace(/_/g, '/'))
-		const { url, code } = JSON.parse(json) as { url?: unknown; code?: unknown }
-		if (typeof url !== 'string' || typeof code !== 'string' || !code) return null
-		return { url: normalizeUrl(url), code }
-	} catch {
-		return null
-	}
+/**
+ * A pairing code the page was opened with (#pair=…), waiting for the user to accept it. Kept in
+ * memory only: a link never pairs this browser by itself, so nobody can pair you to their server
+ * by sending you one.
+ */
+export const pairOffer = atom<PairOffer | null>('pairOffer', null)
+
+/**
+ * Takes a `#pair=…` fragment out of the URL (so a reload or a shared link never carries the code)
+ * and offers it. Call once, before anything reads the hash. False when it was malformed.
+ */
+export function takePairFragment(): boolean {
+	if (!/(?:^#|&)pair=/.test(location.hash)) return true
+	const offer = parsePairFragment(location.hash)
+	history.replaceState(history.state, '', `${location.pathname}${location.search}${stripPairFragment(location.hash)}`)
+	pairOffer.set(offer)
+	return !!offer
 }
 
 /** The hash without its pair= part. */
@@ -176,26 +233,34 @@ export function stripPairFragment(hash: string): string {
  */
 export async function redeem(target: { url: string; code: string }, nameValue?: string): Promise<Pairing> {
 	const url = normalizeUrl(target.url)
-	const host = new URL(url).host
+	const { host, hostname, protocol } = new URL(url)
+	const remoteHint = LOOPBACK.includes(hostname) && !LOOPBACK.includes(location.hostname) ? ' If OpenCode is on another computer, use `opencode pair --remote`.' : ''
+	if (location.protocol === 'https:' && protocol === 'http:' && !LOOPBACK.includes(hostname)) {
+		throw new PairingError(`This page is HTTPS, so the browser won't connect to ${host} over plain HTTP. Use \`opencode pair --remote\` for an HTTPS link.`)
+	}
 	let res: Response
 	try {
 		res = await fetch(`${url}/auth/connect/${encodeURIComponent(target.code)}`, {
-			headers: { accept: 'application/json' },
+			// A custom header makes the browser ask OpenCode first (a CORS preflight), so a page it
+			// doesn't allow never sends the code: a plain GET would use it up unanswered.
+			headers: { accept: 'application/json', 'x-opencode-pair': '1' },
 			redirect: 'manual',
 			signal: AbortSignal.timeout(REQUEST_MS),
 		})
 	} catch (e) {
-		const reason = errorText(e).replace(/[.\s]+$/, '')
-		throw new PairingError(
-			`couldn't reach ${host} (${reason}). Is OpenCode running there, and does it allow this page (${location.origin})? ` +
-				'Running `bunx opencode-canvas` opens the canvas on localhost, which it allows',
-		)
+		if (e instanceof DOMException && e.name === 'TimeoutError') throw new PairingError(`OpenCode at ${host} didn't answer.${remoteHint}`)
+		// Both "not running" and "doesn't allow this page" are a bare network error; a no-cors
+		// request (which CORS doesn't block) tells them apart.
+		if (await reachable(url)) {
+			throw new PairingError(`OpenCode at ${host} blocked this site. Run this where OpenCode runs, then \`opencode pair\` again for a new link:`, CORS_COMMAND)
+		}
+		throw new PairingError(`Couldn't reach OpenCode at ${host}: is it running?${remoteHint}`)
 	}
 	const body = (await res.json().catch(() => null)) as { token?: unknown; message?: unknown } | null
 	if (!res.ok || typeof body?.token !== 'string' || !body.token) {
 		if (res.status >= 500) throw new PairingError(`${host} failed to pair (HTTP ${res.status})`)
-		const reason = typeof body?.message === 'string' && body.message ? body.message : `HTTP ${res.status}`
-		throw new PairingError(`the pairing link didn't work: ${reason}. Run \`opencode pair\` (or \`bunx opencode-canvas\`) again for a new one`)
+		const reason = typeof body?.message === 'string' && body.message ? body.message.replace(/[.\s]+$/, '') : `HTTP ${res.status}`
+		throw new PairingError(`That pairing link didn't work: ${reason}. Run \`opencode pair\` again for a new one.`, undefined, res.status === 401)
 	}
 	const token = body.token
 	const key = serverKeyFor(url)
@@ -207,7 +272,7 @@ export async function redeem(target: { url: string; code: string }, nameValue?: 
 	try {
 		await clientFor(p).server.info({ signal: AbortSignal.timeout(REQUEST_MS) })
 	} catch (e) {
-		throw new PairingError(`paired, but ${host} didn't answer: ${failureText(e, p)}`)
+		throw new PairingError(`Paired, but ${host} didn't answer: ${failureText(e, p)}`)
 	}
 	save([...pairings.peek().filter((x) => x.key !== key), p].sort((a, b) => a.createdAt - b.createdAt))
 	noteHealth(key, { ok: true })
@@ -217,10 +282,17 @@ export async function redeem(target: { url: string; code: string }, nameValue?: 
 /** Pairs from the text of a pasted `opencode pair` link. */
 export async function pairFromLink(text: string, name?: string): Promise<Pairing> {
 	const target = parsePairLink(text)
-	if (!target) {
-		throw new PairingError('that isn\'t an OpenCode pairing link: run `opencode pair` and paste the link it prints (…/auth/connect/<code>)')
-	}
+	if (!target) throw new PairingError("That isn't an OpenCode pairing link: paste the link `opencode pair` prints (…/auth/connect/<code>).")
 	return redeem(target, name)
+}
+
+async function reachable(url: string): Promise<boolean> {
+	try {
+		await fetch(`${url}/`, { mode: 'no-cors', signal: AbortSignal.timeout(REQUEST_MS) })
+		return true
+	} catch {
+		return false
+	}
 }
 
 export function renamePairing(key: string, nameValue: string) {
@@ -252,7 +324,7 @@ export function errorText(e: unknown): string {
 }
 
 function failureText(e: unknown, p: Pairing): string {
-	if (isUnauthorized(e)) return 'it no longer accepts this pairing (401); pair it again with `opencode pair` or `bunx opencode-canvas`'
+	if (isUnauthorized(e)) return 'it no longer accepts this pairing (401); pair it again with `opencode pair`'
 	if (isTransportError(e)) return `couldn't connect to ${new URL(p.url).host} (is OpenCode running?)`
 	return errorText(e)
 }

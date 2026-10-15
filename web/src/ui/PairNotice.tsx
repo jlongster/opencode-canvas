@@ -1,49 +1,63 @@
-import { useEffect } from 'react'
-import { OPENCODE_ALLOWED, OPENCODE_HINT } from '../base'
-import { parsePairFragment, redeem, stripPairFragment } from '../opencode/pairings'
+import { useEffect, useState } from 'react'
+import { pairOffer, takePairFragment } from '../opencode/pairings'
 import { atom } from '../state/signals'
+import { CodeText, offersShownInline, PairOfferCard } from './OpenCodeServers'
 import { useValue } from './useValue'
 
-type Notice = { state: 'pairing'; host: string } | { state: 'paired'; name: string } | { state: 'error'; message: string }
+type Notice = { state: 'paired'; name: string } | { state: 'error'; message: string }
 
 const notice = atom<Notice | null>('pairNotice', null)
 const SHOW_PAIRED_MS = 4000
+/** Lets a pairing form that's about to show (the empty canvas) take the offer before the toast does. */
+const OFFER_TOAST_DELAY_MS = 800
 
 /**
- * Redeems a `#pair=<…>` fragment (from `bunx opencode-canvas`), removing it from the URL first so a
- * reload or a shared link never carries the code. Call once, before anything reads the hash.
+ * Takes a `#pair=<…>` fragment (from `bunx opencode-canvas`, or a pairing link someone appended to
+ * a canvas link) out of the URL and offers it: nothing is redeemed until the user clicks Connect.
+ * Call once, before anything reads the hash; it also takes ones added later (a link pasted into
+ * the address bar of this page only changes the hash).
  */
-export function redeemPairFragment() {
-	if (!/(?:^#|&)pair=/.test(location.hash)) return
-	const target = parsePairFragment(location.hash)
-	history.replaceState(history.state, '', `${location.pathname}${location.search}${stripPairFragment(location.hash)}`)
-	if (!target) return notice.set({ state: 'error', message: 'That pairing link is malformed. Run `bunx opencode-canvas` again for a new one.' })
-	if (!OPENCODE_ALLOWED) return notice.set({ state: 'error', message: `This page can't reach OpenCode. ${OPENCODE_HINT}.` })
-	notice.set({ state: 'pairing', host: new URL(target.url).host })
-	redeem(target)
-		.then((p) => notice.set({ state: 'paired', name: p.name }))
-		.catch((e: Error) => notice.set({ state: 'error', message: `Couldn't connect to OpenCode: ${e.message}` }))
+export function readPairFragment() {
+	const take = () => {
+		if (!takePairFragment()) notice.set({ state: 'error', message: 'That pairing link is malformed. Run `opencode pair` again for a new one.' })
+	}
+	take()
+	window.addEventListener('hashchange', take)
 }
 
-/** A small toast for the pairing from the URL fragment: connecting, connected, or why it failed. */
-export function PairNotice() {
+/**
+ * A small toast with the pairing offer, where no pairing form shows it (something is paired
+ * already, or there's no form on screen); then whether it connected.
+ */
+export function PairNotice({ offers = true }: { offers?: boolean }) {
 	const n = useValue(() => notice.get())
+	const offered = useValue(() => offers && !!pairOffer.get() && offersShownInline.get() === 0)
+	const [showOffer, setShowOffer] = useState(false)
+	useEffect(() => {
+		if (!offered) return setShowOffer(false)
+		const t = setTimeout(() => setShowOffer(true), OFFER_TOAST_DELAY_MS)
+		return () => clearTimeout(t)
+	}, [offered])
 	useEffect(() => {
 		if (n?.state !== 'paired') return
 		const t = setTimeout(() => notice.set(null), SHOW_PAIRED_MS)
 		return () => clearTimeout(t)
 	}, [n])
+
+	if (showOffer && offered) {
+		return (
+			<div className="pair-notice pair-offer" role="status">
+				<PairOfferCard onPaired={(p) => notice.set({ state: 'paired', name: p.name })} />
+			</div>
+		)
+	}
 	if (!n) return null
 	return (
-		<div className={`pair-notice ${n.state}`} role="status">
-			<span>
-				{n.state === 'pairing' ? `Connecting to OpenCode at ${n.host}…` : n.state === 'paired' ? `Connected to OpenCode (${n.name})` : n.message}
-			</span>
-			{n.state !== 'pairing' && (
-				<button title="Dismiss" onClick={() => notice.set(null)}>
-					×
-				</button>
-			)}
+		<div className={`pair-notice pair-${n.state}`} role="status">
+			<span>{n.state === 'paired' ? `Connected to OpenCode (${n.name})` : <CodeText text={n.message} />}</span>
+			<button title="Dismiss" onClick={() => notice.set(null)}>
+				×
+			</button>
 		</div>
 	)
 }

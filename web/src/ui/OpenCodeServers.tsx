@@ -1,8 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { OpenCodeSessionSummary } from '../../../shared/types'
-import { OPENCODE_ALLOWED, OPENCODE_HINT } from '../base'
-import { health, pairFromLink, pairings, renamePairing, unpair, type Pairing, type PairingHealth } from '../opencode/pairings'
+import { CORS_COMMAND, OPENCODE_ALLOWS_PAGE } from '../base'
+import { health, pairFromLink, PairingError, pairOffer, pairings, redeem, renamePairing, unpair, type Pairing, type PairingHealth } from '../opencode/pairings'
 import { listSessions } from '../opencode/sessions'
+import { atom } from '../state/signals'
 import { useValue } from './useValue'
 
 export interface OpenCodeState {
@@ -23,7 +24,7 @@ export function useOpenCode(): OpenCodeState {
 	const serverKeys = servers.map((s) => `${s.key}:${s.token.length}:${s.name}`).join(' ')
 
 	const reload = async () => {
-		if (!OPENCODE_ALLOWED || !pairings.peek().length) {
+		if (!pairings.peek().length) {
 			setSessions([])
 			setErrors({})
 			return
@@ -39,36 +40,134 @@ export function useOpenCode(): OpenCodeState {
 	return { servers, sessions, errors, reload }
 }
 
-/** Instead of OpenCode features, on pages OpenCode doesn't allow (anything but localhost). */
-export function OpenCodeHint() {
-	const [before, after] = OPENCODE_HINT.split('`bunx opencode-canvas`')
+/** A shell command to run, with a button that copies it. */
+export function CopyCommand({ command, title }: { command: string; title?: string }) {
+	const [copied, setCopied] = useState(false)
+	const copy = () =>
+		navigator.clipboard.writeText(command).then(() => {
+			setCopied(true)
+			setTimeout(() => setCopied(false), 1500)
+		})
 	return (
-		<p className="oc-hint">
-			{before}
-			<code>bunx opencode-canvas</code>
-			{after}.
-		</p>
+		<span className="oc-cmd" title={title}>
+			<code>{command}</code>
+			<button type="button" className="oc-copy" onClick={copy}>
+				{copied ? 'Copied' : 'Copy'}
+			</button>
+		</span>
 	)
 }
 
-/** "Connect your OpenCode": paste the link `opencode pair` prints. */
+/** Text with its `backticked` parts as code. */
+export function CodeText({ text }: { text: string }) {
+	return <>{text.split(/`([^`]+)`/).map((part, i) => (i % 2 ? <code key={i}>{part}</code> : part))}</>
+}
+
+/** Why pairing failed, with the command that fixes it (if there is one). */
+export function PairErrorView({ error }: { error: Error }) {
+	return (
+		<div className="oc-error">
+			<p className="oc-error-text">
+				<CodeText text={error.message} />
+			</p>
+			{error instanceof PairingError && error.command && <CopyCommand command={error.command} title={CORS_TITLE} />}
+		</div>
+	)
+}
+
+/** How many pairing forms show the offer inline (PairNotice shows it as a toast when none do). */
+export const offersShownInline = atom('offersShownInline', 0)
+
+/**
+ * The pairing code the page was opened with: who it would connect, and a Connect button (it never
+ * connects by itself). × forgets it.
+ */
+export function PairOfferCard({ inline, onPaired }: { inline?: boolean; onPaired?: (server: Pairing) => void }) {
+	const offer = useValue(() => pairOffer.get())
+	const [busy, setBusy] = useState(false)
+	const [error, setError] = useState<Error | null>(null)
+	useEffect(() => {
+		if (!inline) return
+		offersShownInline.set(offersShownInline.peek() + 1)
+		return () => offersShownInline.set(offersShownInline.peek() - 1)
+	}, [inline])
+	useEffect(() => setError(null), [offer])
+	if (!offer) return null
+	const host = hostOf(offer.url)
+	const used = error instanceof PairingError && error.used
+
+	const connect = async () => {
+		setBusy(true)
+		setError(null)
+		try {
+			const server = await redeem(offer)
+			pairOffer.set(null)
+			onPaired?.(server)
+		} catch (e) {
+			setError(e as Error)
+		} finally {
+			setBusy(false)
+		}
+	}
+
+	const manually = inline ? 'pair manually below' : 'pair manually (Conjure)'
+	return (
+		<div className="oc-offer">
+			<div className="oc-offer-row">
+				<span className="oc-offer-text">
+					{offer.from === 'cli' ? 'Found OpenCode on this machine' : 'This link wants to connect OpenCode at'} <code>{host}</code>
+				</span>
+				{!used && (
+					<button type="button" className="oc-primary" disabled={busy} onClick={connect}>
+						{busy ? 'Connecting…' : 'Connect'}
+					</button>
+				)}
+				<button type="button" className="oc-offer-dismiss" title="Forget this pairing code" onClick={() => pairOffer.set(null)}>
+					×
+				</button>
+			</div>
+			{used ? (
+				<div className="oc-error">
+					<p className="oc-error-text">
+						<CodeText
+							text={
+								offer.from === 'cli'
+									? `That pairing code expired or was already used. Run \`bunx opencode-canvas\` again, or ${manually}.`
+									: `That pairing link expired or was already used. Ask for a new one, or ${manually}.`
+							}
+						/>
+					</p>
+				</div>
+			) : (
+				error && <PairErrorView error={error} />
+			)}
+		</div>
+	)
+}
+
+const CORS_TITLE = "Replaces OpenCode's list of extra allowed sites (separate several with commas) and restarts its background server"
+
+/**
+ * "Connect your OpenCode": run `opencode pair` where OpenCode runs and paste the link it prints
+ * (or open this page with #pair=<link>). Sites other than localhost must be allowed in OpenCode
+ * first, which the form says how to do.
+ */
 export function PairForm({ onPaired, onCancel, autoFocus }: { onPaired: (server: Pairing) => void; onCancel?: () => void; autoFocus?: boolean }) {
 	const [link, setLink] = useState('')
 	const [busy, setBusy] = useState(false)
-	const [error, setError] = useState<string | null>(null)
-
-	if (!OPENCODE_ALLOWED) return <OpenCodeHint />
+	const [error, setError] = useState<Error | null>(null)
+	const offer = useValue(() => pairOffer.get())
 
 	const connect = async () => {
 		if (!link.trim() || busy) return
 		setBusy(true)
 		setError(null)
 		try {
-			const server = await pairFromLink(link.trim())
+			const server = await pairFromLink(link)
 			setLink('')
 			onPaired(server)
 		} catch (e) {
-			setError((e as Error).message)
+			setError(e as Error)
 		} finally {
 			setBusy(false)
 		}
@@ -83,28 +182,49 @@ export function PairForm({ onPaired, onCancel, autoFocus }: { onPaired: (server:
 			}}
 		>
 			<strong className="oc-pair-title">Connect your OpenCode</strong>
-			<p className="oc-pair-hint">
-				Run <code>bunx opencode-canvas</code> to open this canvas already connected, or run <code>opencode pair</code> and paste the link here. This
-				browser talks to OpenCode directly; the canvas server never sees it.
-			</p>
-			<div className="oc-pair-row">
-				<input
-					autoFocus={autoFocus}
-					placeholder="http://…/auth/connect/…"
-					value={link}
-					spellCheck={false}
-					autoComplete="off"
-					onChange={(e) => setLink(e.target.value)}
-					onKeyDown={(e) => {
-						e.stopPropagation()
-						if (e.key === 'Escape' && onCancel) onCancel()
-					}}
-				/>
-				<button type="submit" className="oc-primary" disabled={busy || !link.trim()}>
-					{busy ? 'Connecting…' : 'Connect'}
-				</button>
-			</div>
-			{error && <div className="oc-error">{error}</div>}
+			<PairOfferCard inline onPaired={onPaired} />
+			{offer && <span className="oc-or">Or pair manually:</span>}
+			{!OPENCODE_ALLOWS_PAGE && (
+				<div className="oc-setup">
+					<span>First time on this site? Run</span>
+					<CopyCommand command={CORS_COMMAND} title={CORS_TITLE} />
+				</div>
+			)}
+			<ol className="oc-steps">
+				<li>
+					<span className="oc-step-num">1</span>
+					<div className="oc-step-body">
+						<span>On the machine running OpenCode, run</span>
+						<CopyCommand command="opencode pair" />
+					</div>
+				</li>
+				<li>
+					<span className="oc-step-num">2</span>
+					<div className="oc-step-body">
+						<span>Paste the link it prints</span>
+						<div className="oc-pair-row">
+							<input
+								autoFocus={autoFocus}
+								placeholder="http://…/auth/connect/…"
+								aria-label="Pairing link"
+								value={link}
+								spellCheck={false}
+								autoComplete="off"
+								onChange={(e) => setLink(e.target.value)}
+								onKeyDown={(e) => {
+									e.stopPropagation()
+									if (e.key === 'Escape' && onCancel) onCancel()
+								}}
+							/>
+							<button type="submit" className="oc-primary" disabled={busy || !link.trim()}>
+								{busy ? 'Connecting…' : 'Connect'}
+							</button>
+						</div>
+						<span className="oc-pair-note">The code works once. The token it gives stays in this browser only.</span>
+					</div>
+				</li>
+			</ol>
+			{error && <PairErrorView error={error} />}
 			{onCancel && (
 				<button type="button" className="oc-link" onClick={onCancel}>
 					Cancel

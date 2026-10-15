@@ -38,10 +38,12 @@ export function wsUrl(path: string) {
 export const APP_PATH = location.pathname.slice(BASE.length) || '/'
 
 /**
- * Browsers can only talk to a local OpenCode from pages it allows by CORS, which by default are
- * http://localhost:* and http://127.0.0.1:* (what `bunx opencode-canvas` serves).
+ * Whether OpenCode answers this page out of the box: it allows browser requests (CORS) from
+ * http://localhost:*, http://127.0.0.1:* (what `bunx opencode-canvas` serves) and *.opencode.ai.
+ * Other sites must be added once with CORS_COMMAND.
  */
-export const OPENCODE_ALLOWED = location.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)
+export const OPENCODE_ALLOWS_PAGE =
+	/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(location.origin) || /^https:\/\/([a-z0-9-]+\.)*opencode\.ai$/.test(location.origin)
 
-/** Shown where OpenCode features would be, on pages OpenCode doesn't allow. */
-export const OPENCODE_HINT = 'Run `bunx opencode-canvas` to bring your OpenCode sessions here'
+/** Adds this page to the sites OpenCode allows (run where OpenCode runs). */
+export const CORS_COMMAND = `opencode service set cors ${location.origin}`

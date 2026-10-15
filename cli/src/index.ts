@@ -1,8 +1,9 @@
 /**
  * `bunx opencode-canvas [canvas-url-or-id]`: serves the canvas web app on http://localhost:<port>
  * (an origin OpenCode allows by default), finds the local OpenCode, mints a one-time pairing code
- * and opens the browser with it in the URL fragment. The browser redeems the code and talks to
- * OpenCode directly; canvases themselves live on the shared canvas server.
+ * and opens the browser with it in the URL fragment. The page offers it (one click on Connect
+ * redeems it) and then talks to OpenCode directly; canvases themselves live on the shared canvas
+ * server.
  *
  * This server is static only: no secrets, no OpenCode proxying. It binds 127.0.0.1.
  */
@@ -23,7 +24,7 @@ const REQUEST_MS = 10_000
 
 const HELP = `opencode-canvas ${typeof CLI_VERSION === 'string' ? CLI_VERSION : 'dev'}
 
-Open review canvases in your browser, connected to your local OpenCode.
+Open review canvases in your browser, ready to connect to your local OpenCode.
 
 Usage
   bunx opencode-canvas [canvas-url-or-id] [options]
@@ -147,7 +148,7 @@ async function pairLocalOpenCode(): Promise<{ url: string; code: string; expires
 	}
 }
 
-/** The URL fragment the app redeems: #pair=<base64url of {url, code}>. */
+/** The URL fragment the app offers to redeem: #pair=<base64url of {url, code}>. */
 function pairFragment(url: string, code: string) {
 	return `#pair=${Buffer.from(JSON.stringify({ url, code })).toString('base64url')}`
 }
@@ -285,7 +286,7 @@ async function main() {
 	if ('code' in pair) {
 		console.log(`  OpenCode       ${pair.url}`)
 		console.log(`\n  Open: ${link}`)
-		console.log(`  (one-time pairing link${pair.expiresIn ? `, valid for ${Math.round(pair.expiresIn)}s` : ''}; once paired, ${base} remembers it)`)
+		console.log(`  Click Connect on the page to connect this OpenCode (one-time code${pair.expiresIn ? `, valid for ${Math.round(pair.expiresIn)}s` : ''}; once connected, ${base} remembers it).`)
 	} else {
 		console.log(`  OpenCode       not connected: ${pair.error}`)
 		console.log(`\n  Open: ${link}`)

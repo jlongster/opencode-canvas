@@ -1,10 +1,9 @@
 import { useState } from 'react'
 import type { OpenCodeSessionSummary, SeedResult } from '../../../shared/types'
-import { OPENCODE_ALLOWED } from '../base'
 import type { Editor } from '../editor/Editor'
 import { seedSession } from '../opencode/seed'
 import { relativeTime, shortDir } from './Conjure'
-import { OpenCodeHint, PairForm, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
+import { PairForm, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
 
 type RowStatus = { state: 'waiting' } | { state: 'seeding' } | { state: 'done'; result: SeedResult }
 
@@ -112,14 +111,14 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 		)
 	}
 
-	if (!OPENCODE_ALLOWED || servers.length === 0) {
+	if (servers.length === 0) {
 		return (
 			<div className="seed-picker" onPointerDown={(e) => e.stopPropagation()} onWheel={(e) => e.stopPropagation()}>
 				<div className="seed-head">
 					<h2>Seed this canvas from OpenCode</h2>
 					<p>Connect your OpenCode, then pick sessions: each gets a frame with the images and videos it output in the last 24 hours.</p>
 				</div>
-				{OPENCODE_ALLOWED ? <PairForm onPaired={() => load()} /> : <OpenCodeHint />}
+				<PairForm onPaired={() => load()} />
 			</div>
 		)
 	}

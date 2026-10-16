@@ -3,3 +3,9 @@
 .agent-worm-labels .agent-worm.fighting .agent-worm-thought {
 	display: none;
 }
+
+/* the loser's name tag, faded while they're tangled up (it would sit on the winner's) */
+.agent-worm-labels .agent-worm.fight-faded .agent-worm-label {
+	opacity: 0.15;
+	transition: opacity 0.2s;
+}

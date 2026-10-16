@@ -183,11 +183,14 @@ export class Fights {
 			if (!over && !broken) {
 				a.el.classList.add('fighting')
 				b.el.classList.add('fighting')
+				// Tangled up, their name tags would overlap: the loser's fades till it's flung clear.
+				const loser = bout.call.winner === bout.call.a ? b : a
+				loser.el.classList.toggle('fight-faded', !bout.still && !bout.flatAt)
 				if (!bout.still) this.draw(ctx, bout, now)
 				return true
 			}
-			a?.el.classList.remove('fighting')
-			b?.el.classList.remove('fighting')
+			a?.el.classList.remove('fighting', 'fight-faded')
+			b?.el.classList.remove('fighting', 'fight-faded')
 			this.lastEnd.set(pair(bout.call.a, bout.call.b), now)
 			return false
 		})
@@ -470,7 +473,7 @@ export class Fights {
 }
 
 /** Short strokes radiating from `p`, from radius r0 to r1, n of them fanned about angle a. */
-function ticks(ctx: CanvasRenderingContext2D, p: Vec, r0: number, r1: number, n: number, a: number, alpha: number, color: string) {
+export function ticks(ctx: CanvasRenderingContext2D, p: Vec, r0: number, r1: number, n: number, a: number, alpha: number, color: string) {
 	ctx.globalAlpha = Math.max(0, alpha)
 	ctx.strokeStyle = color
 	ctx.lineWidth = 1.6
@@ -485,7 +488,7 @@ function ticks(ctx: CanvasRenderingContext2D, p: Vec, r0: number, r1: number, n:
 }
 
 /** A small flat four-pointed star. */
-function star(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: string, alpha: number) {
+export function star(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: string, alpha: number) {
 	if (r <= 0.2) return
 	ctx.globalAlpha = Math.max(0, Math.min(1, alpha))
 	ctx.fillStyle = color
@@ -504,13 +507,13 @@ function pair(a: string, b: string) {
 }
 
 /** 0..1 from a string. */
-function hash(s: string) {
+export function hash(s: string) {
 	let h = 2166136261
 	for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0
 	return h / 4294967296
 }
 
-function smooth(t: number) {
+export function smooth(t: number) {
 	const u = Math.min(1, Math.max(0, t))
 	return u * u * (3 - 2 * u)
 }

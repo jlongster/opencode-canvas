@@ -4,6 +4,7 @@ import type { Box, Vec } from '../editor/geometry'
 import type { Attention } from './Attention'
 import type { Conjure } from './Conjure'
 import { Fights } from './Fight'
+import { Slaps } from './Slap'
 import type { Peer, SubagentInfo } from './Presence'
 import {
 	Body,
@@ -321,6 +322,8 @@ export class AgentWorms {
 	private bornAt = Date.now()
 	/** creatures dropped by each other, fighting (see Fight) */
 	private fights: Fights
+	/** the slap tool's blows (see Slap) */
+	private slaps: Slaps
 
 	constructor(
 		parent: HTMLElement,
@@ -340,6 +343,7 @@ export class AgentWorms {
 		this.tip.className = 'agent-worm-tiny-tip'
 		this.tip.hidden = true
 		this.fights = new Fights(editor, conjure, attention, this.reducedMotion)
+		this.slaps = new Slaps(editor, conjure, this.fights, this.reducedMotion)
 		this.labels.appendChild(this.tip)
 		// for poking at from the console, like window.editor
 		;(window as any).creatures = this
@@ -430,12 +434,14 @@ export class AgentWorms {
 			this.draw(worm, now, elapsed)
 		}
 		this.fights.frame(ctx, now, this.worms.values())
+		this.slaps.frame(ctx, now, this.worms.values())
 		this.showTip()
 	}
 
 	destroy() {
 		for (const d of this.disposers.splice(0)) d()
 		this.fights.destroy()
+		this.slaps.destroy()
 		this.container?.classList.remove('conjure-hover', 'conjure-dragging')
 		this.canvas.remove()
 		this.labels.remove()
@@ -480,6 +486,7 @@ export class AgentWorms {
 		e.preventDefault()
 		this.swallowed.add(e.pointerId)
 		const at = this.local(e)
+		if (this.slaps.active) return this.slaps.hit(worm, at)
 		// It's picked up by the bit of it under the pointer.
 		let i = 0
 		let best = Infinity
@@ -554,8 +561,9 @@ export class AgentWorms {
 			return
 		}
 		if (this.swallowed.has(e.pointerId)) return e.stopPropagation()
-		const over = e.buttons === 0 && this.overCanvas(e) && !!this.hitTest(e.clientX, e.clientY)
-		this.container?.classList.toggle('conjure-hover', over)
+		const over = e.buttons === 0 && this.overCanvas(e) ? this.hitTest(e.clientX, e.clientY) : null
+		this.slaps.hovered = this.slaps.active ? over : null
+		this.container?.classList.toggle('conjure-hover', !!over && !this.slaps.active)
 	}
 
 	private pickUp(worm: Worm, grab: { i: number; off: Vec }) {
@@ -1054,7 +1062,7 @@ export class AgentWorms {
 			if (now - worm.startledAt < 300 && worm.mode === 'here' && !still) this.recoil(worm, now)
 		}
 
-		if (!this.fights.holds(worm, now)) {
+		if (!this.fights.holds(worm, now) && !this.slaps.holds(worm, now)) {
 			this.locomote(worm, now, elapsed, z)
 			this.maybeFidget(worm, now)
 			this.agonise(worm, now)
@@ -1086,6 +1094,7 @@ export class AgentWorms {
 		}
 		this.recentre(worm, z)
 		this.fights.step(worm, now, elapsed, z)
+		this.slaps.step(worm, now)
 		worm.squash *= 1 - ease(110)
 		this.eyes(worm, now, elapsed)
 	}
@@ -1295,7 +1304,7 @@ export class AgentWorms {
 		const f = worm.facing
 		const gx = worm.goal && worm.mode === 'here' && !worm.walk ? (worm.goal.x - worm.root.x) * z : 0
 		if (worm.mode === 'carried' || (worm.mode === 'falling' && !still)) return { shape: place(idlePose(t), f, 0), k: 0, limp: true }
-		const fighting = this.fights.posture(worm, now, z)
+		const fighting = this.fights.posture(worm, now, z) ?? this.slaps.posture(worm, now, z)
 		if (fighting) return fighting
 		const walk = worm.walk
 		if (walk && !still) {
@@ -1432,7 +1441,7 @@ export class AgentWorms {
 		let wide = 0
 		let slant = 0
 		let squeeze = 0
-		const fighting = this.fights.eye(worm, now)
+		const fighting = this.fights.eye(worm, now) ?? this.slaps.eye(worm, now)
 		if (fighting) ({ look, lid, wide, slant, squeeze } = fighting)
 		else if (worm.mode === 'carried') {
 			// Panicking: darting about, mostly down at the drop.
@@ -1696,7 +1705,7 @@ export class AgentWorms {
 	// ---------- drawing ----------
 
 	private draw(worm: Worm, now: number, elapsed: number) {
-		if (worm.asleep && !this.fights.awake(worm, now)) return this.drawFaded(worm, now, elapsed, 0.5)
+		if (worm.asleep && !this.fights.awake(worm, now) && !this.slaps.awake(worm, now)) return this.drawFaded(worm, now, elapsed, 0.5)
 		this.ctx.save()
 		try {
 			this.drawCreature(worm, now, elapsed)

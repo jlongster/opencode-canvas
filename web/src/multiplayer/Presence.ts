@@ -39,6 +39,18 @@ export interface PresenceState {
 	subagents?: SubagentInfo[]
 	/** the last creature fight this person started by dropping one on another (see Fight) */
 	fight?: FightCall | null
+	/** the last slap this person gave a creature (see Slap) */
+	slap?: SlapCall | null
+}
+
+/** A slap: the creature (session id), the point of its body hit, and the way the blow went (a unit vector, screen space). */
+export interface SlapCall {
+	id: string
+	s: string
+	i: number
+	dx: number
+	dy: number
+	at: number
 }
 
 /** Two creatures (by session id) set fighting, and how it ends; `d` is how far apart they were, page px. */
@@ -86,6 +98,8 @@ export class Presence {
 	readonly chatOpen = atom<boolean>('chatOpen', false)
 	/** our last fight call, broadcast for a few seconds */
 	readonly fight = atom<FightCall | null>('fight', null)
+	/** our last slap, broadcast for a few seconds */
+	readonly slap = atom<SlapCall | null>('slap', null)
 	private chatTimer = 0
 
 	/** The canvas's document: notes (and later drawings). Read-only on view links. */
@@ -119,6 +133,7 @@ export class Presence {
 				this.chat.get()
 				this.chatOpen.get()
 				this.fight.get()
+				this.slap.get()
 				editor.pointerPage.get()
 				editor.selectedIds.get()
 				editor.viewportPageBounds.get()
@@ -256,6 +271,7 @@ export class Presence {
 			chatSent: !this.chatOpen.peek(),
 			view: editor.viewportPageBounds.get(),
 			fight: this.fight.peek(),
+			slap: this.slap.peek(),
 		}
 		this.provider.awareness.setLocalState(state)
 	}

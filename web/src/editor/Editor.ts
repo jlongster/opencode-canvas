@@ -9,6 +9,7 @@ import { AnnotateTool } from './tools/AnnotateTool'
 import { HandTool } from './tools/HandTool'
 import { NoteTool } from './tools/NoteTool'
 import { SelectTool } from './tools/SelectTool'
+import { SLAP_CURSOR, SlapTool } from './tools/SlapTool'
 import type { EditorEvent, EventOf, Modifiers, Target } from './types'
 
 export interface Camera {
@@ -43,10 +44,10 @@ export const GROUP_OUTLINE_PADDING = 14
 class Root extends StateNode {
 	static override id = 'root'
 	static override initial = 'select'
-	static override children = () => [SelectTool, HandTool, NoteTool, AnnotateTool]
+	static override children = () => [SelectTool, HandTool, NoteTool, AnnotateTool, SlapTool]
 }
 
-export type ToolId = 'select' | 'hand' | 'note' | 'annotate'
+export type ToolId = 'select' | 'hand' | 'note' | 'annotate' | 'slap'
 
 /**
  * Drawing a new annotation (set by SharedAnnotations on edit links): the annotate tool starts a
@@ -285,7 +286,7 @@ export class Editor {
 	/** The cursor the current tool shows at rest (used after a space-pan ends). */
 	private restingCursor() {
 		const tool = this.currentToolId.get()
-		return tool === 'hand' ? 'grab' : tool === 'note' || tool === 'annotate' ? 'crosshair' : 'default'
+		return tool === 'hand' ? 'grab' : tool === 'note' || tool === 'annotate' ? 'crosshair' : tool === 'slap' ? SLAP_CURSOR : 'default'
 	}
 
 	// ---------- hit testing ----------
@@ -974,6 +975,7 @@ export class Editor {
 		if (!mod && !e.altKey && (e.key === 'h' || e.key === 'H')) return this.setCurrentTool('hand')
 		if (!mod && !e.altKey && (e.key === 'n' || e.key === 'N') && this.createNote) return this.setCurrentTool('note')
 		if (!mod && !e.altKey && (e.key === 'a' || e.key === 'A') && this.annotationDrafts) return this.setCurrentTool('annotate')
+		if (!mod && !e.altKey && (e.key === 's' || e.key === 'S') && this.createNote) return this.setCurrentTool('slap')
 
 		this.dispatch({ name: 'key_down', key: e.key, code: e.code, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey })
 	}

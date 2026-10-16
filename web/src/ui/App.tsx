@@ -352,13 +352,24 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 			</svg>
 		),
 	},
+	{
+		id: 'slap',
+		label: "Slap a looper · interrupts it if it's yours and working",
+		key: 'S',
+		icon: (
+			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+				<path d="M9 12.5V6.2a1.5 1.5 0 0 1 3 0V11V4.6a1.5 1.5 0 0 1 3 0V11V5.6a1.5 1.5 0 0 1 3 0V12V8.6a1.5 1.5 0 0 1 3 0v5.4a7 7 0 0 1-7 7h-.8a6.5 6.5 0 0 1-5-2.4l-3.1-3.8a1.5 1.5 0 0 1 2.3-1.9z" />
+				<path d="M2 7.5h2.5M1.5 11h2.5" />
+			</svg>
+		),
+	},
 ]
 
 function ToolPicker({ editor, withEditTools }: { editor: Editor; withEditTools: boolean }) {
 	const current = useValue(() => editor.currentToolId.get())
 	return (
 		<div className="toolbar tools" onPointerDown={(e) => e.stopPropagation()}>
-			{TOOLS.filter((tool) => withEditTools || (tool.id !== 'note' && tool.id !== 'annotate')).map((tool) => (
+			{TOOLS.filter((tool) => withEditTools || (tool.id !== 'note' && tool.id !== 'annotate' && tool.id !== 'slap')).map((tool) => (
 				<button
 					key={tool.id}
 					title={`${tool.label} (${tool.key})`}

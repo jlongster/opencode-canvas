@@ -120,6 +120,69 @@ export function standPose(sway: number, bend: number, len = LENGTH): Vec[] {
 	return pts.map((p) => ({ x: p.x - foot, y: p.y }))
 }
 
+/** Smooth value noise, about -1..1: wobbles that never quite repeat. */
+export function noise(x: number) {
+	const i = Math.floor(x)
+	const f = x - i
+	const u = f * f * (3 - 2 * f)
+	return hash(i) + (hash(i + 1) - hash(i)) * u
+}
+
+function hash(i: number) {
+	const h = Math.sin(i * 127.1 + 311.7) * 43758.5453
+	return (h - Math.floor(h)) * 2 - 1
+}
+
+/** Two octaves of noise. */
+export function wobble(x: number) {
+	return noise(x) * 0.68 + noise(x * 2.3 + 17.3) * 0.32
+}
+
+export interface Writhe {
+	/** seconds (0 holds still) */
+	t: number
+	/** 0..1 how worked up it is */
+	intensity: number
+	/** 0..1 bunched up tight in folds */
+	clench: number
+	/** 0..1 straining up tall */
+	strain: number
+	/** 0..1 head pressed down, as if into its hands */
+	press: number
+}
+
+/**
+ * Thinking hard about something maddening: up on its planted tail like standPose, but writhing,
+ * with irregular twists running up the body, the head thrashing, the tail coiling and uncoiling;
+ * bunched into tight folds when it clenches, pulled tall when it strains, bowed over with its head
+ * pressed down.
+ */
+export function writhePose(w: Writhe): Vec[] {
+	const { t, intensity: I, clench, strain, press } = w
+	const coil = I * Math.max(0, 0.35 + 0.9 * wobble(t * 0.6 + 40)) * (1 - strain)
+	const lean = 0.3 * wobble(t * 0.5 + 7) * I + 1.15 * press
+	const thrash = I * 0.7 * wobble(t * 3.4 + 3) * (1 - press)
+	const bend = 0.85 + thrash + 2.2 * press - 1.0 * strain
+	const pts = grow(
+		{ x: 0, y: -TAIL_R - 5 * coil },
+		(s) => {
+			// the tail tip curled up off the ground
+			if (s < 0.13) return -coil * 1.6 * (1 - s / 0.13)
+			if (s < 0.27) return (Math.PI / 2) * smooth(span(s, 0.13, 0.27)) - lean * smooth(span(s, 0.13, 0.27)) * 0.5
+			const stem = Math.min(1, span(s, 0.27, 0.84))
+			// twists travelling up it, never the same twice
+			const twist = I * (1 - 0.7 * strain) * (0.95 * wobble(t * 2 - s * 3.1) + 0.5 * wobble(t * 3.8 - s * 5.3 + 9))
+			// clenched: folded tight, zig-zag
+			const fold = clench * 1.25 * Math.sin(s * 15 - t * 1.5)
+			let a = Math.PI / 2 - lean * 0.5 + twist * (0.4 + stem) + fold * stem
+			if (s > 0.84) a -= bend * smooth(span(s, 0.84, 1))
+			return a
+		},
+	)
+	const foot = pts[Math.round((POINTS - 1) * 0.75)].x
+	return pts.map((p) => ({ x: p.x - foot, y: p.y }))
+}
+
 /** Curled up asleep: a ring on the ground, the head tucked in at the bottom. `breath` -1..1. */
 export function curlPose(breath: number): Vec[] {
 	const turn = 2 * Math.PI - 0.95
@@ -439,13 +502,24 @@ export interface EyeState {
 	lid: number
 	/** 0..1 wide open (alarm), a bigger eye and smaller pupil */
 	wide: number
+	/** a furrowed lid: its edge sloping down toward the front, radians */
+	slant?: number
+	/** 0..1 shut tight (a hard straight line rather than a sleepy curve) */
+	squeeze?: number
+}
+
+/** Little strain marks by the head, flicking in and out (thinking hard), and a bead of sweat. */
+export interface Stress {
+	amount: number
+	t: number
+	color: string
 }
 
 /**
  * The Looper on screen (points in screen px, head first): a smooth tube in its colour with a
  * slightly darker underside, and its eye on the head. Returns the samples, for hit testing.
  */
-export function drawLooper(ctx: CanvasRenderingContext2D, pts: Vec[], eye: EyeState, pal: Palette, size = 1, shaded = true): Vec[] {
+export function drawLooper(ctx: CanvasRenderingContext2D, pts: Vec[], eye: EyeState, pal: Palette, size = 1, shaded = true, stress?: Stress): Vec[] {
 	const samples = catmullRom(pts, 4)
 	const path = tube(samples, size)
 	if (shaded) {
@@ -465,8 +539,50 @@ export function drawLooper(ctx: CanvasRenderingContext2D, pts: Vec[], eye: EyeSt
 	const head = samples[0]
 	const neck = samples[Math.min(samples.length - 1, 3)]
 	const fl = Math.hypot(head.x - neck.x, head.y - neck.y) || 1
-	drawEye(ctx, head, { x: (head.x - neck.x) / fl, y: (head.y - neck.y) / fl }, radius(0, size), eye, pal)
+	const fwd = { x: (head.x - neck.x) / fl, y: (head.y - neck.y) / fl }
+	drawEye(ctx, head, fwd, radius(0, size), eye, pal)
+	if (stress && stress.amount > 0.02) drawStress(ctx, head, fwd, radius(0, size), stress)
 	return samples
+}
+
+function drawStress(ctx: CanvasRenderingContext2D, head: Vec, fwd: Vec, r: number, s: Stress) {
+	const side = fwd.x < 0 ? -1 : 1
+	const a0 = ctx.globalAlpha
+	ctx.save()
+	ctx.strokeStyle = s.color
+	ctx.lineCap = 'round'
+	ctx.lineWidth = Math.max(1, r * 0.2)
+	// three ticks fanned over the back of the head
+	const cx = head.x - side * r * 0.2
+	const cy = head.y - r * 0.4
+	for (let i = 0; i < 3; i++) {
+		const on = Math.min(1, Math.max(0, (wobble(s.t * 2.6 + i * 7.1) + 0.15) * 3))
+		if (on <= 0.01) continue
+		const a = -Math.PI / 2 + side * (i - 1) * 0.55 - side * 0.35
+		const d0 = r * 1.55
+		const d1 = d0 + r * (0.55 + 0.25 * on)
+		ctx.globalAlpha = a0 * s.amount * on
+		ctx.beginPath()
+		ctx.moveTo(cx + Math.cos(a) * d0, cy + Math.sin(a) * d0)
+		ctx.lineTo(cx + Math.cos(a) * d1, cy + Math.sin(a) * d1)
+		ctx.stroke()
+	}
+	// a bead of sweat sliding down the front of the head now and then
+	const u = (s.t * 0.45) % 1
+	if (u < 0.6) {
+		const k = u / 0.6
+		const x = head.x + side * r * 1.05
+		const y = head.y - r * 0.5 + k * r * 1.1
+		const dr = r * 0.26
+		ctx.globalAlpha = a0 * s.amount * Math.min(1, (1 - k) * 3, k * 6) * 0.9
+		ctx.fillStyle = '#e0f2fe'
+		ctx.beginPath()
+		ctx.moveTo(x, y - dr * 2)
+		ctx.quadraticCurveTo(x + dr * 1.2, y + dr * 0.2, x, y + dr)
+		ctx.quadraticCurveTo(x - dr * 1.2, y + dr * 0.2, x, y - dr * 2)
+		ctx.fill()
+	}
+	ctx.restore()
 }
 
 function drawEye(ctx: CanvasRenderingContext2D, head: Vec, fwd: Vec, r: number, eye: EyeState, pal: Palette) {
@@ -489,20 +605,35 @@ function drawEye(ctx: CanvasRenderingContext2D, head: Vec, fwd: Vec, r: number, 
 	ctx.fill()
 	// The lid, in the body's colour, coming down from the top.
 	const lid = Math.min(1, Math.max(0, eye.lid))
+	const squeeze = eye.squeeze ?? 0
 	if (lid > 0.02) {
 		const edge = cy - er + 2 * er * lid
+		// sloping down toward the front: a furrowed brow
+		const tilt = Math.tan(eye.slant ?? 0) * er * (fwd.x < 0 ? -1 : 1)
 		ctx.fillStyle = pal.base
-		ctx.fillRect(cx - er - 1, cy - er - 1, er * 2 + 2, edge - (cy - er) + 1)
+		ctx.beginPath()
+		ctx.moveTo(cx - er - 1, cy - er - 1)
+		ctx.lineTo(cx + er + 1, cy - er - 1)
+		ctx.lineTo(cx + er + 1, edge + tilt)
+		ctx.lineTo(cx - er - 1, edge - tilt)
+		ctx.closePath()
+		ctx.fill()
 		ctx.strokeStyle = pal.edge
 		ctx.lineWidth = Math.max(0.9, r * (lid > 0.92 ? 0.2 : 0.14))
 		ctx.lineCap = 'round'
 		ctx.beginPath()
-		if (lid > 0.92) {
+		if (lid > 0.92 && squeeze > 0.5) {
+			// screwed shut: a hard line, a crease under it
+			ctx.moveTo(cx - er * 0.85, cy - tilt * 0.85)
+			ctx.lineTo(cx + er * 0.85, cy + tilt * 0.85)
+			ctx.moveTo(cx - er * 0.45, cy + er * 0.45 - tilt * 0.4)
+			ctx.lineTo(cx + er * 0.45, cy + er * 0.45 + tilt * 0.4)
+		} else if (lid > 0.92) {
 			// shut: a soft curve
 			ctx.arc(cx, cy - er * 0.3, er * 0.72, Math.PI * 0.2, Math.PI * 0.8)
 		} else {
-			ctx.moveTo(cx - er, edge)
-			ctx.lineTo(cx + er, edge)
+			ctx.moveTo(cx - er, edge - tilt)
+			ctx.lineTo(cx + er, edge + tilt)
 		}
 		ctx.stroke()
 	}

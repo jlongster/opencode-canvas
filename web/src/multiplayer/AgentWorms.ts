@@ -21,7 +21,10 @@ import {
 	place,
 	radius,
 	standPose,
+	wobble,
+	writhePose,
 	type EyeState,
+	type Writhe,
 	type Palette,
 } from './Looper'
 
@@ -47,6 +50,9 @@ const DIVE_MS = 520
 const WAKE_MS = 1100
 /** the quick recoil when it's clicked */
 const RECOIL_MS = 340
+/** thinking: how long a fit lasts (a clench, or its head pressed down), and the gap between fits */
+const FIT_MS = { clench: 1700, press: 1500 }
+const FIT_GAP_MS = 4200
 /** fidgeting while it sits about, and how often */
 const FIDGET_MS = 1500
 const FIDGET_EVERY_MS = 9000
@@ -146,6 +152,8 @@ interface Worm {
 	color: string
 	palette: Palette
 	tinyColor: string
+	/** strain marks by its head while it thinks hard */
+	stressColor: string
 	/** the ground under its middle, page space: where it is. The body is in screen px around it. */
 	root: Vec
 	goal: Vec | null
@@ -182,6 +190,11 @@ interface Worm {
 	fidget: 'peek' | 'scrunch'
 	fidgetAt: number
 	nextFidget: number
+	/** thinking hard: a fit of frustration (clenching up, or head pressed down) and when the next comes */
+	fit: { kind: 'clench' | 'press'; at: number } | null
+	nextFit: number
+	/** how it writhes this frame, while thinking (null when it isn't) */
+	writhe: (Writhe & { calm: boolean }) | null
 	/** when it last landed from a fall, while it rights itself (0 after) */
 	landedAt: number
 	/** the startle (from conjure.startled) the body last reacted to */
@@ -622,6 +635,7 @@ export class AgentWorms {
 			color: '',
 			palette: palette('#22d3ee'),
 			tinyColor: mixColor('#22d3ee', 255, 0.3),
+			stressColor: mixColor('#22d3ee', 255, 0.45),
 			root: { ...at },
 			goal: { ...at },
 			focus: null,
@@ -648,6 +662,9 @@ export class AgentWorms {
 			recoilAt: -1e9,
 			fidget: 'peek',
 			fidgetAt: -1e9,
+			fit: null,
+			nextFit: 0,
+			writhe: null,
 			nextFidget: now + 6000 + Math.random() * 8000,
 			startleSeen: -1e9,
 			landedAt: 0,
@@ -786,6 +803,7 @@ export class AgentWorms {
 			worm.color = peer.user.color
 			worm.palette = palette(worm.color)
 			worm.tinyColor = mixColor(worm.color, 255, 0.3)
+			worm.stressColor = mixColor(worm.color, 255, 0.45)
 			worm.label.style.background = worm.color
 			worm.el.style.setProperty('--agent-color', worm.color)
 		}
@@ -1031,6 +1049,7 @@ export class AgentWorms {
 
 		this.locomote(worm, now, elapsed, z)
 		this.maybeFidget(worm, now)
+		this.agonise(worm, now)
 		const body = worm.body
 		if (worm.mode === 'emerge' || worm.mode === 'dive') this.kinematic(worm, now)
 		else {
@@ -1189,6 +1208,52 @@ export class AgentWorms {
 		if (!this.stride(worm, walk, now, z)) worm.walk = null
 	}
 
+	/**
+	 * Thinking (busy, not talking): how it writhes. Worked up in waves, with calmer breaths between,
+	 * and now and then a fit: it clenches up tight and trembles, then strains up tall; or it bows
+	 * over with its head pressed down. Saying something meanwhile (the bubble is up), it keeps it
+	 * down to a mild squirm so the text stays easy to read.
+	 */
+	private agonise(worm: Worm, now: number) {
+		const still = this.reducedMotion.matches
+		const busy = worm.think > 0.5 && worm.talk < 0.3 && worm.mode === 'here' && !worm.walk && !worm.asleep
+		if (!busy) {
+			worm.writhe = null
+			worm.fit = null
+			worm.nextFit = 0
+			return
+		}
+		const calm = !!worm.bubble
+		if (still) {
+			// a single scrunched-up pose
+			worm.writhe = { t: 0, intensity: 0.7, clench: 0.25, strain: 0, press: 0.15, calm }
+			return
+		}
+		const t = now / 1000 + worm.seed
+		// waves of frustration, and calmer breaths
+		const intensity = Math.min(1, Math.max(0.12, 0.6 + 0.5 * wobble(t * 0.17 + 11)))
+		if (!worm.nextFit) worm.nextFit = now + 1500 + Math.random() * 2000
+		if (!calm && !worm.fit && now > worm.nextFit) {
+			worm.fit = { kind: Math.random() < 0.55 ? 'clench' : 'press', at: now }
+			worm.nextFit = now + FIT_GAP_MS * (0.6 + Math.random()) * (1.4 - intensity * 0.6)
+		}
+		let clench = 0
+		let strain = 0
+		let press = 0
+		const fit = worm.fit
+		if (fit) {
+			const u = (now - fit.at) / FIT_MS[fit.kind]
+			if (u >= 1 || calm) worm.fit = null
+			else if (fit.kind === 'clench') {
+				// bunching up tight, trembling; then straining up tall
+				clench = u < 0.55 ? smoothstep(u / 0.2) : 1 - smoothstep((u - 0.55) / 0.15)
+				strain = u < 0.55 ? 0 : Math.sin(Math.PI * Math.min(1, (u - 0.55) / 0.45))
+			} else press = Math.sin(Math.PI * u) ** 0.6
+		}
+		const k = calm ? 0.3 : 1
+		worm.writhe = { t, intensity: intensity * k, clench: clench * k, strain: strain * k, press: press * k, calm }
+	}
+
 	private maybeFidget(worm: Worm, now: number) {
 		const idle = worm.mode === 'here' && !worm.walk && !worm.asleep && !worm.calls && !worm.listening && worm.think < 0.1 && worm.talk < 0.05
 		if (!idle || this.reducedMotion.matches) {
@@ -1258,9 +1323,10 @@ export class AgentWorms {
 			const wave = Math.sin(t * 4.4)
 			return { shape: place(standPose(0.55 * wave, 0.15 - 0.35 * wave), f, gx), k: 260, weights: footWeights(4) }
 		}
-		if (worm.think > 0.5 && worm.talk < 0.3) {
-			// Thinking: up like a twig, swaying, its head making slow circles.
-			return { shape: place(standPose(0.3 * Math.sin(t * 1.3), 0.85 + 0.45 * Math.sin(t * 1.9)), f, gx), k: 200, weights: footWeights(4) }
+		if (worm.writhe) {
+			// Thinking: up on its tail, writhing in frustration (see agonise).
+			const w = worm.writhe
+			return { shape: place(writhePose(w), f, gx), k: w.calm ? 200 : 300, weights: footWeights(4), stretch: 1 + 0.1 * w.strain - 0.06 * w.clench }
 		}
 		if (worm.talk > 0.05) {
 			// Head up, bobbing along with the text as it types.
@@ -1352,6 +1418,8 @@ export class AgentWorms {
 		let look: Vec
 		let lid = 0.3
 		let wide = 0
+		let slant = 0
+		let squeeze = 0
 		if (worm.mode === 'carried') {
 			// Panicking: darting about, mostly down at the drop.
 			if (now > worm.nextDart) {
@@ -1383,11 +1451,21 @@ export class AgentWorms {
 			look = stare ? toward(stare) : { x: 0.3 * Math.sin(t * 2.2), y: 0.2 }
 			lid = 0
 			wide = 0.7
-		} else if (worm.think > 0.5 && worm.talk < 0.3) {
-			// up, rolling round
-			const a = -Math.PI / 2 + 1.15 * Math.sin(t * 0.85)
-			look = { x: Math.cos(a), y: Math.sin(a) }
-			lid = 0.1
+		} else if (worm.writhe) {
+			// Scrunched up and furrowed, rolling upward with strain and darting about; screwed shut in a fit.
+			const w = worm.writhe
+			if (now > worm.nextDart) {
+				worm.dart = { x: (Math.random() - 0.5) * 0.7, y: (Math.random() - 0.5) * 0.5 }
+				worm.nextDart = now + 180 + Math.random() * 520
+			}
+			const k = w.calm ? 0.3 : 1
+			// (kept below the half-shut lid, so it stays in sight)
+			look = { x: 0.7 * wobble(t * 0.8 + 5) + worm.dart.x * k, y: 0.15 + 0.4 * wobble(t * 0.6 + 21) + worm.dart.y * k * 0.5 }
+			const shut = Math.max(w.clench * (1 - w.strain), w.press)
+			lid = (w.calm ? 0.3 : 0.42 + 0.12 * w.intensity) + (1 - 0.42) * Math.min(1, shut * 1.6)
+			slant = w.calm ? 0.25 : 0.45
+			squeeze = shut > 0.4 ? 1 : 0
+			wide = 0
 		} else if (worm.talk > 0.05) {
 			look = { x: 0.55 * f + 0.3 * Math.sin(t * 3.1), y: -0.45 + 0.25 * Math.sin(t * 4.7) }
 			lid = 0.15 + 0.55 * Math.pow(Math.max(0, Math.sin(t * 2.3)), 10)
@@ -1421,6 +1499,8 @@ export class AgentWorms {
 		eye.look = { x: eye.look.x + (look.x - eye.look.x) * k, y: eye.look.y + (look.y - eye.look.y) * k }
 		eye.lid += (lid - eye.lid) * (still ? 1 : blink >= 0 && blink < 1 ? 1 : 1 - Math.exp(-elapsed / 70))
 		eye.wide += (wide - eye.wide) * (still ? 1 : 1 - Math.exp(-elapsed / 90))
+		eye.slant = (eye.slant ?? 0) + (slant - (eye.slant ?? 0)) * (still ? 1 : 1 - Math.exp(-elapsed / 120))
+		eye.squeeze = squeeze
 	}
 
 	private onScreen(p: Vec, margin: number) {
@@ -1654,6 +1734,16 @@ export class AgentWorms {
 		const sx = 1 + 0.14 * sq
 		const sy = 1 - 0.26 * sq
 		const pts = worm.body.p.map((p) => ({ x: ground.x + p.x * sx, y: ground.y + p.y * sy }))
+		const writhe = worm.writhe
+		if (writhe && !this.reducedMotion.matches) {
+			// a shiver over the writhing, stronger in a clench
+			const amp = (writhe.calm ? 0.15 : 0.35 + 0.9 * writhe.clench) * writhe.intensity
+			pts.forEach((p, i) => {
+				const f = i / (POINTS - 1)
+				p.x += Math.sin(now * 0.071 + i * 1.7) * amp * (1 - f * 0.7)
+				p.y += Math.sin(now * 0.063 + i * 2.3 + 1) * amp * 0.5 * (1 - f * 0.7)
+			})
+		}
 		if (worm.tinies.size) this.drawTinies(worm, now, ground, 'back')
 
 		const kinematic = worm.mode === 'emerge' || worm.mode === 'dive'
@@ -1692,7 +1782,8 @@ export class AgentWorms {
 			ctx.rect(-1e5, -1e5, 2e5, 1e5 + ground.y + 0.5)
 			ctx.clip()
 		}
-		const samples = drawLooper(ctx, pts, worm.eye, worm.palette)
+		const stress = writhe && !writhe.calm ? { amount: Math.min(1, 0.35 + writhe.intensity * 0.5 + writhe.clench + writhe.press), t: this.reducedMotion.matches ? 0 : now / 1000 + worm.seed, color: worm.stressColor } : undefined
+		const samples = drawLooper(ctx, pts, worm.eye, worm.palette, 1, true, stress)
 		if (kinematic) ctx.restore()
 		if (worm.tinies.size) this.drawTinies(worm, now, ground, 'front')
 
@@ -1785,6 +1876,11 @@ function along(path: Vec[], cum: number[], s: number): Vec {
 	while (i < cum.length - 1 && cum[i] < s) i++
 	const f = Math.min(1, (s - cum[i - 1]) / (cum[i] - cum[i - 1] || 1))
 	return { x: path[i - 1].x + (path[i].x - path[i - 1].x) * f, y: path[i - 1].y + (path[i].y - path[i - 1].y) * f }
+}
+
+function smoothstep(t: number) {
+	const u = Math.min(1, Math.max(0, t))
+	return u * u * (3 - 2 * u)
 }
 
 function easeInOutSine(t: number) {

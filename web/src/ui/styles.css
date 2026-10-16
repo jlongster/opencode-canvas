@@ -363,11 +363,7 @@ body,
 	margin-left: 6px;
 }
 
-/* creatures: a looper on a dark disc instead of initials (see LooperGlyph), and a slow pulsing ring, so they read as non-human */
-.avatar.agent {
-	background: #222228;
-}
-
+/* AI agents: a robot glyph instead of initials and a slow pulsing ring, so they read as non-human */
 .avatar.agent::after {
 	content: '';
 	position: absolute;
@@ -390,17 +386,13 @@ body,
 .agent-glyph {
 	display: block;
 	flex: none;
-}
-
-.agent-glyph-body {
-	fill: none;
-	stroke: currentColor;
-	stroke-width: 4.4;
-	stroke-linecap: round;
-}
-
-.agent-glyph-lid {
 	fill: currentColor;
+	stroke: currentColor;
+	stroke-width: 0;
+}
+
+.agent-glyph path[stroke-linecap] {
+	fill: none;
 }
 
 .agent-glyph-eye {
@@ -949,9 +941,7 @@ body,
 .agent-worm-speech {
 	position: absolute;
 	left: -22px;
-	bottom: 12px;
-	/* over the creature's head (see AgentWorms.placeLabels) */
-	translate: var(--hx, 0) var(--hy, 0);
+	bottom: 24px;
 	width: max-content;
 	max-width: 260px;
 	padding: 7px 12px 8px;
@@ -1029,15 +1019,14 @@ body,
 	cursor: grabbing !important;
 }
 
-/* under the creature, on the ground */
 .agent-worm.conjured .agent-worm-label {
-	left: -22px;
-	top: 12px;
+	left: 20px;
+	top: 14px;
 }
 
 .agent-worm.conjured .agent-worm-speech {
 	left: -26px;
-	bottom: 14px;
+	bottom: 36px;
 	max-width: min(420px, calc(100vw - 32px));
 	padding: 0;
 	pointer-events: auto;
@@ -1136,9 +1125,8 @@ body,
 .agent-worm-thought {
 	display: none;
 	position: absolute;
-	left: 6px;
-	bottom: 10px;
-	translate: var(--hx, 0) var(--hy, 0);
+	left: 10px;
+	bottom: 30px;
 	width: 0;
 	height: 0;
 	pointer-events: none;
@@ -1387,11 +1375,6 @@ body,
 
 .conjure-prompt-error {
 	color: #fca5a5;
-	font-size: 12px;
-}
-
-.conjure-prompt-ok {
-	color: #86efac;
 	font-size: 12px;
 }
 
@@ -3231,10 +3214,8 @@ label.seed-row:hover {
 .agent-worm-zzz {
 	display: none;
 	position: absolute;
-	left: 8px;
-	bottom: 8px;
-	/* rising off the curled-up body */
-	translate: var(--mx, 0) var(--my, 0);
+	left: 14px;
+	bottom: 26px;
 	pointer-events: none;
 	font: italic 700 13px/1 system-ui, sans-serif;
 	color: var(--agent-color, #22d3ee);
@@ -3666,9 +3647,8 @@ label.seed-row:hover {
 /* on a creature with something queued: its count, and a soft ring pulsing out from it */
 .agent-worm-attention {
 	position: absolute;
-	left: 8px;
-	bottom: 12px;
-	translate: var(--hx, 0) var(--hy, 0);
+	left: 14px;
+	bottom: 40px;
 	min-width: 22px;
 	height: 22px;
 	padding: 0 6px;
@@ -3696,10 +3676,9 @@ label.seed-row:hover {
 
 .agent-worm-call-ring {
 	position: absolute;
-	/* centred on the creature's body */
-	left: -30px;
-	top: -30px;
-	translate: var(--mx, 0) var(--my, 0);
+	/* centred on the butterfly, whose body reaches back left of its head (the anchor) */
+	left: -54px;
+	top: -54px;
 	width: 60px;
 	height: 60px;
 	box-sizing: border-box;
@@ -3920,4 +3899,9 @@ label.seed-row:hover {
 	.agent-worm-call-ring {
 		opacity: 0.6;
 	}
+}
+
+.conjure-prompt-ok {
+	color: #86efac;
+	font-size: 12px;
 }

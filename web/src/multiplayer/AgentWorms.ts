@@ -1709,6 +1709,8 @@ export class AgentWorms {
 	/**
 	 * Where the name tag hangs (under it, on the ground), and the head and middle of its body from
 	 * there (CSS --hx/--hy and --mx/--my), which the bubbles, thought cloud, zzz and ring follow.
+	 * Placed from this frame's camera (`ground`, its root on screen), so they move with the canvas
+	 * exactly; only how they sit on the body is eased, in the creature's own frame.
 	 */
 	private placeLabels(worm: Worm, pts: Vec[], ground: Vec, elapsed: number) {
 		const still = this.reducedMotion.matches
@@ -1718,23 +1720,23 @@ export class AgentWorms {
 		let bottom = -Infinity
 		pts.forEach((p, i) => {
 			const r = radius(i / (POINTS - 1))
-			lo = Math.min(lo, p.x)
-			hi = Math.max(hi, p.x)
-			top = Math.min(top, p.y - r)
-			bottom = Math.max(bottom, p.y + r)
+			lo = Math.min(lo, p.x - ground.x)
+			hi = Math.max(hi, p.x - ground.x)
+			top = Math.min(top, p.y - ground.y - r)
+			bottom = Math.max(bottom, p.y - ground.y + r)
 		})
 		const off = worm.mode === 'carried' || worm.mode === 'falling'
-		const want = { x: (lo + hi) / 2, y: off ? Math.max(ground.y, bottom) : ground.y }
+		const want = { x: (lo + hi) / 2, y: off ? Math.max(0, bottom) : 0 }
 		const k = (ms: number) => (still || !worm.anchor ? 1 : 1 - Math.exp(-elapsed / ms))
 		const a = worm.anchor ?? want
 		worm.anchor = { x: a.x + (want.x - a.x) * k(45), y: a.y + (want.y - a.y) * k(45) }
 		const anchor = worm.anchor
-		const head = { x: pts[0].x - anchor.x, y: Math.min(pts[0].y, ground.y) - HEAD_R - anchor.y }
+		const head = { x: pts[0].x - ground.x - anchor.x, y: Math.min(pts[0].y - ground.y, 0) - HEAD_R - anchor.y }
 		// The bubbles follow the head, but not every little bob of it.
 		worm.headAt = { x: worm.headAt.x + (head.x - worm.headAt.x) * k(110), y: worm.headAt.y + (head.y - worm.headAt.y) * k(110) }
-		worm.middleAt = { x: (lo + hi) / 2 - anchor.x, y: (Math.max(top, ground.y - 90) + Math.min(bottom, ground.y)) / 2 - anchor.y }
+		worm.middleAt = { x: (lo + hi) / 2 - anchor.x, y: (Math.max(top, -90) + Math.min(bottom, 0)) / 2 - anchor.y }
 		const el = worm.el
-		el.style.transform = `translate(${anchor.x}px, ${anchor.y}px)`
+		el.style.transform = `translate(${ground.x + anchor.x}px, ${ground.y + anchor.y}px)`
 		el.style.setProperty('--hx', `${worm.headAt.x.toFixed(1)}px`)
 		el.style.setProperty('--hy', `${worm.headAt.y.toFixed(1)}px`)
 		el.style.setProperty('--mx', `${worm.middleAt.x.toFixed(1)}px`)

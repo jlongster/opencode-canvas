@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { basename, extname, join, resolve } from 'node:path'
 import * as Y from 'yjs'
 import type {
-	AttentionAction, Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, ServerEvent, Session,
+	Annotation, AnnotationView, AttentionAction, Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, ServerEvent, Session,
 	SessionView,
 } from '../shared/types'
 import { computeLayout, LAYOUT } from '../web/src/editor/layout'
@@ -852,6 +852,143 @@ function readNotes(doc: Y.Doc): Note[] {
 	return notes.sort((a, b) => a.createdAt - b.createdAt)
 }
 
+/** Annotations in a room document (map "annotations": id -> Y.Map, see Annotation in shared/types.ts). */
+function readAnnotations(doc: Y.Doc): Annotation[] {
+	const list: Annotation[] = []
+	for (const [id, a] of doc.getMap<Y.Map<unknown>>('annotations')) {
+		if (!(a instanceof Y.Map)) continue
+		const num = (key: string) => Number(a.get(key) ?? 0) || 0
+		const updatedAt = num('updatedAt')
+		list.push({
+			id,
+			itemId: String(a.get('itemId') ?? ''),
+			x: num('x'),
+			y: num('y'),
+			ox: num('ox'),
+			oy: num('oy'),
+			...(num('len') ? { len: num('len') } : {}),
+			text: String(a.get('text') ?? ''),
+			author: String(a.get('author') ?? ''),
+			color: String(a.get('color') ?? ''),
+			createdAt: num('createdAt'),
+			...(updatedAt ? { updatedAt } : {}),
+		})
+	}
+	return list.sort((a, b) => a.createdAt - b.createdAt)
+}
+
+/**
+ * A canvas's annotations resolved against their items, oldest first, optionally only those on one
+ * session's items or one item. Annotations on deleted items are left out (they come back with an undo).
+ */
+async function annotationViews(canvasId: string, filter: { sessionId?: string; itemId?: string } = {}): Promise<AnnotationView[]> {
+	const canvas = getCanvas(canvasId)
+	const views: AnnotationView[] = []
+	for (const a of await readRoomDoc(`canvas-${canvas.id}`, readAnnotations)) {
+		const item = db.items.get(a.itemId)
+		if (!item || item.canvasId !== canvas.id) continue
+		if (filter.itemId && item.id !== filter.itemId) continue
+		if (filter.sessionId && item.sessionId !== filter.sessionId) continue
+		const x = clamp01(a.x)
+		const y = clamp01(a.y)
+		const sessionTitle = db.sessions.get(sessionKey(canvas.id, item.sessionId))?.title
+		views.push({
+			id: a.id,
+			text: a.text,
+			author: a.author,
+			createdAt: a.createdAt,
+			...(a.updatedAt ? { updatedAt: a.updatedAt } : {}),
+			item: {
+				id: item.id,
+				kind: item.kind,
+				name: item.name,
+				...(item.title ? { title: item.title } : {}),
+				...(item.group ? { group: item.group } : {}),
+				sessionId: item.sessionId,
+				...(sessionTitle ? { sessionTitle } : {}),
+				width: item.width,
+				height: item.height,
+				url: /^https?:/.test(item.src) ? item.src : MEDIA_ORIGIN + item.src,
+				link: `${WEB_BASE}/c/${canvas.id}#item=${encodeURIComponent(item.id)}`,
+			},
+			anchor: { x: round4(x), y: round4(y), px: Math.round(x * item.width), py: Math.round(y * item.height) },
+		})
+	}
+	return views
+}
+
+/** A bold font for ffmpeg's drawtext, if fontconfig can find one (the number is left off otherwise). */
+let markFont: Promise<string | null> | null = null
+function findMarkFont() {
+	markFont ??= Bun.which('fc-match')
+		? run(['fc-match', '-f', '%{file}', 'sans:bold']).then((f) => (f.trim() && existsSync(f.trim()) ? f.trim() : null), () => null)
+		: Promise.resolve(null)
+	return markFont
+}
+
+/**
+ * GET /api/canvases/:cid/annotations/:id/image: the annotated image (a video's poster frame) as a
+ * PNG, with a red ring around the anchor and the annotation's number on its item beside it.
+ */
+async function markedImage(canvasId: string, annotationId: string): Promise<Response> {
+	if (!HAS_FFMPEG) throw new HttpError(501, 'marking images needs ffmpeg on the canvas server')
+	const all = await annotationViews(canvasId)
+	const a = all.find((v) => v.id === annotationId)
+	if (!a) throw new HttpError(404, `no annotation ${annotationId} on this canvas`)
+	const item = getItem(a.item.id)
+	if (item.kind === 'html') throw new HttpError(400, 'HTML items have no image to mark; use the anchor\'s px/py on the page')
+	const src = item.kind === 'video' ? item.thumb : item.src
+	if (/^https?:/.test(src)) throw new HttpError(400, 'this item\'s media is not stored on the canvas server')
+	const input = join(MEDIA_DIR, basename(src))
+	const size = await probe(input)
+	const number = all.filter((v) => v.item.id === item.id).findIndex((v) => v.id === a.id) + 1
+	const cx = Math.round(a.anchor.x * size.width)
+	const cy = Math.round(a.anchor.y * size.height)
+	const r = Math.max(12, Math.round(Math.min(size.width, size.height) * 0.035))
+	const stroke = Math.max(3, Math.round(r / 4))
+	const half = r + stroke + 3
+	const side = half * 2
+	// The ring: red, with a thin white edge so it shows on any background.
+	const ring = new Uint8Array(side * side * 4)
+	for (let py = 0; py < side; py++) {
+		for (let px = 0; px < side; px++) {
+			const off = Math.abs(Math.hypot(px + 0.5 - half, py + 0.5 - half) - r)
+			const red = Math.min(1, Math.max(0, stroke / 2 + 0.5 - off))
+			const edge = Math.min(1, Math.max(0, stroke / 2 + 2 - off))
+			const i = (py * side + px) * 4
+			ring[i] = 255
+			ring[i + 1] = ring[i + 2] = Math.round(255 * (1 - red))
+			ring[i + 3] = Math.round(255 * edge)
+		}
+	}
+	const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+	const ringFile = join(DATA_DIR, `.mark-${stamp}.rgba`)
+	const output = join(DATA_DIR, `.mark-${stamp}.png`)
+	try {
+		await Bun.write(ringFile, ring)
+		const font = await findMarkFont()
+		const fontSize = Math.max(14, Math.round(r * 1.1))
+		const text = font
+			? `,drawtext=fontfile='${font.replace(/'/g, '')}':text='${number}':fontsize=${fontSize}:fontcolor=white:box=1:boxcolor=red:` +
+				`boxborderw=${Math.round(fontSize / 4)}:x='min(max(0,${cx + half}),w-tw)':y='min(max(0,${cy - half - fontSize}),h-th)'`
+			: ''
+		await run([
+			'ffmpeg', '-y', '-v', 'error', '-i', input,
+			'-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${side}x${side}`, '-i', ringFile,
+			'-filter_complex', `[0:v][1:v]overlay=${cx - half}:${cy - half}:format=auto${text}`,
+			'-frames:v', '1', output,
+		])
+		const bytes = await Bun.file(output).arrayBuffer()
+		return new Response(bytes, { headers: { 'content-type': 'image/png', 'cache-control': 'no-store' } })
+	} finally {
+		await rm(ringFile, { force: true })
+		await rm(output, { force: true })
+	}
+}
+
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
+const round4 = (v: number) => Math.round(v * 10000) / 10000
+
 /** Everyone's selection on a canvas, resolved into items, session frames and notes. */
 async function resolveSelections(canvasId: string): Promise<ResolvedSelection[]> {
 	const people = presence(canvasId)
@@ -889,7 +1026,7 @@ const API_INDEX = {
 		'$OPENCODE_SESSION_ID as the session id; the same session can post to several canvases.',
 	mcp:
 		'This server is also an MCP server (Streamable HTTP) at /mcp (or /canvas/mcp): tools only, for everything ' +
-		'below: list_canvases, get_canvas, create_canvas, get_selection, get_presence, list_notes, find_items, ' +
+		'below: list_canvases, get_canvas, create_canvas, get_selection, get_presence, list_notes, list_annotations, find_items, ' +
 		'get_item, post_item, update_item, delete_item, restore, plus say and highlight, which queue things for ' +
 		'people to look at on your session\'s creature. OpenCode config: ' +
 		`{"mcp": {"canvas": {"type": "remote", "url": "http://localhost:${PORT}/mcp"}}}. Pass your $OPENCODE_SESSION_ID ` +
@@ -932,6 +1069,14 @@ const API_INDEX = {
 			'selection holds item ids as they are, "frame:<sessionId>" for session frames and "note:<noteId>" for sticky notes; ' +
 			'cursor and view are in page coordinates. [] when nobody is there',
 		'GET /api/canvases/:cid/notes': 'The canvas\'s sticky notes: [{"id", "text", "author", "color", "x", "y", "createdAt"}]',
+		'GET /api/canvases/:cid/annotations':
+			'The user\'s annotations: comments pinned to a spot on an item, oldest first. Optional ?sessionId= (only that ' +
+			'session\'s items) and ?itemId=. Each: {"id", "text", "author", "createdAt", "item": {"id", "kind", "name", "title", ' +
+			'"group", "sessionId", "sessionTitle", "width", "height", "url" (the original file), "link"}, "anchor": {"x", "y" ' +
+			'(0..1 across the item), "px", "py" (pixels in the original image: x × width, y × height)}}',
+		'GET /api/canvases/:cid/annotations/:id/image':
+			'The annotated image (or a video\'s poster frame) as a PNG with the spot marked by a red circle and the ' +
+			'annotation\'s number on that item',
 		'GET /api/canvases/:cid/selection':
 			'What each person on the canvas has selected, resolved: {"users": [{"user", "selection", "items" (full items ' +
 			'with absolute "url"/"thumbUrl"), "sessions" (with "itemCount"), "notes", "missing"}]}. Use this to answer ' +
@@ -1195,6 +1340,15 @@ async function handle(req: Request): Promise<Response> {
 
 	// ---- live room state: presence, notes, selections ----
 
+	m = /^\/api\/canvases\/([^/]+)\/annotations$/.exec(p)
+	if (m && method === 'GET') {
+		const q = new URL(req.url).searchParams
+		return json(await annotationViews(decodeURIComponent(m[1]), { sessionId: q.get('sessionId') ?? undefined, itemId: q.get('itemId') ?? undefined }))
+	}
+
+	m = /^\/api\/canvases\/([^/]+)\/annotations\/([^/]+)\/image$/.exec(p)
+	if (m && method === 'GET') return markedImage(decodeURIComponent(m[1]), decodeURIComponent(m[2]))
+
 	m = /^\/api\/canvases\/([^/]+)\/(presence|notes|selection)$/.exec(p)
 	if (m && method === 'GET') {
 		const canvas = getCanvas(decodeURIComponent(m[1]))
@@ -1352,6 +1506,7 @@ const mcp = createCanvasMcp({
 	canvasData: (id) => canvasData(getCanvas(id)),
 	sessionViews: (canvasId) => canvasSessions(canvasId).sort((a, b) => a.createdAt - b.createdAt).map(sessionView),
 	notes: (canvasId) => readRoomDoc(`canvas-${canvasId}`, readNotes),
+	annotations: annotationViews,
 	presence,
 	selections: resolveSelections,
 	createCanvas: (title) => createCanvas(canvasTitle(title)),

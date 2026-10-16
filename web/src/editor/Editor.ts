@@ -5,6 +5,7 @@ import { Deletions } from './Deletions'
 import { computeLayout, frameTitleBox, LAYOUT, type GroupLayout, type Layout } from './layout'
 import { noteKey, parseSelectionId, type SelectionKind } from './selection'
 import { StateNode } from './StateNode'
+import { AnnotateTool } from './tools/AnnotateTool'
 import { HandTool } from './tools/HandTool'
 import { NoteTool } from './tools/NoteTool'
 import { SelectTool } from './tools/SelectTool'
@@ -42,10 +43,22 @@ export const GROUP_OUTLINE_PADDING = 14
 class Root extends StateNode {
 	static override id = 'root'
 	static override initial = 'select'
-	static override children = () => [SelectTool, HandTool, NoteTool]
+	static override children = () => [SelectTool, HandTool, NoteTool, AnnotateTool]
 }
 
-export type ToolId = 'select' | 'hand' | 'note'
+export type ToolId = 'select' | 'hand' | 'note' | 'annotate'
+
+/**
+ * Drawing a new annotation (set by SharedAnnotations on edit links): the annotate tool starts a
+ * draft at a spot on an item, moves its line's end with the pointer, then opens its comment box.
+ */
+export interface AnnotationDrafts {
+	begin(itemId: string, anchor: Vec): void
+	move(point: Vec): void
+	/** release: the comment box opens at the line's end (page point) */
+	finish(point: Vec): void
+	cancel(): void
+}
 
 /** A link in an HTML item: its URL and rects in the item's document px (see render/HtmlLinks.ts). */
 export interface HtmlLink {
@@ -130,6 +143,8 @@ export class Editor {
 	readonly inputs = new Inputs()
 	/** Set when sticky notes are available (edit role); the note tool calls it to drop a note. */
 	createNote: ((point: Vec) => void) | null = null
+	/** Set when annotations can be added (edit role); see AnnotationDrafts. */
+	annotationDrafts: AnnotationDrafts | null = null
 	/** Set by the renderer: the link in an HTML item at a screen point, if any (ignoring what's on top). */
 	linkAt: ((point: Vec) => HtmlLink | null) | null = null
 	readonly deletions = new Deletions(this)
@@ -270,7 +285,7 @@ export class Editor {
 	/** The cursor the current tool shows at rest (used after a space-pan ends). */
 	private restingCursor() {
 		const tool = this.currentToolId.get()
-		return tool === 'hand' ? 'grab' : tool === 'note' ? 'crosshair' : 'default'
+		return tool === 'hand' ? 'grab' : tool === 'note' || tool === 'annotate' ? 'crosshair' : 'default'
 	}
 
 	// ---------- hit testing ----------
@@ -958,6 +973,7 @@ export class Editor {
 		if (!mod && !e.altKey && (e.key === 'v' || e.key === 'V')) return this.setCurrentTool('select')
 		if (!mod && !e.altKey && (e.key === 'h' || e.key === 'H')) return this.setCurrentTool('hand')
 		if (!mod && !e.altKey && (e.key === 'n' || e.key === 'N') && this.createNote) return this.setCurrentTool('note')
+		if (!mod && !e.altKey && (e.key === 'a' || e.key === 'A') && this.annotationDrafts) return this.setCurrentTool('annotate')
 
 		this.dispatch({ name: 'key_down', key: e.key, code: e.code, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey })
 	}

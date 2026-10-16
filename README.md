@@ -24,6 +24,9 @@ On a canvas you can then:
 - Let agents **post** to it, over MCP or HTTP (below), and point you at things: their `say` and
   `highlight` steps wait on the session's creature (a badge, and "N things want your attention" at
   the top) until you play them through; stepping past one marks it done for everyone.
+- **Annotate** (toolbar → comment tool, or `A`): press on a spot of an image and drag, then type a
+  comment. Everyone sees it live, and agents read it with the spot's pixel coordinates in the
+  original image (`list_annotations`), so you can give feedback on exactly that spot.
 
 ## Options
 
@@ -85,7 +88,8 @@ ln -s "$PWD/skill/canvas" ~/.config/opencode/skills/canvas
 
 **The MCP server**: the canvas server is an MCP server (Streamable HTTP) at
 `http://localhost:4545/mcp`, with tools to list and create canvases, post, update and delete items,
-see what people have selected, read sticky notes, and `say` / `highlight` to queue things for you to
+see what people have selected, read sticky notes and annotations (comments pinned to a spot of an
+image, with pixel coordinates: `list_annotations`), and `say` / `highlight` to queue things for you to
 look at on the session's creature. It's only a tool provider: agents using it don't appear on the
 canvas themselves. In your OpenCode config:
 

@@ -85,6 +85,55 @@ export interface Note {
 	createdAt: number
 }
 
+/**
+ * An annotation as stored in a canvas's room document (map "annotations": id -> Y.Map of these
+ * fields): a comment pinned to a spot on an item. The anchor (x, y) is normalized to the item
+ * (0..1 across its width and height), so it stays on the same spot of the image however the
+ * layout sizes the item. The comment card sits at anchor + (ox, oy) × the item's width on the page.
+ */
+export interface Annotation {
+	id: string
+	itemId: string
+	x: number
+	y: number
+	ox: number
+	oy: number
+	/** the line's on-screen length (px) when it was drawn or last moved: zoomed in, it's never drawn longer */
+	len?: number
+	text: string
+	author: string
+	color: string
+	createdAt: number
+	updatedAt?: number
+}
+
+/** An annotation resolved against its item, as GET /api/canvases/:cid/annotations and list_annotations return it. */
+export interface AnnotationView {
+	id: string
+	text: string
+	author: string
+	createdAt: number
+	updatedAt?: number
+	item: {
+		id: string
+		kind: MediaKind
+		name: string
+		title?: string
+		group?: string
+		sessionId: string
+		sessionTitle?: string
+		/** pixel size of the original file (CSS px for html) */
+		width: number
+		height: number
+		/** absolute URL of the original file */
+		url: string
+		/** the item on the canvas */
+		link: string
+	}
+	/** the spot it points at: normalized (0..1) and in pixels of the original image (px = x × width) */
+	anchor: { x: number; y: number; px: number; py: number }
+}
+
 /** Someone on a canvas right now, from the room's Yjs awareness (GET /api/canvases/:cid/presence). */
 export interface PresenceEntry {
 	clientId: number

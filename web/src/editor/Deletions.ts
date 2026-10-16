@@ -9,6 +9,18 @@ export interface NoteSnapshot {
 	text: string
 }
 
+/** A deleted annotation's fields, to put it back (see SharedAnnotations). */
+export interface AnnotationSnapshot {
+	id: string
+	fields: Record<string, unknown>
+}
+
+/** The annotations document (edit role only). */
+export interface AnnotationStore {
+	remove(ids: string[]): AnnotationSnapshot[]
+	restore(snapshots: AnnotationSnapshot[]): void
+}
+
 /** Server side of deleting: items and sessions go to the server's trash and can be restored from it. */
 export interface DeleteBackend {
 	deleteItem(id: string): Promise<unknown>
@@ -26,6 +38,7 @@ interface Batch {
 	itemIds: string[]
 	sessionIds: string[]
 	notes: NoteSnapshot[]
+	annotations?: AnnotationSnapshot[]
 }
 
 export interface Toast {
@@ -45,6 +58,7 @@ const TOAST_MS = 5000
 export class Deletions {
 	backend: DeleteBackend | null = null
 	notes: NoteStore | null = null
+	annotations: AnnotationStore | null = null
 	readonly toast = atom<Toast | null>('toast', null)
 	private stack: Batch[] = []
 	private toastTimer = 0
@@ -97,12 +111,29 @@ export class Deletions {
 		)
 	}
 
+	/** Deletes annotations (their × button) as one undoable batch. */
+	deleteAnnotations(ids: string[]) {
+		if (!this.backend || !this.annotations || !ids.length) return
+		const annotations = this.annotations.remove(ids)
+		if (!annotations.length) return
+		this.stack.push({ itemIds: [], sessionIds: [], notes: [], annotations })
+		if (this.stack.length > MAX_UNDO) this.stack.shift()
+		this.showToast(`Deleted ${annotations.length === 1 ? 'comment' : `${annotations.length} comments`}`, true)
+	}
+
 	/** Restores the most recent delete batch. */
 	undo() {
 		const { backend } = this
 		if (!backend) return
 		const batch = this.stack.pop()
 		if (!batch) return
+		if (batch.annotations?.length) {
+			this.annotations?.restore(batch.annotations)
+			if (!batch.itemIds.length && !batch.sessionIds.length && !batch.notes.length) {
+				this.showToast(`Restored ${batch.annotations.length === 1 ? 'comment' : `${batch.annotations.length} comments`}`, false)
+				return
+			}
+		}
 		if (batch.notes.length) this.notes?.restore(batch.notes)
 		if (batch.itemIds.length || batch.sessionIds.length) {
 			backend.restore({ itemIds: batch.itemIds, sessionIds: batch.sessionIds }).catch((e) => {

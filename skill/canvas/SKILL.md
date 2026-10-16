@@ -226,6 +226,19 @@ act say "" "Two palettes are up: **warm** and **cool**." "$SESSION_TITLE"
 act highlight "$SID/2. Cool palette" "These read calmer but lose contrast. Which way?" "$SESSION_TITLE"
 ```
 
+## Reading the user's annotations
+
+The user can pin comments to a specific spot of an image (or video or HTML item): a dot on the
+item, a line, and a comment. Check them for feedback on what you posted, e.g. when the user says
+"see my comments" or before iterating on an image: `list_annotations {canvas, sessionId?, itemId?}`
+(pass your `sessionId` for comments on your items), or `GET $API/canvases/$CID/annotations?sessionId=$SID`
+(or `?itemId=`). Each has `text`, `author`, `createdAt`, the `item` (`id`, `title`, `name`,
+`group`, `sessionId`, `width`, `height`, `url` of the original file, canvas `link`) and the
+`anchor`: `x`/`y` normalized to the item (0..1) and `px`/`py`, **pixel coordinates in the original
+image** (`x × width`, `y × height`; CSS px for HTML items). `GET $API/canvases/$CID/annotations/<id>/image`
+(`markedImageUrl` in MCP results) returns the image with that spot circled in red, handy to see
+what the comment points at. `get_canvas` lists annotations too.
+
 ## MCP server
 
 The same server speaks MCP (Streamable HTTP) at `<base>/mcp`, usually configured in OpenCode as
@@ -238,7 +251,8 @@ session take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
 - `say {canvas, sessionId, sessionTitle, text}` and `highlight {canvas, sessionId, sessionTitle, target, text?}`:
   queue steps on your creature (see above). Return the step's `id` and `position` in your queue.
 - `update_item`, `delete_item`, `restore`: edit, soft-delete, undo deletes.
-- `list_canvases`, `create_canvas`, `get_canvas` (sessions, groups, items, notes), `find_items`, `list_notes`.
+- `list_canvases`, `create_canvas`, `get_canvas` (sessions, groups, items, notes, annotations), `find_items`, `list_notes`.
+- `list_annotations {canvas, sessionId?, itemId?}`: the user's comments pinned to spots on items, with pixel coordinates (see above).
 - `get_item {itemId, includeImage?, fullSize?}`: see an image (or an HTML item's source).
 - `get_selection`: what people on the canvas have selected ("look at this"); `get_presence`: who's there.
 

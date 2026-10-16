@@ -24,7 +24,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { LATEST_PROTOCOL_VERSION, type CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import type {
-	AttentionAction, Canvas, CanvasData, CanvasSummary, Item, Note, PresenceEntry, ResolvedSelection, Session, SessionView,
+	AnnotationView, AttentionAction, Canvas, CanvasData, CanvasSummary, Item, Note, PresenceEntry, ResolvedSelection, Session, SessionView,
 } from '../shared/types'
 import { ATTENTION_TEXT_MAX } from './attention'
 
@@ -36,6 +36,8 @@ export interface CanvasMcpDeps {
 	canvasData(id: string): CanvasData
 	sessionViews(canvasId: string): SessionView[]
 	notes(canvasId: string): Promise<Note[]>
+	/** annotations resolved against their items (see GET /api/canvases/:cid/annotations) */
+	annotations(canvasId: string, filter?: { sessionId?: string; itemId?: string }): Promise<AnnotationView[]>
 	presence(canvasId: string): PresenceEntry[]
 	selections(canvasId: string): Promise<ResolvedSelection[]>
 	createCanvas(title?: string): Canvas
@@ -99,6 +101,11 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 
 	const itemDetail = (item: Item) => ({
 		...itemSummary(item), canvasId: item.canvasId, sessionId: item.sessionId, createdAt: item.createdAt, thumbUrl: mediaUrl(item.thumb),
+	})
+
+	/** An annotation as get_canvas lists it: what it says and where, with the item referred to by id. */
+	const annotationSummary = (a: AnnotationView) => ({
+		id: a.id, text: a.text, author: a.author, itemId: a.item.id, anchor: a.anchor, createdAt: a.createdAt,
 	})
 
 	const noteSummary = (n: Note) => ({ id: n.id, text: n.text, author: n.author, color: n.color, x: Math.round(n.x), y: Math.round(n.y) })
@@ -239,7 +246,9 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'character beside the frame). To get the user\'s attention, say (a Markdown message) and highlight (point at an ' +
 					'item, group, frame or note) queue steps on your creature, which the user plays through when they look; ' +
 					'queue them in the order they should be read. Pass sessionId and sessionTitle (your OpenCode session\'s ' +
-					'title) on every post_item, say and highlight.',
+					'title) on every post_item, say and highlight. The user gives feedback on a specific spot of an image with ' +
+					'annotations: check list_annotations (filter by your sessionId) for comments on what you posted; their ' +
+					'px/py are pixel coordinates in the original image.',
 			},
 		)
 
@@ -263,13 +272,14 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			{
 				description:
 					'Everything on one canvas: its sessions (one frame per OpenCode session), each with its groups and their items ' +
-					'(id, name, title, kind, size, media url), plus its sticky notes.',
+					'(id, name, title, kind, size, media url), plus its sticky notes and annotations (comments pinned to a spot ' +
+					'on an item; see list_annotations).',
 				inputSchema: { canvas: canvasArg },
 			},
 			tool(async ({ canvas }: { canvas: string }) => {
 				const id = canvasId(canvas)
 				const data = deps.canvasData(id)
-				const [sessions, notes] = [deps.sessionViews(id), await deps.notes(id)]
+				const [sessions, notes, annotations] = [deps.sessionViews(id), await deps.notes(id), await deps.annotations(id)]
 				return ok({
 					id,
 					title: data.canvas.title,
@@ -280,6 +290,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 						groups: s.groups.map((g) => ({ name: g.name, items: g.items.map((i) => itemSummary(i)) })),
 					})),
 					notes: notes.map(noteSummary),
+					annotations: annotations.map(annotationSummary),
 				})
 			}),
 		)
@@ -414,6 +425,28 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				inputSchema: { canvas: canvasArg },
 			},
 			tool(async ({ canvas }: { canvas: string }) => ok((await deps.notes(canvasId(canvas))).map(noteSummary))),
+		)
+
+		server.registerTool(
+			'list_annotations',
+			{
+				description:
+					'The user\'s annotations: comments pinned to a spot on an item (an image, video or HTML page), oldest first. ' +
+					'Each has id, text, author, createdAt, the item (id, title, name, group, sessionId, kind, width, height, url ' +
+					'of the original file, canvas link) and the anchor: x/y normalized to the item (0..1) and px/py, pixel ' +
+					'coordinates in the original image (x × width, y × height). Filter by sessionId (yours, for feedback on what ' +
+					'you posted) or itemId. markedImageUrl is the image with the spot circled.',
+				inputSchema: {
+					canvas: canvasArg,
+					sessionId: z.string().optional().describe('Only annotations on this session\'s items'),
+					itemId: z.string().optional().describe('Only annotations on this item'),
+				},
+			},
+			tool(async ({ canvas, sessionId, itemId }: { canvas: string; sessionId?: string; itemId?: string }) => {
+				const id = canvasId(canvas)
+				const list = await deps.annotations(id, { sessionId: sessionId?.trim() || undefined, itemId: itemId?.trim() || undefined })
+				return ok(list.map((a) => ({ ...a, ...(a.item.kind !== 'html' ? { markedImageUrl: `${deps.mediaOrigin}/api/canvases/${id}/annotations/${a.id}/image` } : {}) })))
+			}),
 		)
 
 		server.registerTool(

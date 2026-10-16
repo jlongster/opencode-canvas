@@ -9,6 +9,7 @@ import { Attention } from '../multiplayer/Attention'
 import { Conjure } from '../multiplayer/Conjure'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
+import { SharedAnnotations } from '../multiplayer/SharedAnnotations'
 import { SharedNotes } from '../multiplayer/SharedNotes'
 import { Summon } from '../multiplayer/Summon'
 import { AttentionTray, Walkthrough } from './Attention'
@@ -21,7 +22,7 @@ import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
 import { API_BASE } from '../base'
 
-/** The last used select/hand tool is remembered across reloads; the one-shot note tool never is. */
+/** The last used select/hand tool is remembered across reloads; the note and annotate tools never are. */
 const TOOL_KEY = 'canvas.tool'
 
 function loadTool(): ToolId {
@@ -157,12 +158,13 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					live = new Presence(editor, `canvas-${c.id}`, link.role === 'view')
 					const p = live
 					const notes = new SharedNotes(overlayRef.current!, editor, p, link.role)
+					const annotations = new SharedAnnotations(overlayRef.current!, editor, p, link.role)
 					// Edit links can talk to conjured worms; view links just watch them.
 					const spells = new Conjure(editor, p, c.id, link.role === 'edit', conjured, () => canvasTitle)
 					// Edit links mark what they step through done; view links only look.
 					const calls = new Attention(editor, spells, c.id, link.role === 'edit', queued)
 					const cursors = new PeerCursors(overlayRef.current!, editor, p, spells, calls)
-					disposers.push(() => cursors.destroy(), () => calls.destroy(), () => spells.destroy(), () => notes.destroy(), () => p.destroy())
+					disposers.push(() => cursors.destroy(), () => calls.destroy(), () => spells.destroy(), () => notes.destroy(), () => annotations.destroy(), () => p.destroy())
 					if (link.role === 'edit') {
 						const summon = new Summon(editor, spells, container)
 						disposers.push(() => summon.destroy())
@@ -205,7 +207,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 				<canvas ref={canvasRef} className="canvas" />
 				<div ref={overlayRef} className="overlay" />
 			</div>
-			<ToolPicker editor={editor} withNotes={!!presence && role === 'edit'} />
+			<ToolPicker editor={editor} withEditTools={!!presence && role === 'edit'} />
 			{presence && <FollowIndicator presence={presence} />}
 			{presence && <CursorChat editor={editor} presence={presence} />}
 			{conjure?.canPrompt && <ConjurePrompt editor={editor} conjure={conjure} />}
@@ -327,6 +329,18 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 		),
 	},
 	{
+		id: 'annotate',
+		label: 'Comment on a spot',
+		key: 'A',
+		icon: (
+			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+				<circle cx="5" cy="19" r="2" fill="currentColor" />
+				<path d="M6.5 17.5L10 14" />
+				<path d="M10 4h10a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 20 13h-7l-3 2.5V13a1.5 1.5 0 0 1-1.5-1.5v-6A1.5 1.5 0 0 1 10 4z" />
+			</svg>
+		),
+	},
+	{
 		id: 'hand',
 		label: 'Hand',
 		key: 'H',
@@ -339,11 +353,11 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 	},
 ]
 
-function ToolPicker({ editor, withNotes }: { editor: Editor; withNotes: boolean }) {
+function ToolPicker({ editor, withEditTools }: { editor: Editor; withEditTools: boolean }) {
 	const current = useValue(() => editor.currentToolId.get())
 	return (
 		<div className="toolbar tools" onPointerDown={(e) => e.stopPropagation()}>
-			{TOOLS.filter((tool) => withNotes || tool.id !== 'note').map((tool) => (
+			{TOOLS.filter((tool) => withEditTools || (tool.id !== 'note' && tool.id !== 'annotate')).map((tool) => (
 				<button
 					key={tool.id}
 					title={`${tool.label} (${tool.key})`}

@@ -1,0 +1,5 @@
+/* Creatures in a fight (see Fight.ts): no sleepy z's or thought cloud while they scrap. */
+.agent-worm-labels .agent-worm.fighting .agent-worm-zzz,
+.agent-worm-labels .agent-worm.fighting .agent-worm-thought {
+	display: none;
+}

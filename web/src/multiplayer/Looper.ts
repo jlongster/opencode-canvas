@@ -183,6 +183,31 @@ export function writhePose(w: Writhe): Vec[] {
 	return pts.map((p) => ({ x: p.x - foot, y: p.y }))
 }
 
+/**
+ * Tangled up in a fight: up on a short foot like standPose, with big waves running up the stem
+ * (`phase` sets them apart, so two facing each other cross and wrap round one another) and the
+ * head thrashing. `t` in seconds.
+ */
+export function knotPose(t: number, phase: number): Vec[] {
+	const pts = grow({ x: 0, y: -TAIL_R }, (s) => {
+		if (s < 0.12) return 0
+		if (s < 0.26) return (Math.PI / 2) * smooth(span(s, 0.12, 0.26))
+		const stem = Math.min(1, span(s, 0.26, 0.86))
+		const wave = 1.15 * Math.sin(s * 8.5 - t * 10 + phase) + 0.45 * wobble(t * 3.3 - s * 4 + phase * 3)
+		let a = Math.PI / 2 - 0.25 + wave * (0.25 + stem)
+		if (s > 0.86) a -= 0.9 + 1.1 * wobble(t * 5.5 + phase * 7) * smooth(span(s, 0.86, 1))
+		return a
+	})
+	const foot = pts[Math.round((POINTS - 1) * 0.75)].x
+	return pts.map((p) => ({ x: p.x - foot, y: p.y }))
+}
+
+/** Knocked flat and dazed: lying long, centred, the head lolling up and down a little. */
+export function dazedPose(t: number): Vec[] {
+	const loll = 0.25 + 0.3 * Math.sin(t * 3.1)
+	return centre(grow({ x: 0, y: -TAIL_R }, (s) => (s > 0.75 ? loll * smooth(span(s, 0.75, 1)) : 0.06 * Math.sin(s * 9 + t * 2))))
+}
+
 /** Curled up asleep: a ring on the ground, the head tucked in at the bottom. `breath` -1..1. */
 export function curlPose(breath: number): Vec[] {
 	const turn = 2 * Math.PI - 0.95

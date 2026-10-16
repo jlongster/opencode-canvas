@@ -3,6 +3,7 @@ import { markdownToHtml } from '../ui/markdown'
 import type { Box, Vec } from '../editor/geometry'
 import type { Attention } from './Attention'
 import type { Conjure } from './Conjure'
+import { Fights } from './Fight'
 import type { Peer, SubagentInfo } from './Presence'
 import {
 	Body,
@@ -147,7 +148,7 @@ interface Tiny {
 	fade: number
 }
 
-interface Worm {
+export interface Worm {
 	id: number
 	color: string
 	palette: Palette
@@ -318,6 +319,8 @@ export class AgentWorms {
 	private tipFor: Tiny | null = null
 	/** when this page started showing creatures (wall clock), to tell sessions conjured since from ones already here */
 	private bornAt = Date.now()
+	/** creatures dropped by each other, fighting (see Fight) */
+	private fights: Fights
 
 	constructor(
 		parent: HTMLElement,
@@ -336,6 +339,7 @@ export class AgentWorms {
 		this.tip = document.createElement('div')
 		this.tip.className = 'agent-worm-tiny-tip'
 		this.tip.hidden = true
+		this.fights = new Fights(editor, conjure, attention, this.reducedMotion)
 		this.labels.appendChild(this.tip)
 		// for poking at from the console, like window.editor
 		;(window as any).creatures = this
@@ -425,11 +429,13 @@ export class AgentWorms {
 			}
 			this.draw(worm, now, elapsed)
 		}
+		this.fights.frame(ctx, now, this.worms.values())
 		this.showTip()
 	}
 
 	destroy() {
 		for (const d of this.disposers.splice(0)) d()
+		this.fights.destroy()
 		this.container?.classList.remove('conjure-hover', 'conjure-dragging')
 		this.canvas.remove()
 		this.labels.remove()
@@ -523,6 +529,7 @@ export class AgentWorms {
 		const drop = { x: Math.round(worm.root.x), y: Math.round(worm.root.y) }
 		worm.goal = drop
 		worm.pinned = { at: drop, until: performance.now() + PIN_MS }
+		this.fights.dropped(worm, this.worms.values())
 		this.conjure!.move(sessionId!, drop).catch((err) => {
 			console.error('moving the creature failed', err)
 			worm.pinned = null
@@ -1047,9 +1054,11 @@ export class AgentWorms {
 			if (now - worm.startledAt < 300 && worm.mode === 'here' && !still) this.recoil(worm, now)
 		}
 
-		this.locomote(worm, now, elapsed, z)
-		this.maybeFidget(worm, now)
-		this.agonise(worm, now)
+		if (!this.fights.holds(worm, now)) {
+			this.locomote(worm, now, elapsed, z)
+			this.maybeFidget(worm, now)
+			this.agonise(worm, now)
+		}
 		const body = worm.body
 		if (worm.mode === 'emerge' || worm.mode === 'dive') this.kinematic(worm, now)
 		else {
@@ -1076,6 +1085,7 @@ export class AgentWorms {
 			}
 		}
 		this.recentre(worm, z)
+		this.fights.step(worm, now, elapsed, z)
 		worm.squash *= 1 - ease(110)
 		this.eyes(worm, now, elapsed)
 	}
@@ -1285,6 +1295,8 @@ export class AgentWorms {
 		const f = worm.facing
 		const gx = worm.goal && worm.mode === 'here' && !worm.walk ? (worm.goal.x - worm.root.x) * z : 0
 		if (worm.mode === 'carried' || (worm.mode === 'falling' && !still)) return { shape: place(idlePose(t), f, 0), k: 0, limp: true }
+		const fighting = this.fights.posture(worm, now, z)
+		if (fighting) return fighting
 		const walk = worm.walk
 		if (walk && !still) {
 			if (walk.phase === 'turn') {
@@ -1420,7 +1432,9 @@ export class AgentWorms {
 		let wide = 0
 		let slant = 0
 		let squeeze = 0
-		if (worm.mode === 'carried') {
+		const fighting = this.fights.eye(worm, now)
+		if (fighting) ({ look, lid, wide, slant, squeeze } = fighting)
+		else if (worm.mode === 'carried') {
 			// Panicking: darting about, mostly down at the drop.
 			if (now > worm.nextDart) {
 				const a = Math.PI / 2 + (Math.random() - 0.5) * 2.6
@@ -1581,7 +1595,7 @@ export class AgentWorms {
 			const size = TINY_SIZE * tiny.scale
 			if (size < 0.02) continue
 			// Leaving, it wriggles off outward.
-			const away = tiny.leaving ? 1 + 1.4 * Math.pow(Math.min(1, (now - tiny.leaveStart) / TINY_LEAVE_MS), 2) : 1
+			const away = (tiny.leaving ? 1 + 1.4 * Math.pow(Math.min(1, (now - tiny.leaveStart) / TINY_LEAVE_MS), 2) : 1) * this.fights.scatter(worm, now)
 			const y = mid.y + lane * away
 			const tr = TAIL_R * size
 			const hr = HEAD_R * size
@@ -1682,7 +1696,7 @@ export class AgentWorms {
 	// ---------- drawing ----------
 
 	private draw(worm: Worm, now: number, elapsed: number) {
-		if (worm.asleep) return this.drawFaded(worm, now, elapsed, 0.5)
+		if (worm.asleep && !this.fights.awake(worm, now)) return this.drawFaded(worm, now, elapsed, 0.5)
 		this.ctx.save()
 		try {
 			this.drawCreature(worm, now, elapsed)

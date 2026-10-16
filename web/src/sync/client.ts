@@ -50,11 +50,21 @@ export function uploadItem(
 	canvasId: string,
 	sessionId: string,
 	data: Blob,
-	meta: { filename: string; group?: string; title?: string; caption?: string; createdAt?: number; sessionTitle?: string },
+	meta: {
+		filename: string
+		group?: string
+		title?: string
+		caption?: string
+		createdAt?: number
+		sessionTitle?: string
+		/** a frame extracted from a video: that video item, and the time in it (seconds) */
+		sourceItemId?: string
+		sourceTime?: number
+	},
 ) {
 	const form = new FormData()
 	form.set('file', data, meta.filename)
-	for (const key of ['group', 'title', 'caption', 'createdAt', 'sessionTitle'] as const) {
+	for (const key of ['group', 'title', 'caption', 'createdAt', 'sessionTitle', 'sourceItemId', 'sourceTime'] as const) {
 		const value = meta[key]
 		if (value !== undefined && value !== '') form.set(key, String(value))
 	}

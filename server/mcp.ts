@@ -94,6 +94,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			height: item.height,
 			...(item.group ? { group: item.group } : {}),
 			...(item.caption ? { caption: item.caption } : {}),
+			...(item.sourceItemId ? { sourceItemId: item.sourceItemId, sourceTime: item.sourceTime } : {}),
 			url: mediaUrl(item.src),
 			...(item.kind === 'video' ? { thumbUrl: mediaUrl(item.thumb) } : {}),
 		}
@@ -433,7 +434,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				description:
 					'The user\'s annotations: comments pinned to a spot on an item (an image, video or HTML page), oldest first. ' +
 					'Each has id, text, author, createdAt, the item (id, title, name, group, sessionId, kind, width, height, url ' +
-					'of the original file, canvas link) and the anchor: x/y normalized to the item (0..1) and px/py, pixel ' +
+					'of the original file, canvas link; sourceItemId and sourceTime in seconds when it is a frame extracted from a ' +
+					'video) and the anchor: x/y normalized to the item (0..1) and px/py, pixel ' +
 					'coordinates in the original image (x × width, y × height). Filter by sessionId (yours, for feedback on what ' +
 					'you posted) or itemId. markedImageUrl is the image with the spot circled.',
 				inputSchema: {

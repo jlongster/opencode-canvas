@@ -439,6 +439,17 @@ function itemChanges(body: Record<string, unknown>): Partial<Pick<Item, 'group' 
 	return changes
 }
 
+/** Multipart "sourceItemId" + "sourceTime": a video on this canvas and a time in it (seconds), or neither. */
+function sourceFields(canvasId: string, itemId: unknown, time: unknown): { sourceItemId?: string; sourceTime?: number } {
+	const id = textField(itemId)
+	if (!id) return {}
+	const source = db.items.get(id)
+	if (!source || source.canvasId !== canvasId) throw new HttpError(400, `"sourceItemId": no item ${id} on this canvas`)
+	const t = Number(time)
+	if (time === null || time === '' || !Number.isFinite(t) || t < 0) throw new HttpError(400, '"sourceTime" must be a time in seconds')
+	return { sourceItemId: id, sourceTime: Math.round(t * 1000) / 1000 }
+}
+
 /** A multipart "createdAt": ms since the epoch, not in the future. */
 function timeField(value: unknown): number | undefined {
 	if (value === undefined || value === null || value === '') return undefined
@@ -482,6 +493,9 @@ interface ItemOptions {
 	createdAt?: number
 	/** the OpenCode session's title: names the session if it's new or still untitled */
 	sessionTitle?: string
+	/** a frame extracted from a video (see Item.sourceItemId) */
+	sourceItemId?: string
+	sourceTime?: number
 }
 
 async function addItem(canvasId: string, sessionId: string, data: Blob, opts: ItemOptions): Promise<Item> {
@@ -529,6 +543,7 @@ async function addItem(canvasId: string, sessionId: string, data: Blob, opts: It
 			...(opts.group ? { group: opts.group } : {}),
 			title: opts.title,
 			caption: opts.caption,
+			...(opts.sourceItemId ? { sourceItemId: opts.sourceItemId, sourceTime: opts.sourceTime } : {}),
 			createdAt: opts.createdAt ?? Date.now(),
 		}
 		db.items.set(id, item)
@@ -910,6 +925,7 @@ async function annotationViews(canvasId: string, filter: { sessionId?: string; i
 				height: item.height,
 				url: /^https?:/.test(item.src) ? item.src : MEDIA_ORIGIN + item.src,
 				link: `${WEB_BASE}/c/${canvas.id}#item=${encodeURIComponent(item.id)}`,
+				...(item.sourceItemId ? { sourceItemId: item.sourceItemId, sourceTime: item.sourceTime } : {}),
 			},
 			anchor: { x: round4(x), y: round4(y), px: Math.round(x * item.width), py: Math.round(y * item.height) },
 		})
@@ -1052,7 +1068,8 @@ const API_INDEX = {
 			'Send "sessionTitle" (your OpenCode session\'s title, from `opencode api get /api/session/$OPENCODE_SESSION_ID` ' +
 			'→ .data.title) with every post, JSON or multipart: it names the session\'s frame when the session is new or ' +
 			'still untitled, and never replaces a real title (rename with PUT). Multipart uploads may also send "createdAt" ' +
-			'(ms; orders the item in its group). Creates the session if needed.',
+			'(ms; orders the item in its group), and "sourceItemId" + "sourceTime" (a frame extracted from that video item, ' +
+			'at that many seconds; kept on the item). Creates the session if needed.',
 		'GET /api/items/:itemId': 'One item',
 		'PATCH /api/items/:itemId': 'Change an item\'s "group", "title", "caption" (null clears) or "name"',
 		'DELETE /api/items/:itemId':
@@ -1072,7 +1089,8 @@ const API_INDEX = {
 		'GET /api/canvases/:cid/annotations':
 			'The user\'s annotations: comments pinned to a spot on an item, oldest first. Optional ?sessionId= (only that ' +
 			'session\'s items) and ?itemId=. Each: {"id", "text", "author", "createdAt", "item": {"id", "kind", "name", "title", ' +
-			'"group", "sessionId", "sessionTitle", "width", "height", "url" (the original file), "link"}, "anchor": {"x", "y" ' +
+			'"group", "sessionId", "sessionTitle", "width", "height", "url" (the original file), "link", "sourceItemId" and ' +
+			'"sourceTime" (seconds) when the item is a frame extracted from a video}, "anchor": {"x", "y" ' +
 			'(0..1 across the item), "px", "py" (pixels in the original image: x × width, y × height)}}',
 		'GET /api/canvases/:cid/annotations/:id/image':
 			'The annotated image (or a video\'s poster frame) as a PNG with the spot marked by a red circle and the ' +
@@ -1453,6 +1471,7 @@ async function handle(req: Request): Promise<Response> {
 				height: sizeField(form.get('height') ?? undefined, 'height'),
 				createdAt: timeField(form.get('createdAt')),
 				sessionTitle: textField(form.get('sessionTitle'))?.slice(0, TITLE_MAX),
+				...sourceFields(canvasId, form.get('sourceItemId'), form.get('sourceTime')),
 			}
 			const filename = file instanceof File ? file.name : undefined
 			return json(await addItem(canvasId, sessionId, file, { filename, ...meta }), 201)

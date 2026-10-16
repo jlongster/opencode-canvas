@@ -6,6 +6,7 @@ import { frameKey } from '../editor/selection'
 import { imageShader, rectShader, videoShader } from './shaders'
 import { TextureCache } from './TextureCache'
 import { VideoPool } from './VideoPool'
+import { EXTRACT_ICON, VideoControls } from './VideoControls'
 import { LinkHover, loadHtml, makeNonce, parseLinkMessage, withLinkReporter, type FrameTransform } from './HtmlLinks'
 import { url as withBase } from '../base'
 
@@ -82,6 +83,7 @@ export class Renderer {
 	private videos: VideoPool
 	private labels: SectionLabels
 	private actions: ItemActions
+	private videoControls: VideoControls
 	private titles: ItemTitles
 	private html: HtmlItems
 	private linkHover: LinkHover
@@ -206,7 +208,8 @@ export class Renderer {
 		editor.linkAt = (point) => this.html.linkAt(point)
 		this.labels = new SectionLabels(overlay, options.readOnly ? null : (id) => options.onCloseSection?.(id))
 		this.titles = new ItemTitles(overlay)
-		this.actions = new ItemActions(overlay)
+		this.videoControls = new VideoControls(overlay, this.videos, editor, !!options.readOnly)
+		this.actions = new ItemActions(overlay, options.readOnly ? null : this.videoControls)
 
 		const ro = new ResizeObserver(([entry]) => {
 			const size = entry.devicePixelContentBoxSize?.[0]
@@ -257,7 +260,7 @@ export class Renderer {
 		const hovered = editor.hoveredId.get()
 		const selected = editor.selectedSet.get()
 
-		// Which videos should be playing: hovered, then selected (only if visible).
+		// Which videos get an element (only if visible): hovered, selected, then ones the viewer played or paused.
 		const viewBounds = Box.expand(editor.viewportPageBounds.get(), 0)
 		const wantedVideos: { id: string; src: string }[] = []
 		const consider = (id: string | null) => {
@@ -269,12 +272,18 @@ export class Renderer {
 		}
 		consider(hovered)
 		for (const id of selected) consider(id)
+		for (const id of this.videos.touchedIds()) consider(id)
 		this.videos.sync(wantedVideos)
 
 		const uploaded = this.textures.update()
 		const epoch = editor.getEpoch()
 		const needsFrame =
-			epoch !== this.lastEpoch || this.animating || uploaded || this.videos.isPlaying || editor.isCameraMoving()
+			epoch !== this.lastEpoch ||
+			this.animating ||
+			uploaded ||
+			this.videos.takeDirty() ||
+			this.videos.isPlaying ||
+			editor.isCameraMoving()
 		if (!needsFrame || this.pixelSize.w === 0) return
 		this.lastEpoch = epoch
 
@@ -461,6 +470,7 @@ export class Renderer {
 
 		this.labels.update(layout.sections, this.displayedSections, editor)
 		this.titles.update(items, this.displayedItems, cull, editor)
+		this.videoControls.update(items, this.displayedItems, viewBounds)
 		const showDownload = hovered && editor.isShiftDown.get()
 		this.actions.update(showDownload ? items[hovered] : undefined, showDownload ? this.displayedItems.get(hovered) : undefined, editor)
 
@@ -586,6 +596,7 @@ export class Renderer {
 		this.videos.destroy()
 		this.labels.destroy()
 		this.actions.destroy()
+		this.videoControls.destroy()
 		this.titles.destroy()
 		this.html.destroy()
 		this.linkHover.destroy()
@@ -837,16 +848,21 @@ const COPIED_MS = 1400
 /**
  * Buttons over the top-right corner of the hovered item, shown while shift is held: copy a link to
  * its original file (the canvas server's public URL, even when this page is served elsewhere) and
- * download it.
+ * download it; on a paused video (edit links only), extract its current frame.
  */
 class ItemActions {
 	private el: HTMLDivElement
 	private link: HTMLButtonElement
 	private download: HTMLAnchorElement
+	private extract: HTMLButtonElement
 	private itemId: string | null = null
 	private copiedTimer = 0
 
-	constructor(parent: HTMLElement) {
+	constructor(
+		parent: HTMLElement,
+		/** null on view links */
+		private frames: Pick<VideoControls, 'canExtract' | 'extract'> | null,
+	) {
 		this.el = document.createElement('div')
 		this.el.className = 'item-actions'
 		this.link = document.createElement('button')
@@ -859,7 +875,12 @@ class ItemActions {
 		this.download.title = 'Download'
 		this.download.innerHTML =
 			'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>'
-		this.el.append(this.link, this.download)
+		this.extract = document.createElement('button')
+		this.extract.className = 'item-action item-extract'
+		this.extract.title = 'Extract this frame as an image you can annotate'
+		this.extract.innerHTML = EXTRACT_ICON
+		this.extract.addEventListener('click', () => this.itemId && this.frames?.extract(this.itemId))
+		this.el.append(this.extract, this.link, this.download)
 		// Keep the click from reaching the canvas (which would select or start a brush).
 		this.el.addEventListener('pointerdown', (e) => e.stopPropagation())
 		this.el.addEventListener('dblclick', (e) => e.stopPropagation())
@@ -879,6 +900,7 @@ class ItemActions {
 			this.download.download = downloadName(item)
 			this.showCopied(false)
 		}
+		this.extract.style.display = this.frames?.canExtract(item) ? '' : 'none'
 		const p = editor.pageToScreen({ x: box.x + box.w, y: box.y })
 		this.el.style.display = 'flex'
 		this.el.style.transform = `translate(calc(${p.x - 8}px - 100%), ${p.y + 8}px)`

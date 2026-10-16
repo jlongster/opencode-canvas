@@ -66,6 +66,9 @@ export interface Item {
 	title?: string
 	/** Longer description, shown when hovering */
 	caption?: string
+	/** A frame extracted from a video: the video item it came from, and when in it (seconds) */
+	sourceItemId?: string
+	sourceTime?: number
 	createdAt: number
 }
 
@@ -129,6 +132,9 @@ export interface AnnotationView {
 		url: string
 		/** the item on the canvas */
 		link: string
+		/** a frame extracted from a video: the video item and the time in it (seconds) */
+		sourceItemId?: string
+		sourceTime?: number
 	}
 	/** the spot it points at: normalized (0..1) and in pixels of the original image (px = x × width) */
 	anchor: { x: number; y: number; px: number; py: number }

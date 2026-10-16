@@ -3,6 +3,7 @@ import { uploadItem } from '../sync/client'
 
 /** "1:05", or with tenths ("1:05.3") for frame times; hours when needed. */
 export function formatTime(seconds: number, tenths = false): string {
+	if (!Number.isFinite(seconds)) return ''
 	const t = Math.max(0, seconds)
 	const whole = tenths ? Math.floor(t * 10) / 10 : Math.floor(t)
 	const h = Math.floor(whole / 3600)

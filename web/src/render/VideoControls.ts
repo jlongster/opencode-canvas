@@ -95,7 +95,7 @@ export class VideoControls {
 		this.play.addEventListener('click', () => this.barId && this.pool.toggle(this.barId))
 		this.mute.addEventListener('click', () => {
 			const item = this.barId ? this.editor.items.peek()[this.barId] : undefined
-			if (item) this.pool.setMuted(item.id, !this.pool.state(item.id, item.src).muted)
+			if (item) this.pool.setMuted(item.id, !this.pool.state(item).muted)
 		})
 		this.extractButton.addEventListener('click', () => this.barId && this.extract(this.barId))
 		this.track.addEventListener('pointerdown', this.onScrubDown)
@@ -110,7 +110,7 @@ export class VideoControls {
 	/** Whether "Extract frame" applies to the item now: an edit link, a video paused on a loaded frame. */
 	canExtract(item: Item | undefined): boolean {
 		if (this.readOnly || item?.kind !== 'video' || this.extracting.has(item.id)) return false
-		const state = this.pool.state(item.id, item.src)
+		const state = this.pool.state(item)
 		return !state.playing && !!this.pool.getReady(item.id)
 	}
 
@@ -173,8 +173,8 @@ export class VideoControls {
 			if (sw < BADGE_MIN.w || sh < BADGE_MIN.h) continue
 			seen.add(id)
 			const m = this.marks.get(id) ?? this.mountMarks(id)
-			const state = this.pool.state(id, item.src)
-			const duration = state.duration ?? this.pool.duration(item.src)
+			const state = this.pool.state(item)
+			const duration = state.duration
 			const text = duration !== undefined ? formatTime(duration) : ''
 			if (m.duration.textContent !== text) m.duration.textContent = text
 			const p = editor.pageToScreen(d)
@@ -194,7 +194,7 @@ export class VideoControls {
 			return
 		}
 		const item = items[barId]
-		const state = this.pool.state(barId, item.src)
+		const state = this.pool.state(item)
 		const sw = barBox.w * z
 		const p = editor.pageToScreen({ x: barBox.x, y: barBox.y + barBox.h })
 		this.bar.style.display = 'flex'
@@ -243,7 +243,7 @@ export class VideoControls {
 
 	private seekTo(e: PointerEvent, id: string) {
 		const item = this.editor.items.peek()[id]
-		const duration = item && this.pool.state(id, item.src).duration
+		const duration = item && this.pool.duration(item)
 		if (!duration) return
 		const rect = this.track.getBoundingClientRect()
 		const fraction = Math.min(1, Math.max(0, (e.clientX - rect.left) / Math.max(1, rect.width)))
@@ -295,7 +295,7 @@ export class VideoControls {
 			this.pool.toggle(item.id)
 			return
 		}
-		const state = this.pool.state(item.id, item.src)
+		const state = this.pool.state(item)
 		if (state.playing || !state.loaded) return
 		e.preventDefault()
 		this.pool.seek(item.id, state.time + (key === '.' ? FRAME_STEP : -FRAME_STEP))

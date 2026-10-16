@@ -1,6 +1,10 @@
+import type { Item } from '../../../shared/types'
+
 const MAX_PLAYING = 6
-/** Videos whose length is being read (metadata only) at once, for their badges. */
+/** Videos whose length is being read (metadata only) at once, for badges of items without a stored duration. */
 const MAX_PROBES = 2
+/** Give up on reading a length after this long. */
+const PROBE_TIMEOUT_MS = 15_000
 
 /**
  * What the viewer chose for a video with the controls: kept per item, in this tab only, so a
@@ -36,7 +40,8 @@ export interface VideoState {
 export class VideoPool {
 	private videos = new Map<string, HTMLVideoElement>()
 	private playback = new Map<string, Playback>()
-	private durations = new Map<string, number>()
+	/** Lengths read in the browser, by src; null when it couldn't be read. */
+	private durations = new Map<string, number | null>()
 	private probes = new Map<string, HTMLVideoElement>()
 	private probeQueue: string[] = []
 	private reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')
@@ -87,7 +92,7 @@ export class VideoPool {
 			const changed = () => (this.dirty = true)
 			for (const type of ['loadeddata', 'seeked', 'pause', 'play', 'volumechange', 'durationchange']) video.addEventListener(type, changed)
 			video.addEventListener('loadedmetadata', () => {
-				if (Number.isFinite(video.duration)) this.durations.set(src, video.duration)
+				if (validDuration(video.duration)) this.durations.set(src, video.duration)
 				if (state?.time) video.currentTime = state.time
 			})
 			this.host.appendChild(video)
@@ -102,10 +107,17 @@ export class VideoPool {
 		return video && video.readyState >= 2 && video.videoWidth > 0 ? video : undefined
 	}
 
-	/** The video's length in seconds if known; otherwise starts reading it (metadata only, a few at a time). */
-	duration(src: string): number | undefined {
+	/**
+	 * The video's length in seconds: the server's (from ffprobe), else the playing element's, else one
+	 * read in the browser, which starts reading it if needed. Undefined while unknown, never NaN/Infinity.
+	 */
+	duration(item: Item): number | undefined {
+		if (validDuration(item.duration)) return item.duration
+		const video = this.videos.get(item.id)
+		if (video && validDuration(video.duration)) return video.duration
+		const src = item.src
 		const known = this.durations.get(src)
-		if (known !== undefined) return known
+		if (known !== undefined) return known ?? undefined
 		if (!this.probes.has(src) && !this.probeQueue.includes(src)) {
 			this.probeQueue.push(src)
 			this.runProbes()
@@ -120,31 +132,43 @@ export class VideoPool {
 			probe.preload = 'metadata'
 			probe.muted = true
 			probe.crossOrigin = 'anonymous'
-			const done = () => {
-				if (Number.isFinite(probe.duration)) this.durations.set(src, probe.duration)
-				else this.durations.set(src, NaN)
+			let finished = false
+			const finish = (duration: number | null) => {
+				// Clearing the src below fires an error event of its own: only the first outcome counts.
+				if (finished) return
+				finished = true
+				clearTimeout(timer)
+				this.durations.set(src, duration)
 				probe.removeAttribute('src')
 				probe.load()
 				this.probes.delete(src)
 				this.dirty = true
 				this.runProbes()
 			}
-			probe.addEventListener('loadedmetadata', done, { once: true })
-			probe.addEventListener('error', done, { once: true })
+			const timer = window.setTimeout(() => finish(null), PROBE_TIMEOUT_MS)
+			// Files without a length in their header (MediaRecorder WebM) report Infinity until read to
+			// the end: seeking far past the end makes the browser find it.
+			const check = () => {
+				if (validDuration(probe.duration)) finish(probe.duration)
+				else if (probe.duration === Infinity && probe.currentTime < 1e9) probe.currentTime = 1e10
+			}
+			probe.addEventListener('loadedmetadata', check)
+			probe.addEventListener('durationchange', check)
+			probe.addEventListener('seeked', check)
+			probe.addEventListener('error', () => finish(null), { once: true })
 			probe.src = src
 			this.probes.set(src, probe)
 		}
 	}
 
-	state(id: string, src: string): VideoState {
-		const video = this.videos.get(id)
-		const playback = this.playback.get(id)
-		const d = video && Number.isFinite(video.duration) ? video.duration : this.durations.get(src)
+	state(item: Item): VideoState {
+		const video = this.videos.get(item.id)
+		const playback = this.playback.get(item.id)
 		return {
 			loaded: !!video,
 			playing: video ? !video.paused : !!playback && !playback.paused,
 			time: video ? video.currentTime : (playback?.time ?? 0),
-			duration: d !== undefined && Number.isFinite(d) ? d : undefined,
+			duration: this.duration(item),
 			muted: video ? video.muted : (playback?.muted ?? true),
 			hasAudio: video ? hasAudio(video) : false,
 			touched: !!playback,
@@ -216,6 +240,10 @@ export class VideoPool {
 		this.probeQueue = []
 		this.host.remove()
 	}
+}
+
+function validDuration(d: number | undefined): d is number {
+	return typeof d === 'number' && Number.isFinite(d) && d > 0
 }
 
 /** Whether the browser says the video has sound (each exposes it differently; unknown counts as none). */

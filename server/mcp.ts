@@ -97,6 +97,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			...(item.sourceItemId ? { sourceItemId: item.sourceItemId, sourceTime: item.sourceTime } : {}),
 			url: mediaUrl(item.src),
 			...(item.kind === 'video' ? { thumbUrl: mediaUrl(item.thumb) } : {}),
+			...(item.duration !== undefined ? { duration: item.duration } : {}),
 		}
 	}
 

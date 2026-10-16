@@ -301,6 +301,30 @@ async function probe(file: string): Promise<{ width: number; height: number }> {
 		: { width: stream.width, height: stream.height }
 }
 
+/**
+ * A video's length in seconds, or undefined if it can't be read. Files without one in their header
+ * (MediaRecorder WebM) are read to the end for their last frame's time.
+ */
+async function probeDuration(file: string): Promise<number | undefined> {
+	const valid = (n: number) => (Number.isFinite(n) && n > 0 ? Math.round(n * 1000) / 1000 : undefined)
+	try {
+		const header = await run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file])
+		const d = valid(Number(header.trim()))
+		if (d !== undefined) return d
+		const packets = await run([
+			'ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts_time,duration_time', '-of', 'csv=p=0', file,
+		])
+		let end = 0
+		for (const line of packets.split('\n')) {
+			const [pts, dur] = line.split(',').map(Number)
+			if (Number.isFinite(pts)) end = Math.max(end, pts + (Number.isFinite(dur) ? dur : 0))
+		}
+		return valid(end)
+	} catch {
+		return undefined
+	}
+}
+
 async function makeThumb(input: string, output: string) {
 	await run([
 		'ffmpeg', '-y', '-v', 'error', '-i', input, '-frames:v', '1',
@@ -527,6 +551,7 @@ async function addItem(canvasId: string, sessionId: string, data: Blob, opts: It
 			thumb = `/media/${file}`
 		}
 		const { width, height } = size
+		const duration = kind === 'video' && HAS_FFMPEG ? await probeDuration(path) : undefined
 		// The canvas may have been deleted while the media was processed.
 		getCanvas(canvasId)
 		ensureSession(canvasId, sessionId, opts.sessionTitle, { onlyIfUntitled: true })
@@ -540,6 +565,7 @@ async function addItem(canvasId: string, sessionId: string, data: Blob, opts: It
 			thumb,
 			width,
 			height,
+			...(duration !== undefined ? { duration } : {}),
 			...(opts.group ? { group: opts.group } : {}),
 			title: opts.title,
 			caption: opts.caption,
@@ -1607,3 +1633,22 @@ async function route(req: Request, server: Server<SocketData>, reqUrl: URL): Pro
 }
 
 if (!process.env.CANVAS_QUIET) console.log(`canvas server on http://localhost:${PORT}  (data: ${DATA_DIR})`)
+
+backfillDurations()
+
+/** Videos posted before items had a duration get one, read in the background one at a time. */
+async function backfillDurations() {
+	if (!HAS_FFMPEG) return
+	for (const item of [...db.items.values()]) {
+		if (item.kind !== 'video' || item.duration !== undefined || !item.src.startsWith('/media/')) continue
+		const path = join(MEDIA_DIR, basename(item.src))
+		if (!existsSync(path)) continue
+		const duration = await probeDuration(path)
+		const current = db.items.get(item.id)
+		if (duration === undefined || !current || current.duration !== undefined) continue
+		const next = { ...current, duration }
+		db.items.set(next.id, next)
+		save()
+		broadcast({ type: 'item', item: next })
+	}
+}

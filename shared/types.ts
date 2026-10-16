@@ -56,6 +56,8 @@ export interface Item {
 	/** Pixel size; for html, the CSS pixel size the page is laid out at */
 	width: number
 	height: number
+	/** Videos: length in seconds (read with ffprobe on the server; missing when it couldn't be) */
+	duration?: number
 	/**
 	 * Which group the item belongs to within its session. Groups are just names: items with the
 	 * same name are laid out together under that heading, groups in the order they first appeared.

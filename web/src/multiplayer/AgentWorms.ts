@@ -5,6 +5,7 @@ import type { Attention } from './Attention'
 import type { Conjure } from './Conjure'
 import { Fights } from './Fight'
 import { Slaps } from './Slap'
+import './farAway.css'
 import type { Peer, SubagentInfo } from './Presence'
 import {
 	Body,
@@ -97,6 +98,9 @@ const TINY_LEAVE_MS = 520
 const TINY_HOVER_PX = 11
 /** zoom at and above which speech bubbles are full size; below it they shrink with the canvas */
 const FULL_BUBBLE_ZOOM = 0.6
+/** below this zoom the creatures' name tags and attention badges hide; once hidden, they come back at FAR_ZOOM */
+const FAR_ZOOM = 0.1
+const FAR_SLACK = 0.002
 /** records created longer ago than this were there already: they pop up rather than wake curled */
 const FRESH_MS = 15000
 
@@ -410,6 +414,10 @@ export class AgentWorms {
 			if (!seen.has(worm.id) && !worm.leaving) this.leave(worm, now)
 		}
 
+		// Zoomed right out, the name tags and badges go (a little either side of FAR_ZOOM, so they don't flicker there).
+		const zoom = this.editor.camera.peek().z
+		const far = this.labels.classList.contains('far')
+		if (far ? zoom >= FAR_ZOOM : zoom < FAR_ZOOM - FAR_SLACK) this.labels.classList.toggle('far', !far)
 		this.resize()
 		const ctx = this.ctx
 		const dpr = window.devicePixelRatio || 1

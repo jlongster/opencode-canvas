@@ -1,0 +1,22 @@
+/* Zoomed right out (see AgentWorms, FAR_ZOOM): creatures without their name tags and attention badges. */
+.agent-worm-labels .agent-worm-label,
+.agent-worm-labels .agent-worm-attention {
+	transition: opacity 150ms, visibility 0s;
+}
+
+.agent-worm-labels.far .agent-worm .agent-worm-label,
+.agent-worm-labels.far .agent-worm .agent-worm-attention {
+	opacity: 0;
+	visibility: hidden;
+	pointer-events: none;
+	transition: opacity 150ms, visibility 0s 150ms;
+}
+
+/* (the ring's own animation runs its opacity, so it fades out with a filter) */
+.agent-worm-labels .agent-worm-call-ring {
+	transition: filter 150ms;
+}
+
+.agent-worm-labels.far .agent-worm .agent-worm-call-ring {
+	filter: opacity(0);
+}

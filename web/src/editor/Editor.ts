@@ -2,7 +2,7 @@ import type { Item, Session } from '../../../shared/types'
 import { atom, computed, getGlobalEpoch, react, transact } from '../state/signals'
 import { Box, clamp, easeInOutCubic, lerp, Vec } from './geometry'
 import { Deletions } from './Deletions'
-import { computeLayout, frameTitleBox, LAYOUT, type Layout } from './layout'
+import { computeLayout, frameTitleBox, LAYOUT, type GroupLayout, type Layout } from './layout'
 import { noteKey, parseSelectionId, type SelectionKind } from './selection'
 import { StateNode } from './StateNode'
 import { HandTool } from './tools/HandTool'
@@ -36,6 +36,8 @@ const INITIAL_FIRST_ROW = 0.3
 const FOCUS_MAX_WIDTH = 1350
 /** The highest zoom focusing something (double-click, deep link, zoom-to-selection) goes to */
 const FOCUS_MAX_ZOOM = 2
+/** Page px between a hovered or linked group and its outline */
+export const GROUP_OUTLINE_PADDING = 14
 
 class Root extends StateNode {
 	static override id = 'root'
@@ -90,6 +92,15 @@ export class Editor {
 	/** Items, session frames and notes; see selection.ts for how the kinds are told apart. */
 	readonly selectedIds = atom<string[]>('selectedIds', [], arrayEquals)
 	readonly hoveredId = atom<string | null>('hoveredId', null)
+	/** The group whose heading is under the pointer. */
+	readonly hoveredGroupId = atom<string | null>('hoveredGroupId', null)
+	/**
+	 * The group focused by clicking its heading or opening its link, without selecting anything.
+	 * The URL links to it until the selection changes (see select).
+	 */
+	private readonly linkedGroupId = atom<string | null>('linkedGroupId', null)
+	/** When a group was last focused (performance.now()), for the renderer's brief outline flash. */
+	groupFlash: { id: string; at: number } | null = null
 	readonly brush = atom<Box | null>('brush', null)
 	readonly cursor = atom<string>('cursor', 'default')
 	/** Where the pointer is on the page, or null when it's outside the canvas (used for presence). */
@@ -104,6 +115,11 @@ export class Editor {
 	// --- derived ---
 	readonly layout = computed<Layout>('layout', () => computeLayout(this.sessions.get(), this.items.get()))
 	readonly selectedSet = computed('selectedSet', () => new Set(this.selectedIds.get()))
+	/** The linked group (see linkedGroupId), while it still exists. */
+	readonly linkedGroup = computed<GroupLayout | null>('linkedGroup', () => {
+		const id = this.linkedGroupId.get()
+		return id === null ? null : (this.layout.get().groups.find((g) => g.id === id) ?? null)
+	})
 	readonly currentToolId = computed('currentToolId', () => this.toolPath.get().split('.')[0] as ToolId)
 	readonly viewportPageBounds = computed<Box>('viewportPageBounds', () => {
 		const { x, y, z } = this.camera.get()
@@ -211,22 +227,29 @@ export class Editor {
 	isSelected(id: string) {
 		return this.selectedSet.get().has(id)
 	}
+	/** Any change to the selection (even clearing an empty one) ends a group link. */
 	select(ids: string[]) {
-		this.selectedIds.set(ids)
+		transact(() => {
+			this.linkedGroupId.set(null)
+			this.selectedIds.set(ids)
+		})
 	}
 	/** Shift-click: add the key, or remove it if it's already selected. */
 	toggleSelected(key: string) {
 		const ids = this.selectedIds.peek()
-		this.selectedIds.set(ids.includes(key) ? ids.filter((k) => k !== key) : [...ids, key])
+		this.select(ids.includes(key) ? ids.filter((k) => k !== key) : [...ids, key])
 	}
 	selectNone() {
-		this.selectedIds.set([])
+		this.select([])
 	}
 	selectAll() {
-		this.selectedIds.set([...this.layout.get().items.keys(), ...Object.keys(this.noteBoxes.get()).map(noteKey)])
+		this.select([...this.layout.get().items.keys(), ...Object.keys(this.noteBoxes.get()).map(noteKey)])
 	}
 	setHovered(id: string | null) {
 		this.hoveredId.set(id)
+	}
+	setHoveredGroup(id: string | null) {
+		this.hoveredGroupId.set(id)
 	}
 	setBrush(brush: Box | null) {
 		this.brush.set(brush)
@@ -260,6 +283,9 @@ export class Editor {
 		}
 		for (const section of layout.sections) {
 			if (!Box.contains(section.box, point)) continue
+			for (const group of section.groups) {
+				if (group.heading && Box.contains(group.heading, point)) return { type: 'group_heading', id: group.id }
+			}
 			for (const id of section.itemIds) {
 				const box = layout.items.get(id)
 				if (box && Box.contains(box, point)) return { type: 'item', id }
@@ -532,12 +558,47 @@ export class Editor {
 	 */
 	focusSelectionKey(key: string, opts: { animate?: boolean } = {}): boolean {
 		const { kind, id } = parseSelectionId(key)
+		if (kind === 'group') return this.focusGroup(id, opts)
 		const box = this.getSelectionBounds(key)
 		if (!box) return false
 		this.stopCameraMotion()
 		this.select([key])
 		if (kind === 'item') this.zoomToItem(id, opts)
 		else this.zoomToBounds(box, opts)
+		return true
+	}
+
+	/**
+	 * Fit a group, heading included, to the screen and link to it (see linkedGroupId), clearing
+	 * the selection. Returns false (and changes nothing) if there's no such group.
+	 */
+	focusGroup(groupId: string, opts: { animate?: boolean } = {}): boolean {
+		if (!this.layout.get().groups.some((g) => g.id === groupId)) return false
+		transact(() => {
+			this.selectNone()
+			this.linkedGroupId.set(groupId)
+		})
+		this.groupFlash = { id: groupId, at: performance.now() }
+		this.stopCameraMotion()
+		this.zoomToGroup(groupId, opts)
+		return true
+	}
+
+	/** Fit the group and its outline to the screen, like an item: never wider than FOCUS_MAX_WIDTH. */
+	zoomToGroup(groupId: string, opts: { animate?: boolean } = {}) {
+		const group = this.layout.get().groups.find((g) => g.id === groupId)
+		if (!group) return
+		const box = Box.expand(group.box, GROUP_OUTLINE_PADDING)
+		this.zoomToBounds(box, { ...opts, maxZoom: FOCUS_MAX_WIDTH / box.w })
+	}
+
+	/** A group link to a group that's gone: show its session if that's still here. */
+	focusMissingGroup(groupId: string, opts: { animate?: boolean } = {}): boolean {
+		const sessionId = groupId.slice(0, groupId.indexOf('/'))
+		if (!this.sessions.get()[sessionId]) return false
+		this.stopCameraMotion()
+		this.selectNone()
+		this.zoomToSection(sessionId, opts)
 		return true
 	}
 
@@ -548,9 +609,9 @@ export class Editor {
 		return { x: box.x, y: box.y - LAYOUT.titleHeight, w: box.w, h: box.h + LAYOUT.titleHeight }
 	}
 
-	zoomToSection(id: string) {
+	zoomToSection(id: string, opts: { animate?: boolean } = {}) {
 		const section = this.layout.get().sections.find((s) => s.id === id)
-		if (section) this.zoomToBounds(section.box)
+		if (section) this.zoomToBounds(section.box, opts)
 	}
 
 	private viewportCenter(): Vec {

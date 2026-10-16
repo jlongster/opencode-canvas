@@ -1,6 +1,6 @@
 import type { Item } from '../../../shared/types'
-import type { Editor, HtmlLink } from '../editor/Editor'
-import { Box } from '../editor/geometry'
+import { GROUP_OUTLINE_PADDING, type Editor, type HtmlLink } from '../editor/Editor'
+import { Box, clamp } from '../editor/geometry'
 import { LAYOUT, type SectionLayout } from '../editor/layout'
 import { frameKey } from '../editor/selection'
 import { imageShader, rectShader, videoShader } from './shaders'
@@ -14,6 +14,9 @@ const ITEM_RADIUS = 6
 const SECTION_RADIUS = 20
 const EASE_MS = 90 // time constant for layout motion
 const FADE_MS = 220
+/** A focused group's outline shows this long, fading out over the last GROUP_FLASH_FADE_MS. */
+const GROUP_FLASH_MS = 1200
+const GROUP_FLASH_FADE_MS = 800
 /** Most HTML items mounted as iframes at once; the rest show their placeholder. */
 const MAX_HTML_FRAMES = 40
 /** Mount HTML items this far (screen px) outside the viewport, so they're ready when panned in. */
@@ -319,6 +322,23 @@ export class Renderer {
 				overlays.push(() => pushRect(r, NONE, remote, 2.5, SECTION_RADIUS + 4 / camera.z, false))
 			}
 			if (selected.has(key)) overlays.push(() => pushRect(d, NONE, ACCENT, 2, SECTION_RADIUS, false))
+		}
+
+		// A hovered heading gets a faint outline around its group; a just-focused group a fading one.
+		const hoveredGroupId = editor.hoveredGroupId.get()
+		const flash = editor.groupFlash
+		const flashAlpha = flash ? clamp((GROUP_FLASH_MS - (now - flash.at)) / GROUP_FLASH_FADE_MS, 0, 1) : 0
+		if (flash && flashAlpha > 0) this.animating = true
+		for (const group of layout.groups) {
+			const flashing = flashAlpha > 0 && group.id === flash!.id
+			if (!flashing && group.id !== hoveredGroupId) continue
+			const section = layout.sections.find((s) => s.id === group.sessionId)
+			const d = section && this.displayedSections.get(section.id)
+			if (!section || !d) continue
+			const pad = GROUP_OUTLINE_PADDING
+			const b = { x: group.box.x + d.x - section.box.x - pad, y: group.box.y + d.y - section.box.y - pad, w: group.box.w + pad * 2, h: group.box.h + pad * 2 }
+			const stroke = flashing ? withAlpha(ACCENT, Math.max(flashAlpha, 0.35)) : withAlpha(ACCENT, 0.35)
+			overlays.push(() => pushRect(b, NONE, stroke, flashing ? 2 : 1, ITEM_RADIUS + pad, false))
 		}
 
 		let images = 0
@@ -972,6 +992,8 @@ class SectionLabels {
 	update(sections: SectionLayout[], displayed: Map<string, Displayed>, editor: Editor) {
 		const seen = new Set<string>()
 		const z = editor.camera.peek().z
+		const hoveredGroupId = editor.hoveredGroupId.peek()
+		const linkedGroupId = editor.linkedGroup.get()?.id
 		const place = (el: HTMLElement, box: Box, scale: number) => {
 			// Anchor at the bottom-left of the box, scaling up from there.
 			const b = editor.pageToScreen({ x: box.x, y: box.y + box.h })
@@ -1023,6 +1045,8 @@ class SectionLabels {
 				if (name.textContent !== g.name) name.textContent = g.name
 				place(h, shift(g.heading), z)
 				h.style.opacity = String(d.opacity)
+				h.classList.toggle('hovered', g.id === hoveredGroupId)
+				h.classList.toggle('linked', g.id === linkedGroupId)
 			}
 		}
 		for (const [id, el] of this.els) {

@@ -5,6 +5,8 @@ export type Target =
 	| { type: 'section'; id: string }
 	/** a session frame's title strip */
 	| { type: 'frame_title'; id: string }
+	/** a named group's heading (id is the group's layout id) */
+	| { type: 'group_heading'; id: string }
 	| { type: 'canvas' }
 
 export interface Modifiers {

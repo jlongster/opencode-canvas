@@ -1,5 +1,6 @@
 import type { Editor } from '../editor/Editor'
-import { frameKey, noteKey, parseSelectionId } from '../editor/selection'
+import type { GroupLayout } from '../editor/layout'
+import { frameKey, groupKey, noteKey, parseSelectionId } from '../editor/selection'
 import { react } from '../state/signals'
 
 /** Notes come from the Yjs doc, a little after the canvas data; wait this long for a linked one. */
@@ -7,30 +8,41 @@ const NOTE_WAIT_MS = 4000
 
 const HASH_KINDS = { item: 'item', session: 'frame', note: 'note' } as const
 
-/** The selection key a hash like "#item=abc", "#session=abc" or "#note=abc" points at. */
+/**
+ * The selection key a hash like "#item=abc", "#session=abc", "#note=abc" or
+ * "#group=<session id>/<group name>" points at (a group key for groups; see selection.ts).
+ */
 export function parseHash(hash: string): string | null {
-	const m = /^#(item|session|note)=(.+)$/.exec(hash)
+	const m = /^#(item|session|note|group)=(.*)$/.exec(hash)
 	if (!m) return null
-	let id: string
 	try {
-		id = decodeURIComponent(m[2])
+		if (m[1] === 'group') {
+			// The session id and the name are encoded separately; the untitled group has an empty name.
+			const raw = m[2].includes('/') ? m[2] : decodeURIComponent(m[2])
+			const slash = raw.indexOf('/')
+			if (slash < 1) return null
+			return groupKey(`${decodeURIComponent(raw.slice(0, slash))}/${decodeURIComponent(raw.slice(slash + 1))}`)
+		}
+		if (!m[2]) return null
+		const id = decodeURIComponent(m[2])
+		const kind = HASH_KINDS[m[1] as keyof typeof HASH_KINDS]
+		return kind === 'frame' ? frameKey(id) : kind === 'note' ? noteKey(id) : id
 	} catch {
 		return null
 	}
-	const kind = HASH_KINDS[m[1] as keyof typeof HASH_KINDS]
-	return kind === 'frame' ? frameKey(id) : kind === 'note' ? noteKey(id) : id
 }
 
-/** The hash for a selection: one thing gets a link, anything else none. */
-export function hashForSelection(ids: string[]): string {
+/** The hash for a linked group (see Editor.focusGroup) or a selection of one thing; anything else gets none. */
+export function hashForSelection(ids: string[], group?: GroupLayout | null): string {
+	if (group) return `#group=${encodeURIComponent(group.sessionId)}/${encodeURIComponent(group.name ?? '')}`
 	if (ids.length !== 1) return ''
 	const { kind, id } = parseSelectionId(ids[0])
 	return `#${kind === 'frame' ? 'session' : kind}=${encodeURIComponent(id)}`
 }
 
-/** This page's URL pointing at the selection (or at nothing, if it isn't exactly one thing). */
-export function urlForSelection(ids: string[]): string {
-	return `${location.origin}${location.pathname}${location.search}${hashForSelection(ids)}`
+/** This page's URL with hashForSelection's hash. */
+export function urlForSelection(ids: string[], group?: GroupLayout | null): string {
+	return `${location.origin}${location.pathname}${location.search}${hashForSelection(ids, group)}`
 }
 
 function writeHash(hash: string) {
@@ -54,7 +66,8 @@ export class DeepLink {
 		this.disposers.push(
 			react(() => {
 				const ids = editor.selectedIds.get()
-				if (this.ready) writeHash(hashForSelection(ids))
+				const group = editor.linkedGroup.get()
+				if (this.ready) writeHash(hashForSelection(ids, group))
 			}),
 		)
 		const onHashChange = () => {
@@ -84,7 +97,10 @@ export class DeepLink {
 		this.cancelWait?.()
 		const { editor } = this
 		if (editor.focusSelectionKey(key, { animate: false })) return this.settle()
-		if (parseSelectionId(key).kind !== 'note') return onMissing()
+		const { kind, id } = parseSelectionId(key)
+		// A renamed or removed group: show its session instead, if that's still here.
+		if (kind === 'group' && editor.focusMissingGroup(id, { animate: false })) return this.settle()
+		if (kind !== 'note') return onMissing()
 
 		// Show the normal view meanwhile; give up if the person starts looking around themselves.
 		if (!this.ready) editor.goToInitialView()
@@ -118,7 +134,7 @@ export class DeepLink {
 	/** From here on the hash follows the selection (clearing a link to something missing). */
 	private settle() {
 		this.ready = true
-		writeHash(hashForSelection(this.editor.selectedIds.peek()))
+		writeHash(hashForSelection(this.editor.selectedIds.peek(), this.editor.linkedGroup.get()))
 	}
 
 	destroy() {

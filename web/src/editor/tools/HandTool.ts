@@ -61,6 +61,8 @@ class Dragging extends StateNode {
 			const key = frameKey(target.id)
 			if (e.shiftKey) editor.toggleSelected(key)
 			else editor.select([key])
+		} else if (target.type === 'group_heading') {
+			if (!e.shiftKey) editor.focusGroup(target.id, { animate: true })
 		} else if (target.type !== 'item' && !e.shiftKey) editor.selectNone()
 		this.parent!.transition('idle')
 	}

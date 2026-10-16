@@ -6,10 +6,11 @@ import type { EventOf } from '../types'
 export class SelectTool extends StateNode {
 	static override id = 'select'
 	static override initial = 'idle'
-	static override children = () => [Idle, PointingItem, PointingCanvas, Brushing]
+	static override children = () => [Idle, PointingItem, PointingGroup, PointingCanvas, Brushing]
 
 	override onExit() {
 		this.editor.setHovered(null)
+		this.editor.setHoveredGroup(null)
 	}
 }
 
@@ -18,6 +19,7 @@ class Idle extends StateNode {
 
 	override onEnter() {
 		this.editor.setCursor('default')
+		this.editor.setHoveredGroup(null)
 		this.updateHover()
 	}
 
@@ -33,12 +35,14 @@ class Idle extends StateNode {
 	override onPointerDown(e: EventOf<'pointer_down'>) {
 		if (e.button !== 0) return
 		if (e.target.type === 'item' || e.target.type === 'frame_title') this.parent!.transition('pointing_item', e)
+		else if (e.target.type === 'group_heading') this.parent!.transition('pointing_group', e)
 		else this.parent!.transition('pointing_canvas', e)
 	}
 
 	override onDoubleClick(e: EventOf<'double_click'>) {
 		const { editor } = this
 		if (e.target.type === 'item') editor.zoomToItem(e.target.id)
+		else if (e.target.type === 'group_heading') editor.zoomToGroup(e.target.id)
 		else if (e.target.type === 'section' || e.target.type === 'frame_title') editor.zoomToSection(e.target.id)
 		else editor.selectNone()
 	}
@@ -49,9 +53,12 @@ class Idle extends StateNode {
 
 	private updateHover() {
 		const { editor } = this
-		if (!editor.inputs.isPointerInside) return editor.setHovered(null)
-		const target = editor.getTargetAt(editor.inputs.currentPagePoint)
-		editor.setHovered(target.type === 'item' ? target.id : null)
+		const target = editor.inputs.isPointerInside ? editor.getTargetAt(editor.inputs.currentPagePoint) : null
+		editor.setHovered(target?.type === 'item' ? target.id : null)
+		const group = target?.type === 'group_heading' ? target.id : null
+		if (group === editor.hoveredGroupId.peek()) return
+		editor.setHoveredGroup(group)
+		if (!editor.inputs.isSpaceDown) editor.setCursor(group ? 'pointer' : 'default')
 	}
 }
 
@@ -85,6 +92,37 @@ class PointingItem extends StateNode {
 		const id = this.key
 		if (this.deselectOnUp) editor.select(editor.getSelectedIds().filter((s) => s !== id))
 		else if (!e.shiftKey) editor.select([id])
+		this.parent!.transition('idle')
+	}
+
+	override onCancel() {
+		this.parent!.transition('idle')
+	}
+}
+
+/**
+ * Pointer is down on a group's heading. A click brings the group into view and links to it
+ * (without selecting anything); a drag brushes like on empty canvas.
+ */
+class PointingGroup extends StateNode {
+	static override id = 'pointing_group'
+	private groupId = ''
+
+	override onEnter(info: unknown) {
+		const e = info as EventOf<'pointer_down'>
+		this.groupId = e.target.type === 'group_heading' ? e.target.id : ''
+	}
+
+	override onPointerMove() {
+		if (this.editor.inputs.isDragging) {
+			this.editor.setHoveredGroup(null)
+			if (!this.editor.inputs.shiftKey) this.editor.selectNone()
+			this.parent!.transition('brushing')
+		}
+	}
+
+	override onPointerUp() {
+		this.editor.focusGroup(this.groupId, { animate: true })
 		this.parent!.transition('idle')
 	}
 

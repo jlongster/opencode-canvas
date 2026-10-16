@@ -342,6 +342,8 @@ function Toolbar({ editor, canvas, conjure }: { editor: Editor; canvas: Canvas |
 	const zoom = useValue(() => Math.round(editor.camera.get().z * 100))
 	const selectedCount = useValue(() => editor.selectedIds.get().length)
 	const hasSelection = selectedCount > 0
+	const groupLinked = useValue(() => !!editor.linkedGroup.get())
+	const canLink = selectedCount === 1 || groupLinked
 	const [sharing, setSharing] = useState(false)
 	const [conjuring, setConjuring] = useState(false)
 
@@ -358,8 +360,8 @@ function Toolbar({ editor, canvas, conjure }: { editor: Editor; canvas: Canvas |
 			<button className="wide-only" title="Zoom to selection (Shift+2)" disabled={!hasSelection} onClick={() => editor.zoomToSelection()}>
 				Selection
 			</button>
-			{(selectedCount === 1 || canvas) && <div className="sep" />}
-			{selectedCount === 1 && <CopySelectionLink editor={editor} />}
+			{(canLink || canvas) && <div className="sep" />}
+			{canLink && <CopySelectionLink editor={editor} />}
 			{canvas && (
 				<>
 					{conjure && (
@@ -402,11 +404,11 @@ function Toolbar({ editor, canvas, conjure }: { editor: Editor; canvas: Canvas |
 	)
 }
 
-/** Copies this page's URL with a hash pointing at the one selected thing. */
+/** Copies this page's URL with a hash pointing at the linked group or the one selected thing. */
 function CopySelectionLink({ editor }: { editor: Editor }) {
 	const [copied, setCopied] = useState(false)
 	const copy = () =>
-		navigator.clipboard.writeText(urlForSelection(editor.getSelectedIds())).then(() => {
+		navigator.clipboard.writeText(urlForSelection(editor.getSelectedIds(), editor.linkedGroup.get())).then(() => {
 			setCopied(true)
 			setTimeout(() => setCopied(false), 1500)
 		})

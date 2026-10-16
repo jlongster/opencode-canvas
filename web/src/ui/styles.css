@@ -84,6 +84,18 @@ body,
 	color: #d4d4d8;
 	overflow: hidden;
 	text-overflow: ellipsis;
+	border-radius: 6px;
+	transition: color 120ms, background-color 120ms;
+}
+
+.group-heading.hovered .name {
+	color: #fafafa;
+	background: rgba(87, 143, 255, 0.14);
+	box-shadow: 0 0 0 4px rgba(87, 143, 255, 0.14);
+}
+
+.group-heading.linked .name {
+	color: #9dbcff;
 }
 
 .section-label .close {

@@ -669,7 +669,6 @@ export class AgentWorms {
 			worm.thinking = !!peer.thinking
 			worm.startledAt = this.conjure?.startled.get(worm.id) ?? worm.startledAt
 			worm.listening = this.conjure?.prompting.peek()?.clientId === worm.id
-			worm.el.classList.toggle('thinking', worm.thinking && !worm.bubble)
 			// A reply reopened from the prompt box ("Show last reply"), until the worm moves on.
 			const sessionId = peer.user.sessionId
 			const replay = sessionId ? this.conjure?.replays.get(sessionId) : undefined
@@ -686,6 +685,11 @@ export class AgentWorms {
 		const hidden = worm.dismissed !== null
 		this.syncSpeech(worm, hidden ? null : speech, speechSent)
 		if (replayed) worm.speechPinned = true
+		if (worm.conjured) {
+			// Working: the thought cloud, or while it's saying something, a little "•••" in the bubble.
+			worm.el.classList.toggle('thinking', worm.thinking && !worm.bubble)
+			worm.el.classList.toggle('working', worm.thinking && !!worm.bubble)
+		}
 		const chat = (!speaking && peer.chat) || null
 		if (worm.chat !== chat) {
 			worm.chat = chat
@@ -732,7 +736,14 @@ export class AgentWorms {
 			worm.bubbleText.className = 'agent-worm-speech-text'
 			worm.bubbleScroll.appendChild(worm.bubbleText)
 			worm.bubble.appendChild(worm.bubbleScroll)
-			if (worm.conjured) this.makeDismissable(worm, worm.bubble)
+			if (worm.conjured) {
+				const working = document.createElement('div')
+				working.className = 'agent-worm-speech-working'
+				working.title = 'Still working'
+				working.innerHTML = '<i></i><i></i><i></i>'
+				worm.bubble.appendChild(working)
+				this.makeDismissable(worm, worm.bubble)
+			}
 			// Links in it are for clicking, not for starting a selection on the canvas underneath.
 			else worm.bubble.addEventListener('pointerdown', (e) => (e.target as Element).closest?.('a') && e.stopPropagation())
 			worm.el.appendChild(worm.bubble)
@@ -801,7 +812,9 @@ export class AgentWorms {
 			renderSpeech(worm.bubbleText, worm.speech.slice(0, shown).join(''))
 			if (scroll && atEnd) scroll.scrollTop = scroll.scrollHeight
 		}
-		const typing = shown < total || !worm.speechDone
+		// Caught up with a working session that's off doing something else (tools, more steps): it
+		// isn't talking, it's thinking (see 'working'), until the next text or the end of the turn.
+		const typing = shown < total || (!worm.speechDone && !worm.thinking)
 		worm.bubble?.classList.toggle('typing', typing)
 		return typing
 	}
@@ -827,7 +840,8 @@ export class AgentWorms {
 		const talking = worm.bubble ? this.typeSpeech(worm, elapsed) : false
 		if (worm.conjured && worm.bubble) this.autoHide(worm, talking, now)
 		worm.talk += ((talking ? 1 : 0) - worm.talk) * (1 - Math.exp(-elapsed / 90))
-		worm.think += ((worm.thinking && !talking ? 1 : 0) - worm.think) * (1 - Math.exp(-elapsed / 200))
+		// Busy until its session is idle, whether or not it's saying something meanwhile.
+		worm.think += ((worm.thinking ? 1 : 0) - worm.think) * (1 - Math.exp(-elapsed / 200))
 		worm.carry += ((worm.carried ? 1 : 0) - worm.carry) * (1 - Math.exp(-elapsed / 120))
 
 		// Scale: pop in, burrow out.
@@ -959,8 +973,8 @@ export class AgentWorms {
 		if (startle > 0) look = { x: 0, y: 0.0001 }
 		// Carried: peering down at the drop, glancing the way it's swung.
 		else if (worm.carry > 0.3) look = { x: -worm.carryVel.x / 900, y: 1 }
-		else if (worm.think > 0.3) {
-			// Thinking: the eye rolls round and round.
+		else if (worm.think > 0.3 && worm.talk <= 0.05) {
+			// Thinking (and not talking): the eye rolls round and round.
 			const a = now / 260 + worm.seed
 			look = { x: Math.cos(a), y: Math.sin(a) }
 		} else if (worm.listening) look = { x: 0.15, y: 1 }

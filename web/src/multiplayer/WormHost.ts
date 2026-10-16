@@ -184,9 +184,12 @@ class WormRuntime {
 	/** the assistant message (step) whose text is showing, and its text blocks by ordinal */
 	private messageId: string | null = null
 	private blocks = new Map<number, string>()
+	/** the text showing is a finished turn's reply (or there's none yet) */
+	private replyDone = true
 	private idleTimer = 0
 	private publishTimer = 0
 	private reconcileTimer = 0
+	private reconciling = false
 	private unwatch: () => void
 	private destroyed = false
 	/** descendant sessions (children, grandchildren…), by id */
@@ -265,12 +268,16 @@ class WormRuntime {
 				else if (status === 'idle') this.setBusy(false)
 				return
 			}
+			// Text never says whether the session is working (a turn often says something and carries
+			// on with tools and more steps): only status and execution events, and session.active(), do.
 			case 'session.text.started':
 			case 'session.text.delta':
 			case 'session.text.ended': {
-				this.setBusy(true)
+				// We missed this turn starting: ask OpenCode whether it's running.
+				if (!this.busy) void this.reconcile()
 				const messageId = String(data.assistantMessageID)
 				const ordinal = Number(data.ordinal)
+				if (this.replyDone) this.clearText()
 				if (this.messageId !== messageId) {
 					// a new step with text: it replaces what the previous one said
 					this.messageId = messageId
@@ -283,7 +290,8 @@ class WormRuntime {
 				)
 				const text = this.text()
 				this.chat = text ? capChat(text) : null
-				this.chatSent = false
+				// still coming while the session works; settle() marks the final reply sent
+				this.chatSent = !this.busy
 				this.schedulePublish()
 				return
 			}
@@ -307,6 +315,15 @@ class WormRuntime {
 			.trim()
 	}
 
+	/** Forgets the shown text, for a new turn's. */
+	private clearText() {
+		this.replyDone = false
+		this.messageId = null
+		this.blocks.clear()
+		this.chat = null
+		this.chatSent = true
+	}
+
 	private setBusy(busy: boolean) {
 		if (busy) {
 			clearTimeout(this.idleTimer)
@@ -314,11 +331,10 @@ class WormRuntime {
 			if (this.busy) return
 			this.busy = true
 			this.error = null
-			this.messageId = null
-			this.blocks.clear()
+			// The last turn's reply goes; text this turn already streamed (before we knew it was busy) stays.
+			if (this.replyDone) this.clearText()
 			this.thinking = true
-			this.chat = null
-			this.chatSent = true
+			this.chatSent = !this.chat
 			this.publish()
 		} else if (this.busy && !this.idleTimer) {
 			this.idleTimer = window.setTimeout(() => void this.settle(), IDLE_SETTLE_MS)
@@ -333,6 +349,8 @@ class WormRuntime {
 		const error = this.error
 		this.error = null
 		let text = this.text()
+		// what's showing is now the final reply: the next turn's text replaces it
+		this.replyDone = true
 		// just this turn's last message: an earlier one could be a previous turn's
 		if (!text) text = await lastAssistantText(this.record.serverKey, this.record.sessionId, 1).catch(() => '')
 		// Something new started meanwhile: that owns the worm now.
@@ -406,7 +424,11 @@ class WormRuntime {
 
 	/** Checks the worm against the sessions OpenCode says are running. */
 	private async reconcile() {
-		const active = await withServer(this.record.serverKey, (c) => c.session.active({ signal: AbortSignal.timeout(10_000) })).catch(() => null)
+		if (this.reconciling) return
+		this.reconciling = true
+		const active = await withServer(this.record.serverKey, (c) => c.session.active({ signal: AbortSignal.timeout(10_000) }))
+			.catch(() => null)
+			.finally(() => (this.reconciling = false))
 		if (!active || this.destroyed) return
 		this.setBusy(this.record.sessionId in active)
 		await this.reconcileSubagents(active)

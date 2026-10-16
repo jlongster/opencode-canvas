@@ -934,6 +934,34 @@ body,
 	display: block;
 }
 
+/* said something and still working (more tools, more steps): a little "•••" under the text */
+.agent-worm-speech-working {
+	display: none;
+	gap: 4px;
+	padding: 0 14px 8px;
+	margin-top: -3px;
+}
+
+.agent-worm.working .agent-worm-speech-working {
+	display: flex;
+}
+
+.agent-worm-speech-working i {
+	width: 5px;
+	height: 5px;
+	border-radius: 50%;
+	background: currentColor;
+	animation: agent-thought-dot 1.1s ease-in-out infinite;
+}
+
+.agent-worm-speech-working i:nth-child(2) {
+	animation-delay: 0.15s;
+}
+
+.agent-worm-speech-working i:nth-child(3) {
+	animation-delay: 0.3s;
+}
+
 .agent-worm-speech-close:hover {
 	background: rgba(0, 0, 0, 0.25);
 }
@@ -1423,6 +1451,7 @@ body,
 	.agent-worm-thought-cloud,
 	.agent-worm-thought b,
 	.agent-worm-thought i,
+	.agent-worm-speech-working i,
 	.conjure-prompt,
 	.conjure-dot.busy {
 		animation: none;

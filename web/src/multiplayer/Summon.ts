@@ -1,10 +1,13 @@
 import type { Editor } from '../editor/Editor'
-import type { Vec } from '../editor/geometry'
+import { Box, type Vec } from '../editor/geometry'
+import { frameTitleBox } from '../editor/layout'
 import type { Conjure } from './Conjure'
 
 const LONG_PRESS_MS = 500
 /** screen px a finger may wander and still be a long press */
 const LONG_PRESS_SLOP = 8
+/** screen px from a creature's spot that still counts as over it */
+const CREATURE_REACH = 36
 
 /**
  * Summoning a session's worm (edit links): press C while the pointer is over anything of a session
@@ -39,11 +42,24 @@ export class Summon {
 		for (const d of this.disposers.splice(0)) d()
 	}
 
-	/** The session whose frame is under a page point, if any. */
+	/**
+	 * The session under a page point, if any: a creature's (near where it's perched), else the
+	 * session whose frame (title strip included) contains the point, whatever is on it.
+	 */
 	private sessionAt(point: Vec): string | null {
-		const target = this.editor.getTargetAt(point)
-		if (target.type === 'item') return this.editor.items.peek()[target.id]?.sessionId ?? null
-		if (target.type === 'section' || target.type === 'frame_title') return target.id
+		const z = this.editor.getZoom()
+		let best: { sessionId: string; d: number } | null = null
+		for (const peer of this.conjure.worms()) {
+			const at = peer.cursor
+			const sessionId = peer.user.sessionId
+			if (!at || !sessionId) continue
+			const d = Math.hypot(at.x - point.x, at.y - point.y) * z
+			if (d <= CREATURE_REACH && (!best || d < best.d)) best = { sessionId, d }
+		}
+		if (best) return best.sessionId
+		for (const section of this.editor.layout.get().sections) {
+			if (Box.contains(section.box, point) || Box.contains(frameTitleBox(section, z), point)) return section.id
+		}
 		return null
 	}
 

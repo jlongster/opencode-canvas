@@ -33,8 +33,6 @@ interface Room {
 	awareness: awarenessProtocol.Awareness
 	/** each socket and the awareness client ids it controls */
 	conns: Map<Socket, Set<number>>
-	/** awareness client ids the server itself publishes (MCP agents); they keep the room loaded */
-	agents: Set<number>
 }
 
 const rooms = new Map<string, Room>()
@@ -94,7 +92,7 @@ async function loadRoom(name: string): Promise<Room> {
 	// The server itself has no presence.
 	awareness.setLocalState(null)
 	const conns = new Map<Socket, Set<number>>()
-	room = { doc, awareness, conns, agents: new Set() }
+	room = { doc, awareness, conns }
 	rooms.set(name, room)
 
 	doc.on('update', (update: Uint8Array) => {
@@ -174,9 +172,9 @@ export const roomSockets = {
 	},
 }
 
-/** Unloads a room once nobody (no socket, no agent) is in it: saves it right away, then frees it. */
+/** Unloads a room once nobody (no socket) is in it: saves it right away, then frees it. */
 function releaseRoom(name: string, room: Room) {
-	if (room.conns.size > 0 || room.agents.size > 0 || rooms.get(name) !== room) return
+	if (room.conns.size > 0 || rooms.get(name) !== room) return
 	rooms.delete(name)
 	clearTimeout(saveTimers.get(name))
 	saveTimers.delete(name)
@@ -188,30 +186,6 @@ function releaseRoom(name: string, room: Room) {
 			if (flushing.get(name) === flush) flushing.delete(name)
 		})
 	flushing.set(name, flush)
-}
-
-/**
- * Publishes (or with null, removes) a presence state the server controls, under its own awareness
- * client id, so everyone in the room sees it like any other participant. Used for MCP agents and
- * conjured worms (through ServerPresence). A
- * published state keeps the room loaded; once the last one is removed and no sockets remain, the
- * room unloads as usual. `clock` must grow with every call for the same client id (and start at 1).
- * Removing never loads a room.
- */
-export async function setServerPresence(name: string, clientId: number, clock: number, state: Record<string, unknown> | null) {
-	const room = state ? await getRoom(name) : (rooms.get(name) ?? (await loading.get(name)?.catch(() => undefined)))
-	if (!room || rooms.get(name) !== room) return
-	const encoder = encoding.createEncoder()
-	encoding.writeVarUint(encoder, 1)
-	encoding.writeVarUint(encoder, clientId)
-	encoding.writeVarUint(encoder, clock)
-	encoding.writeVarString(encoder, JSON.stringify(state))
-	if (state) room.agents.add(clientId)
-	awarenessProtocol.applyAwarenessUpdate(room.awareness, encoding.toUint8Array(encoder), 'server')
-	if (!state) {
-		room.agents.delete(clientId)
-		releaseRoom(name, room)
-	}
 }
 
 /**

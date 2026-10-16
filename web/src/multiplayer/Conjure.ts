@@ -20,8 +20,8 @@ export interface PromptAttachment {
 	dataUrl: string
 }
 
-/** Why this browser can't talk to a worm, or null when it can. */
-export type TalkBlock = 'not-yours' | 'not-paired' | null
+/** Why this browser can't talk to a worm, or null when it can. 'unowned': nobody conjured it (an agent's say/highlight made it). */
+export type TalkBlock = 'not-yours' | 'not-paired' | 'unowned' | null
 
 const PROMPT_MAX = 20_000
 const FIND_SESSION_MS = 8_000
@@ -90,6 +90,7 @@ export class Conjure {
 	talkBlock(sessionId: string): TalkBlock {
 		pairings.get()
 		const r = this.records.get().find((x) => x.sessionId === sessionId)
+		if (r && !r.ownerId) return 'unowned'
 		if (!r || r.ownerId !== ownerId) return 'not-yours'
 		if (!runsHere(r)) return 'not-paired'
 		return null
@@ -134,6 +135,7 @@ export class Conjure {
 		if (!r) throw new Error('that worm was banished')
 		const block = this.talkBlock(r.sessionId)
 		if (block === 'not-yours') throw new Error('only the browser that conjured this worm can prompt it')
+		if (block === 'unowned') throw new Error('nobody has conjured this session yet: conjure it from your OpenCode to talk to it')
 		if (block) throw new Error(`its OpenCode isn't paired in this browser`)
 		const prompt = text.trim()
 		if (prompt.length > PROMPT_MAX) throw new Error(`that's longer than ${PROMPT_MAX} characters`)
@@ -157,13 +159,14 @@ export class Conjure {
 	/**
 	 * C over a session frame (or a long press): brings the session's worm to `at`. Conjures it when
 	 * it isn't here (from whichever paired OpenCode has the session); otherwise our own worm crawls
-	 * over. Resolves to a message for the user when it can't, else null.
+	 * over. One nobody owns (an agent's attention actions made it) is adopted. Resolves to a message
+	 * for the user when it can't, else null.
 	 */
 	async summon(sessionId: string, at: Vec): Promise<string | null> {
 		if (!this.canEdit) return null
 		const spot = { x: Math.round(at.x), y: Math.round(at.y) }
 		const r = this.record(sessionId)
-		if (r) {
+		if (r?.ownerId) {
 			if (r.ownerId !== ownerId) return 'Owned by someone else'
 			this.placing.set(sessionId, spot)
 			this.close()

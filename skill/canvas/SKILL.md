@@ -7,8 +7,9 @@ description: >
   video (generated images, edits, renders, screenshots, recordings) and the user has given you a
   canvas URL or id: post each one immediately, as soon as it exists, without waiting to be asked.
   Also use to post HTML (diagrams, flowcharts, charts, annotated explanations, SVG drawings) to
-  tell the user things visually, and to create, list, rename, delete or restore canvases,
-  sessions, groups and items.
+  tell the user things visually, to point the user at what to look at (say / highlight on your
+  session's creature), and to create, list, rename, delete or restore canvases, sessions, groups
+  and items.
 ---
 
 # Canvas API
@@ -195,22 +196,51 @@ echo "$BASE/c/$CID"
 
 JSON works too (when the server runs on this machine): `curl -s -X POST $API/canvases/$CID/sessions/$SID/items -H 'content-type: application/json' -d '{"path":"/tmp/out/v2.png","group":"2. Outline","title":"v2","sessionTitle":"Diff panel focus treatments"}'`.
 
+## Getting the user's attention: say and highlight
+
+Your session has a **creature** on the canvas: a small character beside your frame (the canvas
+makes one if it isn't there yet, in your session's colour, named after `sessionTitle`). When you
+want the user to look at something, queue it on your creature: it calls for attention (a badge
+with the count, a pulsing ring, the "N things want your attention" tray at the top) without
+interrupting anyone, and the user plays your queue as a walkthrough when they're ready.
+
+- **say**: a Markdown message from your creature.
+- **highlight**: point at something (the canvas outlines it and brings it into view), with an
+  optional Markdown message. Targets: an item id, a group as `<sessionId>/<group name>`, your
+  frame `frame:<sessionId>`, or a sticky note `note:<noteId>`.
+
+Each call appends one step, in order, so tell a short story: say what you did, highlight what to
+look at, say what you need. Keep steps short. It's fire-and-forget: you aren't told when they're
+read, so don't wait for it; ask in your reply if you need an answer. Don't queue a step for every
+post: use it when there's something worth a look or a question.
+
+Over HTTP: `POST $API/canvases/$CID/sessions/$SID/actions` with
+`{"kind": "say", "text"}` or `{"kind": "highlight", "target", "text"}`, plus `"sessionTitle"`
+→ `{id, position, queued}`. `GET` the same path lists your queue; `DELETE` clears it.
+
+```bash
+# BASE, API, CID, SID and SESSION_TITLE set as above
+act() { curl -s -X POST $API/canvases/$CID/sessions/$SID/actions -H 'content-type: application/json' \
+  -d "$(bun -e 'const [k, t, x, s] = process.argv.slice(1); console.log(JSON.stringify({kind: k, target: t || undefined, text: x, sessionTitle: s}))' "$@")"; }
+act say "" "Two palettes are up: **warm** and **cool**." "$SESSION_TITLE"
+act highlight "$SID/2. Cool palette" "These read calmer but lose contrast. Which way?" "$SESSION_TITLE"
+```
+
 ## MCP server
 
 The same server speaks MCP (Streamable HTTP) at `<base>/mcp`, usually configured in OpenCode as
-the `canvas` MCP server. Tools take a canvas id or URL, and an optional `sessionId`
-(`$OPENCODE_SESSION_ID`, remembered for later calls) that names you on the canvas. While you use a
-canvas you show up on it as an agent worm.
+the `canvas` MCP server. It only provides tools: you don't appear on the canvas yourself (your
+creature does, for say and highlight). Tools take a canvas id or URL; the ones that act for your
+session take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
 
 - `post_item {canvas, sessionId, sessionTitle, path | url | html, width?, height?, group?, title?, caption?, name?}`:
   post into your frame (`path` must be absolute, on the canvas server's machine). **Always pass `sessionTitle`.**
+- `say {canvas, sessionId, sessionTitle, text}` and `highlight {canvas, sessionId, sessionTitle, target, text?}`:
+  queue steps on your creature (see above). Return the step's `id` and `position` in your queue.
 - `update_item`, `delete_item`, `restore`: edit, soft-delete, undo deletes.
 - `list_canvases`, `create_canvas`, `get_canvas` (sessions, groups, items, notes), `find_items`, `list_notes`.
 - `get_item {itemId, includeImage?, fullSize?}`: see an image (or an HTML item's source).
 - `get_selection`: what people on the canvas have selected ("look at this"); `get_presence`: who's there.
-- `say {canvas, text, about?}`: talk to the people looking, in a speech bubble; `about` (item id,
-  `frame:<sessionId>`, `note:<noteId>`) makes your worm crawl over to it first.
-- `join_canvas` / `leave_canvas`: stay visible on a canvas without the 2-minute idle timeout / leave now.
 
-Users can also "conjure" OpenCode sessions onto a canvas from the browser (they show up as
-butterflies the user can prompt); that's user-facing, nothing for you to do.
+Users can also "conjure" OpenCode sessions from the browser, which lets them prompt the session
+through its creature; that's user-facing, nothing for you to do.

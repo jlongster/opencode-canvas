@@ -11,7 +11,7 @@ export interface SessionListing {
 	errors: Record<string, string>
 }
 
-/** Recent sessions across all projects on every paired server. */
+/** Recent top-level sessions (no subagents) across all projects on every paired server. */
 export async function listSessions(): Promise<SessionListing> {
 	const all = pairings.peek()
 	const results = await Promise.allSettled(all.map((p) => serverSessions(p.key)))
@@ -28,11 +28,12 @@ function serverSessions(key: string): Promise<OpenCodeSessionSummary[]> {
 	return withServer(key, async (c, p) => {
 		const signal = AbortSignal.timeout(REQUEST_MS)
 		const [list, active] = await Promise.all([
-			c.session.list({ limit: SESSIONS_LIMIT, order: 'desc' }, { signal }),
+			// parentID: null asks for top-level sessions only, so subagents don't use up the limit.
+			c.session.list({ limit: SESSIONS_LIMIT, order: 'desc', parentID: null }, { signal }),
 			c.session.active({ signal }).catch(() => ({}) as Record<string, unknown>),
 		])
 		return list.data
-			.filter((s) => !s.time.archived)
+			.filter((s) => !s.time.archived && !s.parentID)
 			.map((s) => ({
 				id: s.id,
 				serverKey: key,
@@ -41,7 +42,6 @@ function serverSessions(key: string): Promise<OpenCodeSessionSummary[]> {
 				directory: s.location.directory,
 				updatedAt: s.time.updated,
 				busy: s.id in active,
-				...(s.parentID ? { parentId: s.parentID } : {}),
 			}))
 	})
 }

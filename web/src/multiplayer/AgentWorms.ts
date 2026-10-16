@@ -1,6 +1,7 @@
 import type { Editor } from '../editor/Editor'
 import { markdownToHtml } from '../ui/markdown'
 import type { Box, Vec } from '../editor/geometry'
+import type { Attention } from './Attention'
 import type { Conjure } from './Conjure'
 import type { Peer, SubagentInfo } from './Presence'
 import {
@@ -40,7 +41,7 @@ const POP_MS = 380
 /** local typewriter speed for speech, catching up faster when it falls behind what has arrived */
 const TYPE_CPS = 36
 const SPEECH_CLOSE_MS = 220
-/** conjured worms are a bit bigger than MCP agents' */
+/** creatures' worm bodies are drawn this much bigger than the base sizes above */
 const CONJURED_SIZE = 1.4
 /** how long the startled face lasts after a conjured worm is clicked */
 const STARTLE_MS = 1100
@@ -54,7 +55,7 @@ const PIN_MS = 5000
 const GRAVITY = 2600
 /** a conjured worm's finished reply puts itself away (locally) after this long, unless it's pinned */
 const REPLY_HIDE_MS = 7000
-/** subagents' tiny worms: body size (of an MCP agent's worm), joints and spacing (screen px) */
+/** subagents' tiny worms: body size (of a base-size worm), joints and spacing (screen px) */
 const TINY_SIZE = 0.56
 const TINY_JOINTS = 6
 const TINY_SPACING = 3.4
@@ -80,6 +81,8 @@ const FRESH_MS = 15000
 const STRETCH_MS = 900
 /** an idle butterfly's occasional flutter hop */
 const HOP_MS = 700
+/** calling for attention (queued actions): a flutter hop this often, awake or not */
+const CALL_HOP_MS = 1700
 const DEG = Math.PI / 180
 
 interface Trip {
@@ -200,9 +203,13 @@ interface Worm {
 	tinies: Map<string, Tiny>
 	tiniesAt?: number
 	sessionId: string | null
-	/** conjured sessions are butterflies (MCP agents stay worms); the rest is theirs */
+	/** conjured sessions are butterflies; the rest is theirs */
 	butterfly: boolean
 	bf: Flight
+	/** how many attention actions its session has queued: while any are, it calls (badge, ring, hops), awake */
+	calls: number
+	/** the count badge, while it calls */
+	badge: HTMLButtonElement | null
 }
 
 /** A butterfly's pose and wingbeat. */
@@ -241,13 +248,14 @@ interface Press {
 }
 
 /**
- * AI agents have no pointer, so each one gets a little googly-eyed worm that crawls to whatever
- * it's working on (the first thing in its awareness selection). Bodies are drawn on one 2D canvas
- * in screen space; the name and activity label are DOM, like human cursor labels.
+ * Sessions' creatures (real OpenCode sessions, see Conjure): googly-eyed butterflies that sit where
+ * they were put (see Butterfly.ts), hatching from a worm's chrysalis when they arrive while you
+ * watch. Their busy subagents are tiny worms crawling around them. Bodies are drawn on one 2D canvas
+ * in screen space; the name label, bubbles and badges are DOM, like human cursor labels.
  *
- * Conjured sessions (real OpenCode sessions, see Conjure) are the worm grown up: a butterfly that
- * flies where the worm would crawl (see Butterfly.ts), hatching from a chrysalis when it's
- * conjured while you watch. Their busy subagents stay tiny worms crawling around it.
+ * A creature whose session queued something for attention (see Attention) calls for it where it
+ * sits, even asleep: a count badge, a soft pulsing ring and a flutter hop now and then. Clicking it
+ * (or the badge) opens its walkthrough.
  */
 export class AgentWorms {
 	private canvas: HTMLCanvasElement
@@ -275,6 +283,7 @@ export class AgentWorms {
 		parent: HTMLElement,
 		private editor: Editor,
 		private conjure: Conjure | null = null,
+		private attention: Attention | null = null,
 	) {
 		this.canvas = document.createElement('canvas')
 		this.canvas.className = 'agent-worms'
@@ -300,9 +309,10 @@ export class AgentWorms {
 			window.removeEventListener('pointermove', track, true)
 			document.removeEventListener('pointerout', untrack)
 		})
-		if (conjure?.canPrompt && this.container) {
+		if (conjure && this.container) {
 			// Capturing on window runs before the editor's own listeners on the container, so a click
-			// on a worm never reaches it; everywhere else passes straight through.
+			// on a worm never reaches it; everywhere else passes straight through. (View links only
+			// click creatures calling for attention.)
 			const listen = (type: 'pointerdown' | 'pointerup' | 'pointercancel' | 'pointermove', fn: (e: PointerEvent) => void) => {
 				window.addEventListener(type, fn, true)
 				this.disposers.push(() => window.removeEventListener(type, fn, true))
@@ -329,6 +339,7 @@ export class AgentWorms {
 				this.worms.set(peer.clientId, worm)
 			}
 			if (worm.leaving) this.revive(worm, now)
+			this.syncCalls(worm, now)
 			const placed = peer.user.sessionId ? this.conjure?.placing.get(peer.user.sessionId) : undefined
 			if (placed) {
 				// Summoned here (C): crawl over now rather than waiting for the record to come back.
@@ -392,6 +403,7 @@ export class AgentWorms {
 		const worms = [...this.worms.values()].reverse()
 		for (const worm of worms) {
 			if (!worm.conjured || worm.leaving || worm.scale < 0.5) continue
+			if (!this.conjure?.canPrompt && !worm.calls) continue
 			if (worm.hit.some((d) => Math.hypot(d.x - x, d.y - y) <= d.r + HIT_SLOP)) return worm
 		}
 		return null
@@ -400,7 +412,7 @@ export class AgentWorms {
 	/** Pointer events over the canvas itself (not over a bubble, a prompt box or other UI). */
 	private overCanvas(e: PointerEvent) {
 		const target = e.target as Element | null
-		return !!target && !!this.container?.contains(target) && !target.closest('.agent-worm-speech, .conjure-prompt, .note')
+		return !!target && !!this.container?.contains(target) && !target.closest('.agent-worm-speech, .agent-worm-attention, .conjure-prompt, .note')
 	}
 
 	/** Client coordinates to this layer's screen space (the editor's). */
@@ -436,7 +448,18 @@ export class AgentWorms {
 		const worm = press.worm
 		const peer = this.conjure?.peer(worm.id)
 		if (!press.dragging) {
-			if (peer && e.type === 'pointerup') this.conjure!.open(peer)
+			if (!peer || e.type !== 'pointerup') return
+			// Calling for attention: a click opens its walkthrough, and another one (or a click while it
+			// isn't calling) the prompt box.
+			const sessionId = peer.user.sessionId
+			if (sessionId && worm.calls && !this.attention?.isOpen(sessionId)) {
+				this.startle(worm)
+				return this.attention!.open(sessionId)
+			}
+			if (this.conjure!.canPrompt) {
+				this.attention?.close()
+				this.conjure!.open(peer)
+			}
 			return
 		}
 		const at = worm.carried
@@ -458,7 +481,7 @@ export class AgentWorms {
 			e.stopPropagation()
 			const at = this.local(e)
 			if (!press.dragging) {
-				if (Math.hypot(at.x - press.start.x, at.y - press.start.y) < DRAG_PX) return
+				if (!this.conjure?.canEdit || Math.hypot(at.x - press.start.x, at.y - press.start.y) < DRAG_PX) return
 				press.dragging = true
 				press.worm.pinned = null
 				if (this.conjure?.prompting.peek()?.clientId === press.worm.id) this.conjure.close()
@@ -558,6 +581,8 @@ export class AgentWorms {
 			pinned: null,
 			prevJoints: [],
 			tinies: new Map(),
+			calls: 0,
+			badge: null,
 			sessionId: peer.user.sessionId ?? null,
 			butterfly: conjured,
 			bf: {
@@ -661,8 +686,10 @@ export class AgentWorms {
 		let speechSent = !!peer.chatSent
 		let replayed = false
 		if (worm.conjured) {
-			if (worm.asleep !== !!peer.user.asleep) {
-				worm.asleep = !!peer.user.asleep
+			// Calling for attention wakes it up (for the look of it: nobody runs it any more than before).
+			const asleep = !!peer.user.asleep && !worm.calls
+			if (worm.asleep !== asleep) {
+				worm.asleep = asleep
 				worm.el.classList.toggle('asleep', worm.asleep)
 				worm.label.title = worm.asleep ? 'Asleep: its owner\'s tab isn\'t open' : ''
 			}
@@ -708,6 +735,47 @@ export class AgentWorms {
 		const showing = !!chat && (!sent || now - worm.chatAt < CHAT_MS)
 		worm.label.classList.toggle('chatting', showing)
 		worm.message?.classList.toggle('sent', sent)
+	}
+
+	/** The attention badge (with its count) and calling state, from its session's queue. */
+	private syncCalls(worm: Worm, now: number) {
+		const sessionId = worm.sessionId
+		const calls = sessionId && worm.conjured ? (this.attention?.count(sessionId) ?? 0) : 0
+		const open = !!sessionId && !!this.attention?.isOpen(sessionId)
+		worm.el.classList.toggle('attending', open)
+		if (calls === worm.calls) return
+		// Starting to call: a first hop right away.
+		if (calls && !worm.calls) worm.bf.nextHop = now + 250
+		worm.calls = calls
+		worm.el.classList.toggle('calling', calls > 0)
+		if (!calls) {
+			worm.badge?.remove()
+			worm.badge = null
+			return
+		}
+		if (!worm.badge) {
+			const badge = document.createElement('button')
+			badge.className = 'agent-worm-attention'
+			badge.addEventListener('pointerdown', (e) => e.stopPropagation())
+			badge.addEventListener('click', (e) => {
+				e.stopPropagation()
+				if (worm.sessionId) this.attention?.open(worm.sessionId)
+			})
+			const ring = document.createElement('span')
+			ring.className = 'agent-worm-call-ring'
+			ring.setAttribute('aria-hidden', 'true')
+			worm.el.append(ring, badge)
+			worm.badge = badge
+		}
+		worm.badge.textContent = calls > 99 ? '99+' : String(calls)
+		worm.badge.title = `${calls} thing${calls === 1 ? '' : 's'} for you to look at: click to go through ${calls === 1 ? 'it' : 'them'}`
+	}
+
+	/** A jolt, as when it's clicked. */
+	private startle(worm: Worm) {
+		const now = performance.now()
+		worm.startledAt = now
+		this.conjure?.startled.set(worm.id, now)
 	}
 
 	/** Opens, extends, replaces or closes the speech bubble. */
@@ -1023,9 +1091,16 @@ export class AgentWorms {
 		else if (worm.carried && Math.abs(worm.carryVel.x) > 160) bf.facing = Math.sign(worm.carryVel.x)
 		bf.face += (bf.facing - bf.face) * ease(120)
 
-		// Now and then, sitting about, a little flutter hop.
+		// Now and then, sitting about, a little flutter hop; calling for attention, one every CALL_HOP_MS
+		// (until someone is looking at its walkthrough).
+		const calling = worm.calls > 0 && !worm.el.classList.contains('attending') && !trip && !worm.carried && now - bf.morphStart > MORPH_MS
 		const idle = !trip && !worm.carried && !worm.thinking && !worm.asleep && worm.talk < 0.05 && now - bf.morphStart > MORPH_MS
-		if (!idle) bf.nextHop = Math.max(bf.nextHop, now + 2500)
+		if (calling) {
+			if (!still && now > bf.nextHop) {
+				bf.hopStart = now
+				bf.nextHop = now + CALL_HOP_MS
+			}
+		} else if (!idle) bf.nextHop = Math.max(bf.nextHop, now + 2500)
 		else if (!still && now > bf.nextHop) {
 			bf.hopStart = now
 			bf.nextHop = now + 6000 + Math.random() * 8000

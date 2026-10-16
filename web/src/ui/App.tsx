@@ -2,14 +2,16 @@ import { useEffect, useRef, useState, type JSX } from 'react'
 import { Editor, type ToolId } from '../editor/Editor'
 import { describeError, Renderer } from '../render/Renderer'
 import { atom, react } from '../state/signals'
-import type { Canvas, ConjuredAgent } from '../../../shared/types'
+import type { AttentionAction, Canvas, ConjuredAgent } from '../../../shared/types'
 import { frameKey } from '../editor/selection'
 import { connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, viewUrl, type CanvasLink } from '../sync/client'
+import { Attention } from '../multiplayer/Attention'
 import { Conjure } from '../multiplayer/Conjure'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedNotes } from '../multiplayer/SharedNotes'
 import { Summon } from '../multiplayer/Summon'
+import { AttentionTray, Walkthrough } from './Attention'
 import { ConjureButton, ConjurePrompt } from './Conjure'
 import { CursorChat } from './CursorChat'
 import { DeepLink, urlForSelection } from './deepLink'
@@ -60,6 +62,9 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 	const [canvas, setCanvas] = useState<Canvas | null>(null)
 	const [presence, setPresence] = useState<Presence | null>(null)
 	const [conjure, setConjure] = useState<Conjure | null>(null)
+	const [attention, setAttention] = useState<Attention | null>(null)
+	// the strip under the top bar where the attention tray and the auto-seed progress stack
+	const [topStack, setTopStack] = useState<HTMLDivElement | null>(null)
 	const role = link.role
 	const onGoneRef = useRef(onGone)
 	onGoneRef.current = onGone
@@ -73,6 +78,8 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 		const disposers: (() => void)[] = []
 		// The canvas's conjured worms, from the canvas server (loaded with the canvas, then live).
 		const conjured = atom<ConjuredAgent[]>('conjured', [])
+		// What their sessions queued for attention (loaded with the canvas, then live).
+		const queued = atom<AttentionAction[]>('attention', [])
 		let canvasTitle = ''
 
 		editor.mount(container)
@@ -132,6 +139,11 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					else if ('put' in change) conjured.set([...conjured.peek().filter((r) => r.sessionId !== change.put.sessionId), change.put])
 					else conjured.set(conjured.peek().filter((r) => r.sessionId !== change.deleted))
 				},
+				onAttention: (change) => {
+					if ('all' in change) queued.set(change.all)
+					else if ('put' in change) queued.set([...queued.peek().filter((a) => a.id !== change.put.id), change.put])
+					else queued.set(queued.peek().filter((a) => !change.done.includes(a.id)))
+				},
 				onLoad: (c, first) => {
 					canvasTitle = c.title
 					setCanvas(c)
@@ -147,16 +159,20 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					const notes = new SharedNotes(overlayRef.current!, editor, p, link.role)
 					// Edit links can talk to conjured worms; view links just watch them.
 					const spells = new Conjure(editor, p, c.id, link.role === 'edit', conjured, () => canvasTitle)
-					const cursors = new PeerCursors(overlayRef.current!, editor, p, spells)
-					disposers.push(() => cursors.destroy(), () => spells.destroy(), () => notes.destroy(), () => p.destroy())
+					// Edit links mark what they step through done; view links only look.
+					const calls = new Attention(editor, spells, c.id, link.role === 'edit', queued)
+					const cursors = new PeerCursors(overlayRef.current!, editor, p, spells, calls)
+					disposers.push(() => cursors.destroy(), () => calls.destroy(), () => spells.destroy(), () => notes.destroy(), () => p.destroy())
 					if (link.role === 'edit') {
 						const summon = new Summon(editor, spells, container)
 						disposers.push(() => summon.destroy())
 					}
 					setPresence(p)
 					setConjure(spells)
+					setAttention(calls)
 					;(window as any).presence = p
 					;(window as any).conjure = spells
+					;(window as any).attention = calls
 				},
 				onCanvas: (c) => {
 					canvasTitle = c.title
@@ -193,6 +209,10 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			{presence && <FollowIndicator presence={presence} />}
 			{presence && <CursorChat editor={editor} presence={presence} />}
 			{conjure?.canPrompt && <ConjurePrompt editor={editor} conjure={conjure} />}
+			{attention && conjure && <Walkthrough editor={editor} attention={attention} conjure={conjure} />}
+			<div className="top-stack" ref={setTopStack}>
+				{attention && <AttentionTray attention={attention} />}
+			</div>
 			<div className="top-bar">
 				<TitleBar canvas={canvas} canRename={role === 'edit'} onRenamed={setCanvas} />
 				<div className="top-right">
@@ -214,7 +234,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			</div>
 			<StatusBar editor={editor} />
 			<UndoToast editor={editor} />
-			{canvas && <EmptyState editor={editor} canvas={canvas} role={role} />}
+			{canvas && <EmptyState editor={editor} canvas={canvas} role={role} topStack={topStack} />}
 			{(rendererError || error) && (
 				<div className="error">
 					<strong>{rendererError ? "Can't start the renderer." : "Can't open this canvas."}</strong>
@@ -491,7 +511,7 @@ function UndoToast({ editor }: { editor: Editor }) {
 	)
 }
 
-function EmptyState({ editor, canvas, role }: { editor: Editor; canvas: Canvas; role: CanvasLink['role'] }) {
+function EmptyState({ editor, canvas, role, topStack }: { editor: Editor; canvas: Canvas; role: CanvasLink['role']; topStack: HTMLElement | null }) {
 	const empty = useValue(() => editor.connection.get() === 'open' && Object.keys(editor.sessions.get()).length === 0)
 	// Seeding fills the canvas, but the picker stays up with its progress until it's done. With no
 	// OpenCode paired in this browser, the picker asks to connect one first.
@@ -510,7 +530,7 @@ function EmptyState({ editor, canvas, role }: { editor: Editor; canvas: Canvas; 
   -F file=@output.png -F caption="first try"`
 	return (
 		<div className="empty seeding">
-			<SeedPicker editor={editor} canvasId={canvas.id} onBusy={setSeeding} />
+			<SeedPicker editor={editor} canvasId={canvas.id} onBusy={setSeeding} topStack={topStack} />
 			{empty && !seeding && (
 				<div className="seed-curl">
 					<p>Or post media from a session yourself:</p>

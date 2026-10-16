@@ -1,13 +1,17 @@
 /**
- * Conjured worms: real OpenCode sessions brought onto a canvas as worms people can talk to. The
- * canvas server only keeps the shared records (at most one per session per canvas, saved in
- * data/index.json): which session, which OpenCode it lives on (serverKey, a non-secret id the
- * browser derives from the OpenCode URL), where it sits and who owns it (ownerId, a random id kept
- * in the owner's browser). It never talks to OpenCode and never sees credentials.
+ * Creatures: real OpenCode sessions on a canvas that people can talk to. The canvas server only
+ * keeps the shared records (at most one per session per canvas, saved in data/index.json): which
+ * session, which OpenCode it lives on (serverKey, a non-secret id the browser derives from the
+ * OpenCode URL), where it sits and who owns it (ownerId, a random id kept in the owner's browser).
+ * It never talks to OpenCode and never sees credentials.
  *
  * Everything live happens in the owner's browser tab, which talks to OpenCode directly: it
- * publishes the worm's presence into the canvas's room (thinking, replies, position). With no owner
- * tab open the worm is asleep (`awake` false in list responses).
+ * publishes the creature's presence into the canvas's room (thinking, replies, position). With no
+ * owner tab open the creature is asleep (`awake` false in list responses).
+ *
+ * A session that queues something for attention (see attention.ts) without a creature on the canvas
+ * gets one without an owner (ownerId and serverKey ""): asleep for good, until someone conjures the
+ * session from their browser, which adopts it.
  */
 import type { ConjuredAgent, ServerEvent } from '../shared/types'
 
@@ -111,7 +115,10 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 			}
 			const at = position(body?.x, body?.y, 'send {"sessionId", "serverKey", "ownerId", "x", "y"} with x/y the page position')
 			if (!deps.canvasExists(canvasId)) throw new ConjureError(404, `no canvas ${canvasId}`)
-			if (records.has(key(canvasId, sessionId))) throw new ConjureError(409, 'that session is already conjured on this canvas')
+			const existing = records.get(key(canvasId, sessionId))
+			// One without an owner (made for an agent's attention actions) is adopted.
+			if (existing?.ownerId) throw new ConjureError(409, 'that session is already conjured on this canvas')
+			if (existing) return put({ ...existing, serverKey, ownerId, title: titleField(body?.title) || existing.title, ...at })
 			return put({
 				canvasId,
 				sessionId,
@@ -122,6 +129,20 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 				createdAt: Date.now(),
 				ownerId,
 			})
+		},
+
+		/**
+		 * The session's creature, made without an owner at `at` if there's none yet. A title names a
+		 * new or untitled one.
+		 */
+		ensure(canvasId: string, sessionId: string, opts: { title?: string; at: () => { x: number; y: number } }): ConjuredAgent {
+			const r = records.get(key(canvasId, sessionId))
+			const title = titleField(opts.title)
+			if (r) return title && !r.title ? put({ ...r, title }) : r
+			if (!SESSION_ID.test(sessionId)) throw new ConjureError(400, `"sessionId" must be an OpenCode session id ("ses_" + 26 characters)`)
+			if (!deps.canvasExists(canvasId)) throw new ConjureError(404, `no canvas ${canvasId}`)
+			const at = opts.at()
+			return put({ canvasId, sessionId, serverKey: '', title: title ?? '', color: colorFor(sessionId), x: Math.round(at.x), y: Math.round(at.y), createdAt: Date.now(), ownerId: '' })
 		},
 
 		/** Moves the worm (it was dragged) and/or renames it (its session's title changed). */

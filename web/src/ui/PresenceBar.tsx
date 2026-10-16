@@ -10,7 +10,11 @@ const MAX_SHOWN_NARROW = 1
 /** Overlapping avatars of everyone here. Click someone to follow them; click yourself to rename. */
 export function PresenceBar({ presence }: { presence: Presence }) {
 	const peers = useValue(
-		() => presence.peers.get().map((p) => ({ id: p.clientId, ...p.user, chat: p.chat ?? null })),
+		() =>
+			presence.peers
+				.get()
+				.filter((p) => !p.user.agent || p.user.conjured)
+				.map((p) => ({ id: p.clientId, ...p.user })),
 		[presence],
 	)
 	const me = useValue(() => presence.me.get(), [presence])
@@ -21,8 +25,6 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 
 	const shown = peers.slice(0, narrow ? MAX_SHOWN_NARROW : MAX_SHOWN)
 	const hidden = peers.length - shown.length
-	// conjured worms' replies are in their speech bubbles, too long for a one-line activity feed
-	const activity = peers.filter((p) => p.agent && !p.conjured && p.chat)
 
 	return (
 		<div className="presence" onPointerDown={(e) => e.stopPropagation()}>
@@ -51,18 +53,6 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 					<span className={`presence-dot ${status}`} />
 				</button>
 			</div>
-			{activity.length > 0 && (
-				<div className="agent-activity">
-					{activity.map((p) => (
-						// keyed by the message so each new one starts its fade afresh
-						<div key={`${p.id}:${p.chat}`} className="agent-activity-line" style={{ ['--ring' as string]: p.color }}>
-							<AgentGlyph />
-							<span className="agent-activity-name">{p.name}</span>
-							<span className="agent-activity-text">{p.chat}</span>
-						</div>
-					))}
-				</div>
-			)}
 			{editing && <NameEditor presence={presence} onDone={() => setEditing(false)} />}
 		</div>
 	)

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { OpenCodeSessionSummary, SeedResult } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { AUTO_SESSIONS, autoCandidates, autoSeed, autoSeededAt, type AutoRow } from '../opencode/autoseed'
@@ -31,14 +32,24 @@ const FADE_MS = 500
  *
  * A brand-new canvas doesn't wait to be picked for: once the paired servers answer, it brings in
  * the latest sessions with media by itself (see opencode/autoseed.ts), showing their progress in
- * a small bar at the top that leaves the canvas free to pan and zoom; the picker stays a click
- * away. Until it knows whether it will (sessions listed, canvas not seeded before), it shows nothing.
+ * a small bar at the top (in `topStack`, above the attention tray) that leaves the canvas free to pan
+ * and zoom; the picker stays a click away. Until it knows whether it will (sessions listed, canvas
+ * not seeded before), it shows nothing.
  */
-export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canvasId: string; onBusy: (busy: boolean) => void }) {
+export function SeedPicker({
+	editor,
+	canvasId,
+	onBusy,
+	topStack,
+}: {
+	editor: Editor
+	canvasId: string
+	onBusy: (busy: boolean) => void
+	topStack?: HTMLElement | null
+}) {
 	const { servers, sessions, errors, reload: load } = useOpenCode()
 	const offer = useValue(() => pairOffer.get())
 	const [query, setQuery] = useState('')
-	const [showSubagents, setShowSubagents] = useState(false)
 	const [selected, setSelected] = useState<string[]>([])
 	const [status, setStatus] = useState<Record<string, RowStatus> | null>(null)
 	const [running, setRunning] = useState(false)
@@ -154,11 +165,8 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 		)
 
 	const q = query.trim().toLowerCase()
-	const subagentCount = (sessions ?? []).filter((s) => s.parentId).length
 	const shown = (sessions ?? []).filter(
-		(s) =>
-			(showSubagents || !s.parentId || selected.includes(sessionKey(s))) &&
-			(!q || s.title.toLowerCase().includes(q) || s.directory.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)),
+		(s) => !q || s.title.toLowerCase().includes(q) || s.directory.toLowerCase().includes(q) || s.id.toLowerCase().includes(q),
 	)
 	const toggle = (id: string) => setSelected((sel) => (sel.includes(id) ? sel.filter((s) => s !== id) : [...sel, id]))
 
@@ -208,7 +216,7 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 			: current.row.state === 'uploading'
 				? `${current.session.title || 'Untitled session'} uploading ${current.row.done}/${current.row.total}`
 				: `reading ${current.session.title || 'Untitled session'}`
-		return (
+		const bar = (
 			<div
 				className={`seed-picker seed-auto${auto.running ? '' : ' done'}${fading ? ' fading' : ''}`}
 				onPointerDown={(e) => e.stopPropagation()}
@@ -281,6 +289,8 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 				)}
 			</div>
 		)
+		// First in the strip under the top bar, so the attention tray stacks below it.
+		return topStack ? createPortal(bar, topStack) : bar
 	}
 
 	if (status) {
@@ -348,7 +358,6 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 						{shortDir(s.directory)} · {relativeTime(s.updatedAt)}
 					</span>
 				</span>
-				{s.parentId && <span className="seed-tag">subagent</span>}
 			</label>
 		)
 	}
@@ -362,12 +371,6 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 			</div>
 			<div className="seed-filters">
 				<input className="seed-search" placeholder="Filter sessions" value={query} onChange={(e) => setQuery(e.target.value)} />
-				{subagentCount > 0 && (
-					<label className="seed-toggle" title="Subagent sessions are started by other sessions">
-						<input type="checkbox" checked={showSubagents} onChange={(e) => setShowSubagents(e.target.checked)} />
-						Subagents ({subagentCount})
-					</label>
-				)}
 			</div>
 			<div className="seed-list">
 				{sessions === null && <div className="seed-message">Loading sessions…</div>}

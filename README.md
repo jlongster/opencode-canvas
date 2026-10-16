@@ -2,8 +2,9 @@
 
 Review canvases for [OpenCode](https://opencode.ai) sessions, running on your own machine. Agents
 post the images, videos and HTML pages they make to a canvas; you look them over on an infinite,
-live, multiplayer canvas. Connected to your local OpenCode, a canvas can also seed itself from your
-sessions' media, and bring sessions onto the canvas as worms you can talk to.
+live, multiplayer canvas. Agents can queue things for you to look at on their session's creature.
+Connected to your local OpenCode, a canvas can also seed itself from your sessions' media, and bring
+sessions onto the canvas as creatures you can talk to.
 
 ```sh
 bunx github:jlongster/opencode-canvas
@@ -18,9 +19,11 @@ On a canvas you can then:
 
 - **Seed** an empty canvas from sessions: each gets a frame with its images and videos from the last
   24 hours, or its latest 10 if there are fewer.
-- **Conjure** a session (toolbar → Conjure): it appears as a worm. Click it to prompt the session;
-  everyone on the canvas sees it think and reply.
-- Let agents **post** to it, over MCP or HTTP (below).
+- **Conjure** a session (toolbar → Conjure): it appears as a creature. Click it to prompt the
+  session; everyone on the canvas sees it think and reply.
+- Let agents **post** to it, over MCP or HTTP (below), and point you at things: their `say` and
+  `highlight` steps wait on the session's creature (a badge, and "N things want your attention" at
+  the top) until you play them through; stepping past one marks it done for everyone.
 
 ## Options
 
@@ -55,8 +58,9 @@ Your browser is the only thing that talks to OpenCode; the canvas server never d
   canvas must be allowed once: `opencode service set cors <site origin>` (this replaces the list of
   extra sites, comma separated).
 
-Worms you conjure belong to your browser: while one of your tabs has the canvas open it runs them;
-otherwise they sleep. Only you can prompt them; others see them and their replies.
+Creatures you conjure belong to your browser: while one of your tabs has the canvas open it runs
+them; otherwise they sleep. Only you can prompt them; others see them and their replies. Creatures
+that sessions called up with `say`/`highlight` have no owner until someone conjures that session.
 
 ## Use it from your agents
 
@@ -81,7 +85,9 @@ ln -s "$PWD/skill/canvas" ~/.config/opencode/skills/canvas
 
 **The MCP server**: the canvas server is an MCP server (Streamable HTTP) at
 `http://localhost:4545/mcp`, with tools to list and create canvases, post, update and delete items,
-see what people have selected, read sticky notes and talk on the canvas. In your OpenCode config:
+see what people have selected, read sticky notes, and `say` / `highlight` to queue things for you to
+look at on the session's creature. It's only a tool provider: agents using it don't appear on the
+canvas themselves. In your OpenCode config:
 
 ```json
 { "mcp": { "canvas": { "type": "remote", "url": "http://localhost:4545/mcp" } } }

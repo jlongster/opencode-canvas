@@ -8,7 +8,7 @@ import { url, wsUrl } from '../base'
 export interface PeerUser {
 	name: string
 	color: string
-	/** set by AI agents working through the canvas MCP server: no cursor or view, just activity */
+	/** not a person: set by conjured creatures (see WormHost), which have no pointer or view */
 	agent?: boolean
 	/** a conjured worm: an OpenCode session brought onto the canvas, which edit links can prompt */
 	conjured?: boolean

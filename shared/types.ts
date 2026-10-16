@@ -25,8 +25,10 @@ export interface CanvasData {
 	canvas: Canvas
 	sessions: Session[]
 	items: Item[]
-	/** OpenCode sessions conjured onto it as worms */
+	/** OpenCode sessions on it as creatures (conjured from a browser, or called up by an agent's say/highlight) */
 	conjured: ConjuredAgent[]
+	/** what sessions' creatures want people to look at, oldest first (see AttentionAction) */
+	attention: AttentionAction[]
 }
 
 /** Sessions belong to a canvas; the same OpenCode session id may appear in several canvases. */
@@ -86,7 +88,7 @@ export interface Note {
 /** Someone on a canvas right now, from the room's Yjs awareness (GET /api/canvases/:cid/presence). */
 export interface PresenceEntry {
 	clientId: number
-	/** agent: an AI agent (no pointer); conjured: a worm for an OpenCode session you can talk to (see ConjuredAgent) */
+	/** agent: not a person (no pointer); conjured: a creature for an OpenCode session you can talk to (see ConjuredAgent) */
 	user: { name: string; color: string; agent?: boolean; conjured?: boolean; sessionId?: string; serverKey?: string }
 	/** item ids as they are, "frame:<sessionId>" for session frames, "note:<noteId>" for sticky notes */
 	selection: string[]
@@ -130,10 +132,11 @@ export interface SeedResult {
 }
 
 /**
- * An OpenCode session brought onto a canvas as a worm (at most one per session per canvas). It
- * sits at (x, y) in page coordinates. The canvas server keeps only this record, with no
- * credentials: the owner's browser (ownerId) talks to OpenCode and publishes the worm's presence
- * into the room while its tab is open; otherwise the worm sleeps.
+ * An OpenCode session on a canvas as a creature (at most one per session per canvas). It sits at
+ * (x, y) in page coordinates. The canvas server keeps only this record, with no credentials: the
+ * owner's browser (ownerId) talks to OpenCode and publishes the creature's presence into the room
+ * while its tab is open; otherwise it sleeps. Creatures the server made for an agent's say/highlight
+ * have no owner (ownerId and serverKey ""), until someone conjures that session and adopts it.
  */
 export interface ConjuredAgent {
 	canvasId: string
@@ -145,7 +148,7 @@ export interface ConjuredAgent {
 	x: number
 	y: number
 	createdAt: number
-	/** random id kept in the owner browser's localStorage; only that browser can prompt it */
+	/** random id kept in the owner browser's localStorage; only that browser can prompt it ("" for none) */
 	ownerId: string
 	/** in list responses: an owner tab is publishing its presence right now */
 	awake?: boolean
@@ -165,6 +168,23 @@ export interface ResolvedSelection {
 	missing: string[]
 }
 
+/**
+ * One thing a session's creature wants people on the canvas to look at, queued with the MCP say /
+ * highlight tools (or POST /api/canvases/:cid/sessions/:sid/actions). The queue plays in order;
+ * stepping past an action on an edit link marks it done, which removes it for everyone.
+ */
+export interface AttentionAction {
+	id: string
+	canvasId: string
+	sessionId: string
+	kind: 'say' | 'highlight'
+	/** Markdown: the message (say), or what to say about the target (highlight, optional) */
+	text?: string
+	/** highlight: a selection key: an item id, "frame:<sessionId>", "note:<noteId>" or "group:<sessionId>/<name>" */
+	target?: string
+	createdAt: number
+}
+
 export type ServerEvent =
 	| { type: 'canvas'; canvas: Canvas }
 	| { type: 'canvas_deleted'; id: string }
@@ -174,3 +194,5 @@ export type ServerEvent =
 	| { type: 'item_deleted'; canvasId: string; id: string }
 	| { type: 'conjured'; agent: ConjuredAgent }
 	| { type: 'conjured_deleted'; canvasId: string; sessionId: string }
+	| { type: 'attention'; action: AttentionAction }
+	| { type: 'attention_done'; canvasId: string; ids: string[] }

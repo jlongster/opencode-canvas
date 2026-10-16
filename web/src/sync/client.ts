@@ -1,4 +1,4 @@
-import type { Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, ServerEvent } from '../../../shared/types'
+import type { AttentionAction, Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, ServerEvent } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { API_BASE, BASE, url as withBase, wsUrl } from '../base'
 
@@ -77,6 +77,18 @@ export const banishConjured = (canvasId: string, sessionId: string) =>
 /** Moves the worm and/or renames it. */
 export const updateConjured = (canvasId: string, sessionId: string, changes: { x?: number; y?: number; title?: string }) =>
 	request<ConjuredAgent>(conjuredPath(canvasId, sessionId), json('PATCH', changes))
+
+// ---------- attention (creatures' queued says and highlights, see server/attention.ts) ----------
+
+const actionsPath = (canvasId: string, sessionId: string, actionId?: string) =>
+	`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/actions${actionId ? `/${encodeURIComponent(actionId)}` : ''}`
+
+/** Marks one queued action done (it's removed for everyone). */
+export const markActionDone = (canvasId: string, sessionId: string, actionId: string) =>
+	request<{ ok: boolean; done: boolean }>(actionsPath(canvasId, sessionId, actionId), { method: 'DELETE' })
+/** Clears a session's whole queue. */
+export const clearActions = (canvasId: string, sessionId: string) =>
+	request<{ ok: boolean; cleared: number }>(actionsPath(canvasId, sessionId), { method: 'DELETE' })
 
 /** Thrown when a canvas doesn't exist (or was deleted). */
 export class CanvasNotFound extends Error {}
@@ -194,6 +206,8 @@ export function connectCanvas(
 		onCanvas: (canvas: Canvas) => void
 		/** the canvas's conjured worms: all of them on every load, then each change */
 		onConjured?: (change: { all: ConjuredAgent[] } | { put: ConjuredAgent } | { deleted: string }) => void
+		/** the canvas's queued attention actions: all of them on every load, then each change */
+		onAttention?: (change: { all: AttentionAction[] } | { put: AttentionAction } | { done: string[] }) => void
 		onGone: () => void
 		onError: (error: Error) => void
 	},
@@ -220,6 +234,7 @@ export function connectCanvas(
 			const first = !loaded
 			loaded = true
 			handlers.onConjured?.({ all: data.conjured ?? [] })
+			handlers.onAttention?.({ all: data.attention ?? [] })
 			handlers.onLoad(data.canvas, first)
 		} catch (e) {
 			if (closed) return
@@ -254,6 +269,12 @@ export function connectCanvas(
 				return
 			case 'conjured_deleted':
 				if (event.canvasId === canvasId) handlers.onConjured?.({ deleted: event.sessionId })
+				return
+			case 'attention':
+				if (event.action.canvasId === canvasId) handlers.onAttention?.({ put: event.action })
+				return
+			case 'attention_done':
+				if (event.canvasId === canvasId) handlers.onAttention?.({ done: event.ids })
 				return
 		}
 	}

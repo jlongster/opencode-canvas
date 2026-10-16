@@ -1,6 +1,7 @@
 import type { Editor } from '../editor/Editor'
 import type { Vec } from '../editor/geometry'
 import { AgentWorms } from './AgentWorms'
+import type { Attention } from './Attention'
 import type { Conjure } from './Conjure'
 import type { Peer, Presence } from './Presence'
 
@@ -9,7 +10,7 @@ const EASE_MS = 45
 /**
  * Other people's cursors, drawn as DOM in screen space. Positions are eased toward the latest
  * broadcast point every frame, so cursors glide instead of stepping at the network rate.
- * AI agents get a worm instead (see AgentWorms).
+ * Sessions' creatures are drawn instead of a cursor (see AgentWorms).
  */
 export class PeerCursors {
 	private host: HTMLDivElement
@@ -25,11 +26,12 @@ export class PeerCursors {
 		private editor: Editor,
 		private presence: Presence,
 		private conjure: Conjure | null = null,
+		attention: Attention | null = null,
 	) {
 		this.host = document.createElement('div')
 		this.host.className = 'peer-cursors'
 		parent.appendChild(this.host)
-		this.worms = new AgentWorms(this.host, editor, conjure)
+		this.worms = new AgentWorms(this.host, editor, conjure, attention)
 		this.dispose = editor.onFrame((now, elapsed) => this.update(now, elapsed))
 	}
 
@@ -41,7 +43,8 @@ export class PeerCursors {
 
 		for (const peer of this.presence.peers.peek()) {
 			if (peer.user.agent) {
-				agents.push(peer)
+				// (Only creatures: agents using the canvas through MCP have no presence of their own.)
+				if (peer.user.conjured) agents.push(peer)
 				continue
 			}
 			if (!peer.cursor) continue

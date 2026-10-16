@@ -3,8 +3,11 @@ import { existsSync } from 'node:fs'
 import { basename, extname, join, resolve } from 'node:path'
 import * as Y from 'yjs'
 import type {
-	Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, ServerEvent, Session, SessionView,
+	AttentionAction, Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, ServerEvent, Session,
+	SessionView,
 } from '../shared/types'
+import { computeLayout, LAYOUT } from '../web/src/editor/layout'
+import { AttentionError, createAttention } from './attention'
 import { ConjureError, createConjured } from './conjured'
 import { imageSize } from './imageSize'
 import { createCanvasMcp } from './mcp'
@@ -52,8 +55,10 @@ interface StoredIndex {
 	sessions: Session[]
 	items: Item[]
 	trash?: TrashEntry[]
-	/** OpenCode sessions conjured onto canvases as worms (see conjured.ts) */
+	/** OpenCode sessions on canvases as creatures (see conjured.ts) */
 	conjured?: ConjuredAgent[]
+	/** creatures' queued attention actions (see attention.ts) */
+	attention?: AttentionAction[]
 }
 
 /**
@@ -79,6 +84,7 @@ const db: { canvases: Map<string, Canvas>; sessions: Map<string, Session>; items
 /** keyed "item:<id>" and "session:<canvasId>/<sessionId>" */
 const trash = new Map<string, TrashEntry>()
 let storedConjured: ConjuredAgent[] = []
+let storedAttention: AttentionAction[] = []
 const trashKey = (entry: TrashEntry) =>
 	entry.kind === 'item' ? `item:${entry.item.id}` : `session:${sessionKey(entry.session.canvasId, entry.session.id)}`
 
@@ -89,6 +95,7 @@ if (existsSync(INDEX_FILE)) {
 	for (const i of stored.items) db.items.set(i.id, withName(i))
 	for (const t of stored.trash ?? []) trash.set(trashKey(t), t.kind === 'item' ? { ...t, item: withName(t.item) } : t)
 	storedConjured = stored.conjured ?? []
+	storedAttention = stored.attention ?? []
 }
 
 /** Items saved before they had names get one: their title (or id) plus the file's extension. */
@@ -130,6 +137,7 @@ function storedIndex(): StoredIndex {
 		items: [...db.items.values()],
 		trash: [...trash.values()],
 		conjured: conjured.all(),
+		attention: attention.all(),
 	}
 }
 
@@ -141,6 +149,82 @@ const conjured = createConjured(
 	},
 	storedConjured,
 )
+
+const attention = createAttention(
+	{
+		canvasExists: (id) => db.canvases.has(id),
+		save,
+		broadcast: (event) => broadcast(event),
+		resolveTarget: (canvasId, target) => resolveTarget(canvasId, target),
+		ensureCreature: (canvasId, sessionId, title) =>
+			void conjured.ensure(canvasId, sessionId, {
+				title: title ?? db.sessions.get(sessionKey(canvasId, sessionId))?.title,
+				at: () => creatureSpot(canvasId, sessionId),
+			}),
+	},
+	storedAttention,
+)
+
+/** how far apart (page px) creatures placed by the server sit */
+const CREATURE_GAP = 90
+
+/**
+ * Where a creature the server makes for a session goes: in its frame's title strip, just after the
+ * title (roughly: the server can't measure text), or where its frame would appear if it has none;
+ * moved along to the right until it's clear of the canvas's other creatures.
+ */
+function creatureSpot(canvasId: string, sessionId: string) {
+	const sessions = Object.fromEntries(canvasSessions(canvasId).map((s) => [s.id, s]))
+	const items = Object.fromEntries([...db.items.values()].filter((i) => i.canvasId === canvasId).map((i) => [i.id, i]))
+	const layout = computeLayout(sessions, items)
+	const section = layout.sections.find((s) => s.id === sessionId)
+	let x: number
+	let y: number
+	if (section) {
+		const title = untitled(sessions[sessionId]) ? 'Untitled session' : section.title
+		// (its body and wings reach back about 60px from its head, which sits at x)
+		const titleWidth = Array.from(title).length * LAYOUT.frameTitlePx * 0.6
+		x = Math.min(section.header.x + titleWidth + 90, section.header.x + section.header.w - 70)
+		y = section.header.y + 44
+	} else {
+		x = layout.bounds ? layout.bounds.x + layout.bounds.w + LAYOUT.frameGap + 60 : 60
+		y = LAYOUT.framePadding + 44
+	}
+	const others = conjured.list(canvasId)
+	while (others.some((r) => Math.abs(r.x - x) < CREATURE_GAP && Math.abs(r.y - y) < CREATURE_GAP)) x += CREATURE_GAP
+	return { x, y }
+}
+
+/**
+ * A highlight target as a selection key, checked against the canvas: an item id, "frame:<sessionId>"
+ * (or a bare session id), "note:<noteId>", or a group as "<sessionId>/<group name>" (or
+ * "group:<sessionId>/<group name>"; an empty name is the untitled group).
+ */
+async function resolveTarget(canvasId: string, ref: string): Promise<string> {
+	if (ref.startsWith('frame:') || SESSION_ID.test(ref)) {
+		const id = ref.startsWith('frame:') ? ref.slice(6) : ref
+		if (!db.sessions.has(sessionKey(canvasId, id))) throw new AttentionError(404, `no session frame ${id} on this canvas`)
+		return `frame:${id}`
+	}
+	if (ref.startsWith('note:')) {
+		const notes = await readRoomDoc(`canvas-${canvasId}`, readNotes)
+		if (!notes.some((n) => n.id === ref.slice(5))) throw new AttentionError(404, `no sticky note ${ref} on this canvas`)
+		return ref
+	}
+	const group = ref.startsWith('group:') ? ref.slice(6) : ref.includes('/') ? ref : null
+	if (group !== null) {
+		const slash = group.indexOf('/')
+		const sessionId = slash < 0 ? group : group.slice(0, slash)
+		const name = slash < 0 ? '' : group.slice(slash + 1).trim()
+		const found = sessionItems(canvasId, sessionId).some((i) => (i.group ?? '') === name)
+		if (!found) throw new AttentionError(404, `no group ${JSON.stringify(name)} in session ${sessionId} on this canvas (groups are "<sessionId>/<group name>")`)
+		return `group:${sessionId}/${name}`
+	}
+	if (db.items.get(ref)?.canvasId !== canvasId) {
+		throw new AttentionError(404, `no item ${ref} on this canvas (targets: an item id, "<sessionId>/<group name>", "frame:<sessionId>" or "note:<noteId>")`)
+	}
+	return ref
+}
 
 /** A canvas's conjured worms, each awake while its owner's tab publishes its presence in the room. */
 function conjuredWorms(canvasId: string): ConjuredAgent[] {
@@ -179,6 +263,8 @@ function eventCanvas(event: ServerEvent): string {
 			return event.item.canvasId
 		case 'conjured':
 			return event.agent.canvasId
+		case 'attention':
+			return event.action.canvasId
 		default:
 			return event.canvasId
 	}
@@ -293,6 +379,7 @@ function canvasData(canvas: Canvas): CanvasData {
 		sessions: [...db.sessions.values()].filter((s) => s.canvasId === canvas.id),
 		items: [...db.items.values()].filter((i) => i.canvasId === canvas.id),
 		conjured: conjuredWorms(canvas.id),
+		attention: attention.list(canvas.id),
 	}
 }
 
@@ -703,6 +790,7 @@ function createCanvas(title?: string): Canvas {
 async function deleteCanvas(canvas: Canvas) {
 	db.canvases.delete(canvas.id)
 	conjured.dropCanvas(canvas.id)
+	attention.dropCanvas(canvas.id)
 	for (const session of canvasSessions(canvas.id)) deleteSession(session)
 	// items whose session record is missing, just in case
 	for (const item of [...db.items.values()]) if (item.canvasId === canvas.id) deleteItem(item.id)
@@ -800,12 +888,12 @@ const API_INDEX = {
 		'session is one frame; inside it, items (images, videos or HTML pages) are organised into named groups. Use your exact ' +
 		'$OPENCODE_SESSION_ID as the session id; the same session can post to several canvases.',
 	mcp:
-		'This server is also an MCP server (Streamable HTTP) at /mcp (or /canvas/mcp), with tools for everything ' +
-		'below: list_canvases, get_canvas, create_canvas, get_selection, get_presence, join_canvas, leave_canvas, ' +
-		'list_notes, find_items, get_item, post_item, update_item, delete_item, restore. OpenCode config: ' +
+		'This server is also an MCP server (Streamable HTTP) at /mcp (or /canvas/mcp): tools only, for everything ' +
+		'below: list_canvases, get_canvas, create_canvas, get_selection, get_presence, list_notes, find_items, ' +
+		'get_item, post_item, update_item, delete_item, restore, plus say and highlight, which queue things for ' +
+		'people to look at on your session\'s creature. OpenCode config: ' +
 		`{"mcp": {"canvas": {"type": "remote", "url": "http://localhost:${PORT}/mcp"}}}. Pass your $OPENCODE_SESSION_ID ` +
-		'as "sessionId" (required by post_item; elsewhere it names you on the canvas), or send it in an ' +
-		'x-opencode-session-id header. Agents using a canvas appear in its presence with "agent": true.',
+		'as "sessionId" and your session\'s title as "sessionTitle" to post_item, say and highlight.',
 	endpoints: {
 		'GET /api/canvases': 'All canvases, newest first, with session/item counts and preview thumbnails',
 		'POST /api/canvases': 'Create a canvas. Body: {"title"} (optional). Returns it, with its id and viewKey',
@@ -849,14 +937,23 @@ const API_INDEX = {
 			'with absolute "url"/"thumbUrl"), "sessions" (with "itemCount"), "notes", "missing"}]}. Use this to answer ' +
 			'"what have I selected?"',
 		'GET /api/canvases/:cid/conjured':
-			'OpenCode sessions conjured onto the canvas as worms: [{"sessionId", "serverKey", "title", "color", "x", "y", "ownerId", "awake"}]. ' +
-			'The canvas server never talks to OpenCode: the owner\'s browser does, and publishes the worm\'s presence (thinking, replies) ' +
-			'into the room while its tab is open ("awake"); otherwise it sleeps',
+			'OpenCode sessions on the canvas as creatures: [{"sessionId", "serverKey", "title", "color", "x", "y", "ownerId", "awake"}]. ' +
+			'The canvas server never talks to OpenCode: the owner\'s browser does, and publishes the creature\'s presence (thinking, replies) ' +
+			'into the room while its tab is open ("awake"); otherwise it sleeps. Creatures made for attention actions have no owner ("")',
 		'POST /api/canvases/:cid/conjured':
-			'Conjure an OpenCode session as a worm. Body: {"sessionId", "serverKey" (non-secret id of its OpenCode), "ownerId" ' +
-			'(the owner browser\'s random id), "title"?, "x", "y"} (page position). 409 if that session is already here',
-		'PATCH /api/canvases/:cid/conjured/:sessionId': 'Move and/or rename a conjured worm. Body: {"x", "y"} and/or {"title"}',
-		'DELETE /api/canvases/:cid/conjured/:sessionId': 'Banish a conjured worm',
+			'Conjure an OpenCode session as a creature. Body: {"sessionId", "serverKey" (non-secret id of its OpenCode), "ownerId" ' +
+			'(the owner browser\'s random id), "title"?, "x", "y"} (page position). Adopts an ownerless one; 409 if that session is already here',
+		'PATCH /api/canvases/:cid/conjured/:sessionId': 'Move and/or rename a creature. Body: {"x", "y"} and/or {"title"}',
+		'DELETE /api/canvases/:cid/conjured/:sessionId': 'Banish a creature (and clear its attention queue)',
+		'GET /api/canvases/:cid/actions': 'Every queued attention action on the canvas, oldest first: [{"id", "sessionId", "kind", "text"?, "target"?, "createdAt"}]',
+		'GET /api/canvases/:cid/sessions/:sessionId/actions': 'The session\'s queued attention actions, in order',
+		'POST /api/canvases/:cid/sessions/:sessionId/actions':
+			'Queue something for people to look at, on the session\'s creature (made beside its frame if it has none). Body: ' +
+			'{"kind": "say", "text"} (Markdown) or {"kind": "highlight", "target", "text"?} with target an item id, ' +
+			'"<sessionId>/<group name>", "frame:<sessionId>" or "note:<noteId>"; plus "sessionTitle" (names a new creature). ' +
+			'Returns {"id", "position", "queued", "action"}. Fire-and-forget: people step through the queue on the canvas',
+		'DELETE /api/canvases/:cid/sessions/:sessionId/actions': 'Clear the session\'s queue: {"ok", "cleared"}',
+		'DELETE /api/canvases/:cid/sessions/:sessionId/actions/:actionId': 'Mark one action done (removes it): {"ok", "done"}',
 	},
 	items:
 		'Every item has a "name": its file name. On upload it is the original file name (the path\'s basename, the ' +
@@ -1121,13 +1218,39 @@ async function handle(req: Request): Promise<Response> {
 	m = /^\/api\/canvases\/([^/]+)\/conjured\/([^/]+)$/.exec(p)
 	if (m && method === 'DELETE') {
 		const canvas = getCanvas(decodeURIComponent(m[1]))
-		conjured.banish(canvas.id, decodeURIComponent(m[2]))
+		const sessionId = decodeURIComponent(m[2])
+		conjured.banish(canvas.id, sessionId)
+		attention.clear(canvas.id, sessionId)
 		return json({ ok: true })
 	}
 	if (m && method === 'PATCH') {
 		const canvas = getCanvas(decodeURIComponent(m[1]))
 		const body = (await req.json().catch(() => null)) as Record<string, unknown> | null
 		return json(conjured.update(canvas.id, decodeURIComponent(m[2]), body))
+	}
+
+	// ---- attention: what creatures want people to look at ----
+
+	m = /^\/api\/canvases\/([^/]+)\/actions$/.exec(p)
+	if (m && method === 'GET') return json(attention.list(getCanvas(decodeURIComponent(m[1])).id))
+
+	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/actions$/.exec(p)
+	if (m) {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		const sessionId = decodeURIComponent(m[2])
+		if (method === 'GET') return json(attention.list(canvas.id, sessionId))
+		if (method === 'POST') {
+			const body = (await req.json().catch(() => null)) as Record<string, unknown> | null
+			const { action, position, queued } = await attention.queue(canvas.id, sessionId, body)
+			return json({ id: action.id, position, queued, action }, 201)
+		}
+		if (method === 'DELETE') return json({ ok: true, cleared: attention.clear(canvas.id, sessionId) })
+	}
+
+	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/actions\/([^/]+)$/.exec(p)
+	if (m && method === 'DELETE') {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		return json({ ok: true, done: attention.done(canvas.id, decodeURIComponent(m[2]), decodeURIComponent(m[3])) })
 	}
 
 	// ---- groups (named sets of items within a session) ----
@@ -1226,7 +1349,6 @@ const mcp = createCanvasMcp({
 		if (!canvas) throw new HttpError(404, 'canvas not found')
 		return canvas
 	},
-	canvasExists: (id) => db.canvases.has(id),
 	canvasData: (id) => canvasData(getCanvas(id)),
 	sessionViews: (canvasId) => canvasSessions(canvasId).sort((a, b) => a.createdAt - b.createdAt).map(sessionView),
 	notes: (canvasId) => readRoomDoc(`canvas-${canvasId}`, readNotes),
@@ -1238,6 +1360,7 @@ const mcp = createCanvasMcp({
 	updateItem: (id, changes) => updateItem(getItem(id), itemChanges(changes)),
 	deleteItem: (id) => deleteItem(getItem(id).id),
 	restore,
+	queueAction: (canvasId, sessionId, body) => attention.queue(getCanvas(canvasId).id, sessionId, body),
 	mediaFile: (src) => Bun.file(join(MEDIA_DIR, basename(src))),
 	mediaOrigin: MEDIA_ORIGIN,
 	webBase: WEB_BASE,
@@ -1303,7 +1426,7 @@ async function route(req: Request, server: Server<SocketData>, reqUrl: URL): Pro
 	try {
 		return await handle(req)
 	} catch (e) {
-		if (e instanceof HttpError || e instanceof ConjureError) return json({ error: e.message }, e.status)
+		if (e instanceof HttpError || e instanceof ConjureError || e instanceof AttentionError) return json({ error: e.message }, e.status)
 		console.error(e)
 		return json({ error: 'internal error' }, 500)
 	}

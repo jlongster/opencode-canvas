@@ -40,7 +40,11 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 	const [managing, setManaging] = useState(false)
 	const hereKey = useValue(
 		() =>
-			[...conjure.records.get().map((r) => r.sessionId), ...conjure.presence.peers.get().filter((p) => p.user.conjured && p.user.sessionId).map((p) => p.user.sessionId!)]
+			[
+				// (ones nobody owns can be conjured: that adopts them)
+				...conjure.records.get().filter((r) => r.ownerId).map((r) => r.sessionId),
+				...conjure.presence.peers.get().filter((p) => p.user.conjured && p.user.sessionId).map((p) => p.user.sessionId!),
+			]
 				.sort()
 				.join(' '),
 		[conjure],
@@ -53,6 +57,8 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 			return onClose()
 		}
 		const view = editor.viewportPageBounds.get()
+		// An unowned one stays where it is.
+		const existing = conjure.record(s.id)
 		setPending(sessionKey(s))
 		setError(null)
 		try {
@@ -61,8 +67,8 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 				serverKey: s.serverKey,
 				ownerId,
 				title: s.title,
-				x: Math.round(view.x + view.w / 2),
-				y: Math.round(view.y + view.h / 2),
+				x: existing ? existing.x : Math.round(view.x + view.w / 2),
+				y: existing ? existing.y : Math.round(view.y + view.h / 2),
 			})
 			onClose()
 		} catch (e) {
@@ -312,7 +318,15 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 			</div>
 			{block ? (
 				<div className="conjure-note" onKeyDown={(e) => e.key === 'Escape' && conjure.close()}>
-					{block === 'not-yours' ? (
+					{block === 'unowned' ? (
+						<>
+							<strong>Nobody has conjured it</strong>
+							<span>
+								Its session called it up to show you something, through the canvas tools. To talk to it, conjure the session from your
+								OpenCode (Conjure, or C over its frame).
+							</span>
+						</>
+					) : block === 'not-yours' ? (
 						<>
 							<strong>{asleep === '1' ? 'Asleep · owned by someone else' : 'Owned by someone else'}</strong>
 							<span>

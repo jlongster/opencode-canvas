@@ -37,6 +37,9 @@ body,
 .overlay {
 	position: absolute;
 	inset: 0;
+	/* its own stacking context: notes, annotations and creatures (with their labels) keep their order
+	   among themselves but all sit under the UI chrome (top bar and its popovers, tray, walkthrough…) */
+	z-index: 0;
 	pointer-events: none;
 	/* clip, not hidden: a hidden-overflow box can still be scrolled programmatically (focus, scrollIntoView) */
 	overflow: clip;
@@ -296,6 +299,8 @@ body,
 	top: calc(12px + var(--safe-top));
 	left: calc(12px + var(--safe-left));
 	right: calc(12px + var(--safe-right));
+	/* its popovers (Conjure, Share…) open over the tray, the auto-seed bar and walkthroughs */
+	z-index: 7;
 	display: flex;
 	align-items: flex-start;
 	justify-content: space-between;
@@ -2712,8 +2717,54 @@ label.seed-row:hover {
 }
 
 .oc-group-error {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
 	color: #fca5a5;
 	white-space: normal;
+}
+
+.oc-group-error > span {
+	flex: 1;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.oc-group-loading {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.oc-spinner {
+	flex: none;
+	width: 10px;
+	height: 10px;
+	border: 2px solid rgba(161, 161, 170, 0.25);
+	border-top-color: #a1a1aa;
+	border-radius: 50%;
+	animation: seed-spin 0.8s linear infinite;
+}
+
+button.oc-retry,
+.toolbar button.oc-retry {
+	flex: none;
+	height: 22px;
+	min-width: 0;
+	padding: 0 8px;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 6px;
+	background: transparent;
+	color: #e4e4e7;
+	font: inherit;
+	font-size: 11px;
+	cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.oc-spinner {
+		animation-duration: 2.4s;
+	}
 }
 
 /* ---------- canvas title ---------- */

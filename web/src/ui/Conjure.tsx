@@ -7,7 +7,7 @@ import { conjure as conjureSession } from '../sync/client'
 import { PairForm, ServerList, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
 import { useValue } from './useValue'
 
-/** The toolbar's Conjure button (edit links): pick an OpenCode session to bring onto the canvas as a worm. */
+/** The toolbar's Conjure button (edit links): pick an OpenCode session to bring onto the canvas as a looper. */
 export function ConjureButton({
 	editor,
 	conjure,
@@ -33,7 +33,7 @@ export function ConjureButton({
 }
 
 function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor; conjure: Conjure; canvasId: string; onClose: () => void }) {
-	const { servers, sessions, errors, reload } = useOpenCode()
+	const { servers, byServer, errors, reload, retry } = useOpenCode()
 	const [error, setError] = useState<string | null>(null)
 	const [pending, setPending] = useState<string | null>(null)
 	const [query, setQuery] = useState('')
@@ -83,7 +83,14 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 	}
 
 	const q = query.trim().toLowerCase()
-	const shown = (sessions ?? []).filter((s) => !q || s.title.toLowerCase().includes(q) || s.directory.toLowerCase().includes(q))
+	// Each server's sessions show as soon as it answers, without waiting for slower ones.
+	const loading = servers.filter((p) => !byServer[p.key] || byServer[p.key].status === 'loading').map((p) => p.key)
+	const shown = servers
+		.flatMap((p) => {
+			const l = byServer[p.key]
+			return l?.status === 'ok' ? l.sessions : []
+		})
+		.filter((s) => !q || s.title.toLowerCase().includes(q) || s.directory.toLowerCase().includes(q))
 	const failing = Object.keys(errors).length
 
 	return (
@@ -100,40 +107,39 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 				<PairForm autoFocus onPaired={() => reload()} />
 			) : (
 				<>
-					<p className="conjure-hint">Brings an OpenCode session onto the canvas as a worm. Click it to talk to it; it sleeps while this browser isn't on the canvas.</p>
+					<p className="conjure-hint">Brings an OpenCode session onto the canvas as a looper. Click it to talk to it; it sleeps while this browser isn't on the canvas.</p>
 					<input className="conjure-search" autoFocus placeholder="Filter sessions" value={query} onChange={(e) => setQuery(e.target.value)} />
 					<div className="conjure-list">
-						{sessions === null && <div className="conjure-empty">Loading sessions…</div>}
-						{sessions !== null && shown.length === 0 && servers.length === 1 && !failing && <div className="conjure-empty">No sessions{q ? ' match' : ''}</div>}
-						{sessions !== null && (
-							<SessionGroups
-								servers={servers}
-								sessions={shown}
-								errors={errors}
-								render={(s) => {
-									const isHere = here.has(s.id)
-									const k = sessionKey(s)
-									return (
-										<button
-											key={k}
-											className={`conjure-row${isHere ? ' here' : ''}`}
-											disabled={pending !== null}
-											title={isHere ? 'Already on this canvas: show it' : `Conjure ${s.title || s.id}`}
-											onClick={() => pick(s)}
-										>
-											<span className={`conjure-dot${s.busy ? ' busy' : ''}`} title={s.busy ? 'Working' : 'Idle'} />
-											<span className="conjure-row-main">
-												<span className="conjure-row-title">{s.title || 'Untitled session'}</span>
-												<span className="conjure-row-meta">
-													{shortDir(s.directory)} · {relativeTime(s.updatedAt)}
-												</span>
+						<SessionGroups
+							servers={servers}
+							sessions={shown}
+							errors={errors}
+							loading={loading}
+							onRetry={retry}
+							empty={q ? 'No sessions match' : 'No sessions'}
+							render={(s) => {
+								const isHere = here.has(s.id)
+								const k = sessionKey(s)
+								return (
+									<button
+										key={k}
+										className={`conjure-row${isHere ? ' here' : ''}`}
+										disabled={pending !== null}
+										title={isHere ? 'Already on this canvas: show it' : `Conjure ${s.title || s.id}`}
+										onClick={() => pick(s)}
+									>
+										<span className={`conjure-dot${s.busy ? ' busy' : ''}`} title={s.busy ? 'Working' : 'Idle'} />
+										<span className="conjure-row-main">
+											<span className="conjure-row-title">{s.title || 'Untitled session'}</span>
+											<span className="conjure-row-meta">
+												{shortDir(s.directory)} · {relativeTime(s.updatedAt)}
 											</span>
-											{pending === k ? <span className="conjure-tag">…</span> : isHere && <span className="conjure-tag">on canvas</span>}
-										</button>
-									)
-								}}
-							/>
-						)}
+										</span>
+										{pending === k ? <span className="conjure-tag">…</span> : isHere && <span className="conjure-tag">on canvas</span>}
+									</button>
+								)
+							}}
+						/>
 					</div>
 					<div className="oc-manage">
 						<button className="oc-manage-toggle" aria-expanded={managing} onClick={() => setManaging(!managing)}>
@@ -417,7 +423,7 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 			{error && <div className="conjure-prompt-error">{error}</div>}
 			{steered && !error && <div className="conjure-prompt-ok">Steered: added to the work in progress</div>}
 			<div className="conjure-prompt-actions">
-				<button className="conjure-banish" title="Send this worm away for everyone (the session itself stays)" disabled={busy} onClick={banish}>
+				<button className="conjure-banish" title="Send this looper away for everyone (the session itself stays)" disabled={busy} onClick={banish}>
 					Banish
 				</button>
 				<button

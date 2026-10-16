@@ -1,43 +1,72 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { OpenCodeSessionSummary } from '../../../shared/types'
 import { CORS_COMMAND, OPENCODE_ALLOWS_PAGE } from '../base'
-import { health, pairFromLink, PairingError, pairOffer, pairings, redeem, renamePairing, unpair, type Pairing, type PairingHealth } from '../opencode/pairings'
-import { listSessions } from '../opencode/sessions'
+import { errorText, health, pairFromLink, PairingError, pairOffer, pairings, redeem, renamePairing, unpair, type Pairing, type PairingHealth } from '../opencode/pairings'
+import { listServerSessions } from '../opencode/sessions'
 import { atom } from '../state/signals'
 import { useValue } from './useValue'
+
+/** How listing one server's sessions is going. */
+export type ServerListing = { status: 'loading' } | { status: 'ok'; sessions: OpenCodeSessionSummary[] } | { status: 'error'; error: string }
 
 export interface OpenCodeState {
 	/** the OpenCode servers paired in this browser */
 	servers: Pairing[]
-	/** null while loading */
+	/** every server's sessions that answered, newest first; null until every server has answered or failed */
 	sessions: OpenCodeSessionSummary[] | null
+	/** each server's listing as it arrives, by key (missing: loading) */
+	byServer: Record<string, ServerListing>
 	/** servers whose sessions couldn't be listed, by key */
 	errors: Record<string, string>
+	/** lists every server again, keeping what's shown until the new lists arrive */
 	reload: () => Promise<void>
+	/** lists one server again, showing it as loading meanwhile */
+	retry: (key: string) => Promise<void>
 }
 
 /** The OpenCode servers paired in this browser and their sessions (talked to directly, from here). */
 export function useOpenCode(): OpenCodeState {
 	const servers = useValue(() => pairings.get())
-	const [sessions, setSessions] = useState<OpenCodeSessionSummary[] | null>(null)
-	const [errors, setErrors] = useState<Record<string, string>>({})
+	const [byServer, setByServer] = useState<Record<string, ServerListing>>({})
+	// the latest request per server: answers to older ones are dropped
+	const latest = useRef<Record<string, number>>({})
 	const serverKeys = servers.map((s) => `${s.key}:${s.token.length}:${s.name}`).join(' ')
 
-	const reload = async () => {
-		if (!pairings.peek().length) {
-			setSessions([])
-			setErrors({})
-			return
+	const load = async (key: string, showLoading: boolean) => {
+		const id = (latest.current[key] = (latest.current[key] ?? 0) + 1)
+		if (showLoading) setByServer((prev) => ({ ...prev, [key]: { status: 'loading' } }))
+		let next: ServerListing
+		try {
+			next = { status: 'ok', sessions: await listServerSessions(key) }
+		} catch (e) {
+			next = { status: 'error', error: errorText(e) }
 		}
-		const listing = await listSessions()
-		setSessions(listing.sessions)
-		setErrors(listing.errors)
+		if (latest.current[key] === id) setByServer((prev) => ({ ...prev, [key]: next }))
 	}
+	const reload = async () => {
+		await Promise.all(pairings.peek().map((p) => load(p.key, false)))
+	}
+	const retry = (key: string) => load(key, true)
+
 	useEffect(() => {
-		setSessions(null)
-		reload()
+		setByServer({})
+		for (const p of pairings.peek()) load(p.key, true)
 	}, [serverKeys])
-	return { servers, sessions, errors, reload }
+
+	const { sessions, errors } = useMemo(() => {
+		const errors: Record<string, string> = {}
+		const sessions: OpenCodeSessionSummary[] = []
+		let settled = true
+		for (const s of servers) {
+			const l = byServer[s.key]
+			if (l?.status === 'ok') sessions.push(...l.sessions)
+			else if (l?.status === 'error') errors[s.key] = l.error
+			else settled = false
+		}
+		sessions.sort((a, b) => b.updatedAt - a.updatedAt)
+		return { sessions: settled ? sessions : null, errors }
+	}, [byServer, servers])
+	return { servers, sessions, byServer, errors, reload, retry }
 }
 
 /** A shell command to run, with a button that copies it. */
@@ -329,7 +358,7 @@ export function ServerList({ servers, errors }: { servers: Pairing[]; errors: Re
 						</span>
 						<button
 							className={`oc-unpair${confirming === s.key ? ' confirming' : ''}`}
-							title={confirming === s.key ? 'Click again to unpair: your worms from it fall asleep' : 'Unpair this server (forget it in this browser)'}
+							title={confirming === s.key ? 'Click again to unpair: your loopers from it fall asleep' : 'Unpair this server (forget it in this browser)'}
 							onClick={() => remove(s)}
 							onBlur={() => confirming === s.key && setConfirming(null)}
 						>
@@ -356,36 +385,64 @@ export function ServerDot({ health }: { health: PairingHealth | undefined }) {
 
 /**
  * Renders sessions, grouped under a heading per server when more than one is paired (servers
- * whose sessions couldn't be listed show their error instead).
+ * whose sessions couldn't be listed show their error instead, with Retry when `onRetry` is given;
+ * ones in `loading` say so). `empty`: what a server with no sessions to show says (by default
+ * nothing when only one is paired).
  */
 export function SessionGroups({
 	servers,
 	sessions,
 	errors,
 	render,
+	loading = [],
+	onRetry,
+	empty,
 }: {
 	servers: Pairing[]
 	sessions: OpenCodeSessionSummary[]
 	errors: Record<string, string>
 	render: (s: OpenCodeSessionSummary) => ReactNode
+	loading?: string[]
+	onRetry?: (key: string) => void
+	empty?: string
 }) {
-	if (servers.length <= 1) {
-		const error = servers[0] && errors[servers[0].key]
-		return error ? <div className="oc-group-error">{error}</div> : <>{sessions.map(render)}</>
+	const body = (server: Pairing, mine: OpenCodeSessionSummary[], fallback: string | undefined) => {
+		const error = errors[server.key]
+		if (error)
+			return (
+				<div className="oc-group-error">
+					<span>{error}</span>
+					{onRetry && (
+						<button type="button" className="oc-retry" onClick={() => onRetry(server.key)}>
+							Retry
+						</button>
+					)}
+				</div>
+			)
+		if (loading.includes(server.key))
+			return (
+				<div className="oc-group-empty oc-group-loading">
+					<span className="oc-spinner" /> Loading sessions…
+				</div>
+			)
+		if (mine.length) return mine.map(render)
+		return fallback ? <div className="oc-group-empty">{fallback}</div> : null
 	}
+	if (servers.length <= 1) return servers[0] ? <>{body(servers[0], sessions, empty)}</> : null
 	return (
 		<>
 			{servers.map((server) => {
 				const mine = sessions.filter((s) => s.serverKey === server.key)
 				const error = errors[server.key]
+				const busy = !error && loading.includes(server.key)
 				return (
 					<div key={server.key} className="oc-group">
 						<div className="oc-group-head">
-							<ServerDot health={error ? { ok: false, error } : { ok: true }} />
+							<ServerDot health={error ? { ok: false, error } : busy ? undefined : { ok: true }} />
 							<span>{server.name}</span>
-							{!error && <span className="oc-group-count">{mine.length}</span>}
+							{!error && !busy && <span className="oc-group-count">{mine.length}</span>}
 						</div>
-						{error ? <div className="oc-group-error">{error}</div> : mine.length ? mine.map(render) : <div className="oc-group-empty">No sessions</div>}
+						{body(server, mine, empty ?? 'No sessions')}
 					</div>
 				)
 			})}

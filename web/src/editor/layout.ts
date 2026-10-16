@@ -41,6 +41,19 @@ export const LAYOUT = {
 	maxRowWidth: 2400,
 	rowHeight: 320,
 	gap: 16,
+	/**
+	 * Items that would be unreadable squeezed into a row get one of their own: HTML always, and
+	 * images and videos whose aspect is extreme (taller than minRowAspect, wider than maxRowAspect)
+	 * or more than outlierRatio times off their group's median aspect.
+	 */
+	minRowAspect: 0.6,
+	maxRowAspect: 3.5,
+	outlierRatio: 2.5,
+	/** a portrait item alone on its row is at most this wide... */
+	tallMaxWidth: 900,
+	/** ...and at most this tall, unless that would make it narrower than tallMinWidth */
+	tallMaxHeight: 2400,
+	tallMinWidth: 600,
 	/** space reserved above a row that has a titled item (the text scales with zoom) */
 	titleHeight: 26,
 	framePadding: 40,
@@ -154,8 +167,9 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 
 /**
  * Justified rows starting at (0, top): fill a row until it would pass maxRowWidth, then scale it
- * down to exactly fit. The last row keeps the natural row height. Rows with a titled item get a
- * strip above them for the titles.
+ * down to exactly fit. The last row keeps the natural row height. Items that need their own row
+ * (see ownRowSize) close the row before them and sit alone at their own size. Rows with a titled
+ * item get a strip above them for the titles.
  */
 function flowRows(items: Item[], top: number) {
 	const { maxRowWidth: W, rowHeight: H, gap, titleHeight } = LAYOUT
@@ -164,6 +178,7 @@ function flowRows(items: Item[], top: number) {
 	let width = 0
 	let row: Item[] = []
 	let rowAspect = 0
+	const median = medianAspect(items)
 
 	const placeRow = (height: number) => {
 		if (row.some((item) => item.title)) rowY += titleHeight
@@ -180,6 +195,15 @@ function flowRows(items: Item[], top: number) {
 	}
 
 	for (const item of items) {
+		const own = ownRowSize(item, median)
+		if (own) {
+			if (row.length) placeRow(H)
+			if (item.title) rowY += titleHeight
+			boxes.set(item.id, { x: 0, y: rowY, ...own })
+			width = Math.max(width, own.w)
+			rowY += own.h + gap
+			continue
+		}
 		row.push(item)
 		rowAspect += item.width / item.height
 		if (rowAspect * H + gap * (row.length - 1) >= W) placeRow((W - gap * (row.length - 1)) / rowAspect)
@@ -187,4 +211,38 @@ function flowRows(items: Item[], top: number) {
 	if (row.length) placeRow(H)
 
 	return { boxes, width, height: rowY - gap - top }
+}
+
+/** The median aspect of the group's images and videos (HTML always gets its own row anyway). */
+function medianAspect(items: Item[]): number | null {
+	const aspects = items
+		.filter((i) => i.kind !== 'html')
+		.map((i) => i.width / i.height)
+		.sort((a, b) => a - b)
+	if (!aspects.length) return null
+	const mid = aspects.length >> 1
+	return aspects.length % 2 ? aspects[mid]! : (aspects[mid - 1]! + aspects[mid]!) / 2
+}
+
+/**
+ * The size of an item that gets a row to itself, or null if it joins the justified rows. HTML is
+ * drawn at its design width (so its iframe renders at page scale), at most a row wide. Outlier
+ * images and videos keep their natural width up to a row; portrait ones are kept between
+ * tallMinWidth and tallMaxWidth wide, shrinking toward tallMinWidth to stay under tallMaxHeight.
+ */
+function ownRowSize(item: Item, median: number | null): { w: number; h: number } | null {
+	const L = LAYOUT
+	const aspect = item.width / item.height
+	if (item.kind === 'html') {
+		const w = Math.min(item.width, L.maxRowWidth)
+		return { w, h: w / aspect }
+	}
+	const ratio = median ? Math.max(aspect / median, median / aspect) : 1
+	if (aspect >= L.minRowAspect && aspect <= L.maxRowAspect && ratio <= L.outlierRatio) return null
+	let w = Math.min(item.width, L.maxRowWidth)
+	if (aspect < 1) {
+		w = Math.min(w, L.tallMaxWidth)
+		if (w / aspect > L.tallMaxHeight) w = Math.max(L.tallMaxHeight * aspect, Math.min(item.width, L.tallMinWidth))
+	}
+	return { w, h: w / aspect }
 }

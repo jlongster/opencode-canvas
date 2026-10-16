@@ -490,11 +490,13 @@ export class Editor {
 		if (bounds) this.zoomToBounds(bounds)
 	}
 
-	/** Pan (keeping the zoom) so the box is centred in the viewport. */
+	/** Pan (keeping the zoom) so the box is centred in the viewport; one taller than it shows its top. */
 	centerOn(box: Box, opts: { animate?: boolean } = {}) {
 		const { w, h } = this.viewport.peek()
 		const z = (this.cameraAnimation?.to ?? this.camera.peek()).z
-		this.setCamera({ x: w / 2 / z - (box.x + box.w / 2), y: h / 2 / z - (box.y + box.h / 2), z }, { animate: opts.animate ?? true })
+		const pad = Math.min(ZOOM_TO_PADDING, h / 8)
+		const y = box.h * z > h - pad * 2 ? pad / z - box.y : h / 2 / z - (box.y + box.h / 2)
+		this.setCamera({ x: w / 2 / z - (box.x + box.w / 2), y, z }, { animate: opts.animate ?? true })
 	}
 
 	/**
@@ -562,10 +564,22 @@ export class Editor {
 		this.centerOn(this.getItemBoundsWithTitle(next)!, { animate: false })
 	}
 
-	/** Fit the item to the screen, but never wider than FOCUS_MAX_WIDTH screen pixels or past FOCUS_MAX_ZOOM. */
+	/**
+	 * Fit the item to the screen, but never wider than FOCUS_MAX_WIDTH screen pixels or past
+	 * FOCUS_MAX_ZOOM. Tall items (long pages, screenshots) fit their width instead and show their top.
+	 */
 	zoomToItem(id: string, opts: { animate?: boolean } = {}) {
 		const box = this.getItemBoundsWithTitle(id)
-		if (box) this.zoomToBounds(box, { ...opts, maxZoom: FOCUS_MAX_WIDTH / box.w })
+		const item = this.layout.get().items.get(id)
+		if (!box || !item) return
+		const maxZoom = Math.min(FOCUS_MAX_WIDTH / box.w, FOCUS_MAX_ZOOM)
+		const fit = this.getCameraForBounds(box, { maxZoom })
+		if (item.w / item.h >= LAYOUT.minRowAspect) return this.setCamera(fit, { animate: opts.animate ?? true })
+		const { w, h } = this.viewport.peek()
+		const pad = Math.min(ZOOM_TO_PADDING, w / 8, h / 8)
+		const z = clamp(Math.min((w - pad * 2) / box.w, maxZoom), MIN_ZOOM, MAX_ZOOM)
+		if (z <= fit.z) return this.setCamera(fit, { animate: opts.animate ?? true })
+		this.setCamera({ x: w / 2 / z - (box.x + box.w / 2), y: pad / z - box.y, z }, { animate: opts.animate ?? true })
 	}
 
 	/**

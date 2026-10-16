@@ -50,10 +50,9 @@ export async function claimAutoSeed(canvasId: string): Promise<boolean> {
 	return true
 }
 
-/** The sessions to look at, newest first: top-level ones only. */
+/** The sessions to look at, newest first (listSessions only lists top-level ones). */
 export function autoCandidates(sessions: OpenCodeSessionSummary[]): OpenCodeSessionSummary[] {
 	return sessions
-		.filter((s) => !s.parentId)
 		.sort((a, b) => b.updatedAt - a.updatedAt)
 		.slice(0, AUTO_DEPTH)
 }

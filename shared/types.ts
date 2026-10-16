@@ -114,8 +114,6 @@ export interface OpenCodeSessionSummary {
 	updatedAt: number
 	/** running a prompt right now */
 	busy: boolean
-	/** set on subagent sessions */
-	parentId?: string
 }
 
 /** One session's outcome of seeding a canvas from it (done in the browser, see web/src/opencode/seed.ts). */

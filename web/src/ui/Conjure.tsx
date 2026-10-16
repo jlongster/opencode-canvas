@@ -126,7 +126,6 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 												<span className="conjure-row-title">{s.title || 'Untitled session'}</span>
 												<span className="conjure-row-meta">
 													{shortDir(s.directory)} · {relativeTime(s.updatedAt)}
-													{s.parentId ? ' · subagent' : ''}
 												</span>
 											</span>
 											{pending === k ? <span className="conjure-tag">…</span> : isHere && <span className="conjure-tag">on canvas</span>}

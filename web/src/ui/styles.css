@@ -1973,6 +1973,84 @@ label.seed-row:hover {
 	transition: width 0.3s;
 }
 
+/* seeding a new canvas by itself: a status bar under the toolbar, the canvas stays usable around it */
+.empty.seeding:has(> .seed-auto) {
+	top: 64px;
+	transform: translateX(-50%);
+	width: max-content;
+	min-width: min(420px, calc(100% - 32px));
+	max-width: min(900px, calc(100% - 32px));
+}
+
+.seed-picker.seed-auto {
+	gap: 6px;
+	padding: 6px 8px 8px 12px;
+	border-radius: 10px;
+	transition: opacity 0.5s;
+}
+
+.seed-auto.fading {
+	opacity: 0;
+}
+
+.seed-bar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.seed-bar-text {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	color: #e4e4e7;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.seed-bar-current {
+	color: #a1a1aa;
+}
+
+.seed-auto.done .seed-state {
+	color: #a78bfa;
+}
+
+.seed-picker .seed-bar button {
+	flex: none;
+	height: 26px;
+	padding: 0 10px;
+}
+
+.seed-picker .seed-bar button.seed-bar-toggle {
+	width: 26px;
+	padding: 0;
+	border-color: transparent;
+	color: #a1a1aa;
+}
+
+.seed-picker .seed-bar button.seed-bar-toggle:hover {
+	background: rgba(255, 255, 255, 0.06);
+	color: #e4e4e7;
+}
+
+.seed-auto .seed-progress {
+	height: 2px;
+}
+
+.seed-auto .seed-list {
+	max-height: min(260px, 40vh);
+}
+
+.seed-row.seed-skip {
+	opacity: 0.55;
+}
+
+.seed-note {
+	color: #fcd34d !important;
+}
+
 .seed-message {
 	padding: 10px 8px;
 	color: #a1a1aa;

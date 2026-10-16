@@ -8,6 +8,8 @@ export interface Canvas {
 	createdAt: number
 	/** secret for the view-only link; 16 characters [A-Za-z0-9] */
 	viewKey: string
+	/** when a browser claimed its one automatic seeding from OpenCode (POST /api/canvases/:cid/autoseed) */
+	autoSeededAt?: number
 }
 
 /** A canvas as the list page shows it. */

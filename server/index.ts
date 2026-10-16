@@ -812,6 +812,10 @@ const API_INDEX = {
 		'GET /api/canvases/:cid': 'One canvas with all its sessions and items',
 		'PATCH /api/canvases/:cid': 'Rename a canvas. Body: {"title"}',
 		'DELETE /api/canvases/:cid': 'Delete a canvas with all its sessions, items and notes',
+		'GET /api/canvases/:cid/autoseed': 'Whether the canvas has been seeded automatically: {"autoSeededAt"} (ms, or null)',
+		'POST /api/canvases/:cid/autoseed':
+			'Claim the canvas\'s one automatic seeding (browsers do this before seeding a new canvas with their latest ' +
+			'OpenCode sessions): {"ok": true, "autoSeededAt"} for the first caller, 409 for anyone after',
 		'GET /api/view/:viewKey': 'A canvas by its view-only key (same body as GET /api/canvases/:cid)',
 		'GET /api/canvases/:cid/sessions': 'The canvas\'s sessions, each with its groups and their items, in canvas order',
 		'GET /api/canvases/:cid/sessions/:sessionId': 'One session with its groups and items',
@@ -1031,6 +1035,21 @@ async function handle(req: Request): Promise<Response> {
 		if (method === 'DELETE') {
 			await deleteCanvas(canvas)
 			return json({ ok: true })
+		}
+	}
+
+	m = /^\/api\/canvases\/([^/]+)\/autoseed$/.exec(p)
+	if (m) {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		if (method === 'GET') return json({ autoSeededAt: canvas.autoSeededAt ?? null })
+		if (method === 'POST') {
+			// Once per canvas, ever: emptying it later doesn't seed it again.
+			if (canvas.autoSeededAt) return json({ error: 'this canvas was already seeded automatically', autoSeededAt: canvas.autoSeededAt }, 409)
+			const next: Canvas = { ...canvas, autoSeededAt: Date.now() }
+			db.canvases.set(next.id, next)
+			save()
+			broadcast({ type: 'canvas', canvas: next })
+			return json({ ok: true, autoSeededAt: next.autoSeededAt })
 		}
 	}
 

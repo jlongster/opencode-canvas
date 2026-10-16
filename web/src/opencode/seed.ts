@@ -71,6 +71,14 @@ interface ToolFile {
 	name?: string | null
 }
 
+/** What a session output, read and ready to upload (see readSessionMedia). */
+export interface SessionMedia {
+	title: string
+	media: SeedMedia[]
+	/** media it output that's gone */
+	skipped: number
+}
+
 /**
  * Seeds one session: a frame titled like it, with the media it output in the last day (topped up
  * with its latest older media to SEED_FILL items) in group "Latest media". Items already there (same name and time) aren't added twice.
@@ -81,40 +89,61 @@ export async function seedSession(
 	sessionId: string,
 	opts: { existing: Set<string>; timeZone?: string },
 ): Promise<SeedResult> {
-	const result: SeedResult = { sessionId, title: '', added: 0, skipped: 0 }
+	let found: SessionMedia
 	try {
-		const found = await findSessionMedia(serverKey, sessionId, { since: Date.now() - SEED_WINDOW_MS, limit: SEED_MAX_ITEMS, fill: SEED_FILL })
-		result.title = found.title
-		result.skipped = found.skipped
-		if (!found.media.length) {
-			result.error = found.skipped ? 'its media is gone' : 'no media found in this session'
-			return result
-		}
+		found = await readSessionMedia(serverKey, sessionId)
+	} catch (e) {
+		return { sessionId, title: '', added: 0, skipped: 0, error: `OpenCode: ${errorText(e)}` }
+	}
+	return uploadSessionMedia(canvasId, sessionId, found, opts)
+}
+
+/** Reads the media a session output (only reads from OpenCode). */
+export function readSessionMedia(serverKey: string, sessionId: string): Promise<SessionMedia> {
+	return findSessionMedia(serverKey, sessionId, { since: Date.now() - SEED_WINDOW_MS, limit: SEED_MAX_ITEMS, fill: SEED_FILL })
+}
+
+/** Uploads media read with readSessionMedia into the session's frame; `onUploaded` after each item. */
+export async function uploadSessionMedia(
+	canvasId: string,
+	sessionId: string,
+	found: SessionMedia,
+	opts: { existing: Set<string>; timeZone?: string; onUploaded?: (done: number, total: number) => void },
+): Promise<SeedResult> {
+	const result: SeedResult = { sessionId, title: found.title, added: 0, skipped: found.skipped }
+	if (!found.media.length) {
+		result.error = found.skipped ? 'its media is gone' : 'no media found in this session'
+		return result
+	}
+	try {
 		let lastAt = 0
+		let done = 0
 		const failures: string[] = []
 		for (const media of found.media) {
 			// Strictly increasing, so items output in the same instant keep their order.
 			const createdAt = (lastAt = Math.max(Math.round(media.at), lastAt + 1))
-			if (opts.existing.has(`${media.filename}@${createdAt}`)) continue
-			try {
-				await uploadItem(canvasId, sessionId, media.data, {
-					filename: media.filename,
-					group: SEED_GROUP,
-					title: media.label,
-					caption: seedCaption(media.at, media.via, media.source, media.gone, opts.timeZone),
-					createdAt,
-					sessionTitle: found.title,
-				})
-				result.added++
-			} catch (e) {
-				if ((e as { status?: number }).status === 404) throw e
-				result.skipped++
-				failures.push(`${media.filename}: ${(e as Error).message}`)
+			if (!opts.existing.has(`${media.filename}@${createdAt}`)) {
+				try {
+					await uploadItem(canvasId, sessionId, media.data, {
+						filename: media.filename,
+						group: SEED_GROUP,
+						title: media.label,
+						caption: seedCaption(media.at, media.via, media.source, media.gone, opts.timeZone),
+						createdAt,
+						sessionTitle: found.title,
+					})
+					result.added++
+				} catch (e) {
+					if ((e as { status?: number }).status === 404) throw e
+					result.skipped++
+					failures.push(`${media.filename}: ${(e as Error).message}`)
+				}
 			}
+			opts.onUploaded?.(++done, found.media.length)
 		}
 		if (!result.added && failures.length) result.error = failures[0]
 	} catch (e) {
-		result.error = (e as { status?: number }).status === 404 ? (e as Error).message : `OpenCode: ${errorText(e)}`
+		result.error = (e as Error).message
 	}
 	return result
 }

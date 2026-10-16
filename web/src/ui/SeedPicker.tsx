@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { OpenCodeSessionSummary, SeedResult } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
+import { AUTO_SESSIONS, autoCandidates, autoSeed, autoSeededAt, type AutoRow } from '../opencode/autoseed'
 import { seedSession } from '../opencode/seed'
 import { relativeTime, shortDir } from './Conjure'
 import { pairOffer } from '../opencode/pairings'
@@ -8,6 +9,16 @@ import { useValue } from './useValue'
 import { PairForm, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
 
 type RowStatus = { state: 'waiting' } | { state: 'seeding' } | { state: 'done'; result: SeedResult }
+
+interface AutoState {
+	rows: { session: OpenCodeSessionSummary; row: AutoRow }[]
+	running: boolean
+}
+
+/** how long the finished progress panel stays up (unless hovered) */
+const AUTO_LINGER_MS = 3000
+/** matches .seed-auto.fading's transition */
+const FADE_MS = 500
 
 /**
  * The empty canvas's session picker (edit links): pick OpenCode sessions on the servers paired in
@@ -17,6 +28,11 @@ type RowStatus = { state: 'waiting' } | { state: 'seeding' } | { state: 'done'; 
  * in live meanwhile. `onBusy` is true from the start of seeding until the results are dismissed,
  * so the picker stays up after the canvas stops being empty. With no server paired yet, it asks for
  * a pairing link first. Sessions (and selections) are keyed "<serverKey>/<sessionId>".
+ *
+ * A brand-new canvas doesn't wait to be picked for: once the paired servers answer, it brings in
+ * the latest sessions with media by itself (see opencode/autoseed.ts), showing their progress in
+ * a small bar at the top that leaves the canvas free to pan and zoom; the picker stays a click
+ * away. Until it knows whether it will (sessions listed, canvas not seeded before), it shows nothing.
  */
 export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canvasId: string; onBusy: (busy: boolean) => void }) {
 	const { servers, sessions, errors, reload: load } = useOpenCode()
@@ -26,6 +42,116 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 	const [selected, setSelected] = useState<string[]>([])
 	const [status, setStatus] = useState<Record<string, RowStatus> | null>(null)
 	const [running, setRunning] = useState(false)
+	const [auto, setAuto] = useState<AutoState | null>(null)
+	const [note, setNote] = useState<string | null>(null)
+	// the picker is held open over a canvas that isn't empty any more ("Choose sessions" while seeding)
+	const [held, setHeld] = useState(false)
+	// deciding whether to seed by itself: nothing shows meanwhile
+	const [pending, setPending] = useState(() => servers.length > 0)
+	const [expanded, setExpanded] = useState(false)
+	const [fading, setFading] = useState(false)
+	const autoTried = useRef(false)
+	const autoStopped = useRef(false)
+	const lingerTimer = useRef(0)
+	const hasFrames = useValue(() => Object.keys(editor.sessions.get()).length > 0)
+
+	useEffect(() => {
+		if (pending) onBusy(true)
+		return () => {
+			autoStopped.current = true
+			clearTimeout(lingerTimer.current)
+		}
+	}, [])
+
+	const settle = () => {
+		if (!pending) return
+		setPending(false)
+		onBusy(false)
+	}
+
+	// Seed a new canvas by itself as soon as the paired servers list their sessions.
+	useEffect(() => {
+		if (servers.length && !sessions) return
+		if (autoTried.current || !sessions || running || status) return settle()
+		const candidates = autoCandidates(sessions)
+		if (!candidates.length || Object.keys(editor.sessions.peek()).length) return settle()
+		autoTried.current = true
+		runAuto(candidates)
+	}, [sessions])
+
+	const runAuto = async (candidates: OpenCodeSessionSummary[]) => {
+		let seededBefore = true
+		try {
+			seededBefore = !!(await autoSeededAt(canvasId))
+		} catch {}
+		if (autoStopped.current) return
+		setPending(false)
+		if (seededBefore) return onBusy(false)
+		onBusy(true)
+		setAuto({ rows: [], running: true })
+		const outcome = await autoSeed(canvasId, candidates, {
+			existing: (sessionId) => existingItems(sessionId),
+			onRow: (session, row) =>
+				setAuto((a) => {
+					if (!a) return a
+					const rows = a.rows.some((r) => r.session === session)
+						? a.rows.map((r) => (r.session === session ? { session, row } : r))
+						: [...a.rows, { session, row }]
+					return { ...a, rows }
+				}),
+			onSeeded: () => editor.zoomToFit({ animate: true }),
+			stopped: () => autoStopped.current,
+		})
+		if (outcome.kind === 'stopped') return
+		if (outcome.kind === 'seeded') {
+			setAuto((a) => a && { rows: a.rows.filter((r) => r.row.state !== 'reading'), running: false })
+			lingerTimer.current = window.setTimeout(fadeOut, AUTO_LINGER_MS)
+			return
+		}
+		setAuto(null)
+		onBusy(false)
+		if (outcome.kind === 'nothing') {
+			setNote(`None of your ${candidates.length} latest sessions has images or videos yet.`)
+		} else if (outcome.kind === 'claimed') {
+			setNote('Someone else is already bringing in their latest sessions here.')
+		} else if (outcome.kind === 'failed') {
+			setNote(`Couldn't bring in your latest sessions: ${outcome.error}`)
+		}
+	}
+
+	const finishAuto = () => {
+		clearTimeout(lingerTimer.current)
+		setAuto(null)
+		onBusy(false)
+	}
+
+	const fadeOut = () => {
+		setFading(true)
+		lingerTimer.current = window.setTimeout(finishAuto, FADE_MS)
+	}
+
+	/** Leaves the progress for the picker (stopping after the session uploading now). */
+	const chooseInstead = () => {
+		autoStopped.current = true
+		clearTimeout(lingerTimer.current)
+		setFading(false)
+		setAuto(null)
+		setHeld(true)
+		onBusy(true)
+	}
+
+	const closeHeld = () => {
+		setHeld(false)
+		onBusy(false)
+	}
+
+	// Items already seeded (same name and time) aren't added twice.
+	const existingItems = (sessionId: string) =>
+		new Set(
+			Object.values(editor.items.peek())
+				.filter((i) => i.sessionId === sessionId)
+				.map((i) => `${i.name}@${i.createdAt}`),
+		)
 
 	const q = query.trim().toLowerCase()
 	const subagentCount = (sessions ?? []).filter((s) => s.parentId).length
@@ -49,12 +175,7 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 		for (const id of ids) {
 			const session = byKey.get(id)!
 			setStatus((s) => ({ ...s, [id]: { state: 'seeding' } }))
-			// Already seeded items (same name and time) aren't added twice.
-			const existing = new Set(
-				Object.values(editor.items.peek())
-					.filter((i) => i.sessionId === session.id)
-					.map((i) => `${i.name}@${i.createdAt}`),
-			)
+			const existing = existingItems(session.id)
 			let result: SeedResult
 			try {
 				result = await seedSession(canvasId, session.serverKey, session.id, { existing, timeZone })
@@ -73,7 +194,93 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 	const finish = () => {
 		setStatus(null)
 		setSelected([])
+		setHeld(false)
 		onBusy(false)
+	}
+
+	if (pending) return null
+
+	if (auto) {
+		const seeded = auto.rows.filter((r) => r.row.state === 'done' && r.row.result.added).length
+		const current = auto.rows.find((r) => r.row.state === 'uploading') ?? auto.rows.find((r) => r.row.state === 'reading')
+		const currentText = !current
+			? ''
+			: current.row.state === 'uploading'
+				? `${current.session.title || 'Untitled session'} uploading ${current.row.done}/${current.row.total}`
+				: `reading ${current.session.title || 'Untitled session'}`
+		return (
+			<div
+				className={`seed-picker seed-auto${auto.running ? '' : ' done'}${fading ? ' fading' : ''}`}
+				onPointerDown={(e) => e.stopPropagation()}
+				onWheel={(e) => e.stopPropagation()}
+				onPointerEnter={() => {
+					clearTimeout(lingerTimer.current)
+					setFading(false)
+				}}
+				onPointerLeave={() => {
+					if (!auto.running) lingerTimer.current = window.setTimeout(fadeOut, AUTO_LINGER_MS)
+				}}
+			>
+				<div className="seed-bar">
+					<span className="seed-state">{auto.running ? <span className="seed-spinner" /> : '✓'}</span>
+					<span className="seed-bar-text" title={currentText}>
+						{auto.running ? (
+							<>
+								Bringing in your latest sessions · {seeded}/{AUTO_SESSIONS}
+								{currentText && <span className="seed-bar-current"> · {currentText}</span>}
+							</>
+						) : (
+							`Brought in your latest ${seeded} session${seeded === 1 ? '' : 's'}`
+						)}
+					</span>
+					{auto.rows.length > 0 && (
+						<button className="seed-bar-toggle" title={expanded ? 'Hide sessions' : 'Show sessions'} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+							{expanded ? '▴' : '▾'}
+						</button>
+					)}
+					<button className="seed-secondary" onClick={chooseInstead}>
+						{auto.running ? 'Choose sessions instead' : 'Add more sessions'}
+					</button>
+					{!auto.running && (
+						<button className="seed-bar-toggle" title="Dismiss" onClick={finishAuto}>
+							×
+						</button>
+					)}
+				</div>
+				<div className="seed-progress">
+					<div style={{ width: `${auto.running ? (seeded / AUTO_SESSIONS) * 100 : 100}%` }} />
+				</div>
+				{expanded && (
+					<div className="seed-list">
+						{auto.rows.map(({ session, row }) => (
+							<div
+								key={sessionKey(session)}
+								className={`seed-row seed-${row.state === 'reading' || row.state === 'uploading' ? 'seeding' : 'done'}${row.state === 'empty' ? ' seed-skip' : ''}${
+									row.state === 'error' || (row.state === 'done' && row.result.error) ? ' failed' : ''
+								}`}
+								title={`${session.title || session.id}\n${session.directory}`}
+							>
+								<span className="seed-state">
+									{row.state === 'reading' || row.state === 'uploading' ? (
+										<span className="seed-spinner" />
+									) : row.state === 'empty' ? (
+										'–'
+									) : row.state === 'error' || (row.state === 'done' && row.result.error) ? (
+										'!'
+									) : (
+										'✓'
+									)}
+								</span>
+								<span className="seed-row-main">
+									<span className="seed-row-title">{session.title || 'Untitled session'}</span>
+									<span className="seed-row-meta">{autoRowText(row, session)}</span>
+								</span>
+							</div>
+						))}
+					</div>
+				)}
+			</div>
+		)
 	}
 
 	if (status) {
@@ -149,8 +356,9 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 	return (
 		<div className="seed-picker" onPointerDown={(e) => e.stopPropagation()} onWheel={(e) => e.stopPropagation()}>
 			<div className="seed-head">
-				<h2>Seed this canvas from OpenCode</h2>
+				<h2>{held && hasFrames ? 'Add sessions to this canvas' : 'Seed this canvas from OpenCode'}</h2>
 				<p>Pick sessions: each gets a frame with its images and videos from the last 24 hours, or its latest 10 if there are fewer.</p>
+				{note && <p className="seed-note">{note}</p>}
 			</div>
 			<div className="seed-filters">
 				<input className="seed-search" placeholder="Filter sessions" value={query} onChange={(e) => setQuery(e.target.value)} />
@@ -169,6 +377,11 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 				{sessions !== null && <SessionGroups servers={servers} sessions={shown} errors={errors} render={row} />}
 			</div>
 			<div className="seed-actions">
+				{held && (
+					<button className="seed-secondary seed-close" onClick={closeHeld}>
+						Close
+					</button>
+				)}
 				{selected.length > 0 && (
 					<button className="seed-secondary" onClick={() => setSelected([])}>
 						Clear
@@ -180,6 +393,14 @@ export function SeedPicker({ editor, canvasId, onBusy }: { editor: Editor; canva
 			</div>
 		</div>
 	)
+}
+
+function autoRowText(row: AutoRow, session: OpenCodeSessionSummary): string {
+	if (row.state === 'reading') return 'Reading…'
+	if (row.state === 'uploading') return `Uploading ${row.done}/${row.total}`
+	if (row.state === 'empty') return `No media · ${relativeTime(session.updatedAt)}`
+	if (row.state === 'error') return row.error
+	return rowStatusText({ state: 'done', result: row.result })
 }
 
 function rowStatusText(s: RowStatus): string {

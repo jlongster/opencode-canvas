@@ -15,7 +15,7 @@ import { Summon } from '../multiplayer/Summon'
 import { AttentionTray, Walkthrough } from './Attention'
 import { ConjureButton, ConjurePicker, ConjurePrompt } from './Conjure'
 import { CursorChat } from './CursorChat'
-import { DeepLink, urlForSelection } from './deepLink'
+import { DeepLink } from './deepLink'
 import { NotFound } from './NotFound'
 import { SeedPicker } from './SeedPicker'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
@@ -375,10 +375,7 @@ function ToolPicker({ editor, withEditTools }: { editor: Editor; withEditTools: 
 
 function Toolbar({ editor, canvas, conjure }: { editor: Editor; canvas: Canvas | null; conjure: Conjure | null }) {
 	const zoom = useValue(() => Math.round(editor.camera.get().z * 100))
-	const selectedCount = useValue(() => editor.selectedIds.get().length)
-	const hasSelection = selectedCount > 0
-	const groupLinked = useValue(() => !!editor.linkedGroup.get())
-	const canLink = selectedCount === 1 || groupLinked
+	const hasSelection = useValue(() => editor.selectedIds.get().length > 0)
 	const [sharing, setSharing] = useState(false)
 	const [conjuring, setConjuring] = useState(false)
 
@@ -395,8 +392,7 @@ function Toolbar({ editor, canvas, conjure }: { editor: Editor; canvas: Canvas |
 			<button className="wide-only" title="Zoom to selection (Shift+2)" disabled={!hasSelection} onClick={() => editor.zoomToSelection()}>
 				Selection
 			</button>
-			{(canLink || canvas) && <div className="sep" />}
-			{canLink && <CopySelectionLink editor={editor} />}
+			{canvas && <div className="sep" />}
 			{canvas && (
 				<>
 					{conjure && (
@@ -436,28 +432,6 @@ function Toolbar({ editor, canvas, conjure }: { editor: Editor; canvas: Canvas |
 				</div>
 			)}
 		</div>
-	)
-}
-
-/** Copies this page's URL with a hash pointing at the linked group or the one selected thing. */
-function CopySelectionLink({ editor }: { editor: Editor }) {
-	const [copied, setCopied] = useState(false)
-	const copy = () =>
-		navigator.clipboard.writeText(urlForSelection(editor.getSelectedIds(), editor.linkedGroup.get())).then(() => {
-			setCopied(true)
-			setTimeout(() => setCopied(false), 1500)
-		})
-	return (
-		<button title="Copy link to selection" onClick={copy}>
-			{copied ? (
-				'Copied'
-			) : (
-				<>
-					<span className="wide-only">Copy link</span>
-					<span className="narrow-only">Link</span>
-				</>
-			)}
-		</button>
 	)
 }
 

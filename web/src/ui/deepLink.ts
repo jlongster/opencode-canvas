@@ -40,11 +40,6 @@ export function hashForSelection(ids: string[], group?: GroupLayout | null): str
 	return `#${kind === 'frame' ? 'session' : kind}=${encodeURIComponent(id)}`
 }
 
-/** This page's URL with hashForSelection's hash. */
-export function urlForSelection(ids: string[], group?: GroupLayout | null): string {
-	return `${location.origin}${location.pathname}${location.search}${hashForSelection(ids, group)}`
-}
-
 function writeHash(hash: string) {
 	if (location.hash === hash || (!hash && !location.hash)) return
 	history.replaceState(history.state, '', `${location.pathname}${location.search}${hash}`)

@@ -33,13 +33,13 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 					<button
 						key={p.id}
 						className={`avatar${p.agent ? ' agent' : ''}${following === p.id ? ' following' : ''}`}
-						style={{ background: p.color, ['--ring' as string]: p.color }}
+						style={p.agent ? { color: p.color, ['--ring' as string]: p.color } : { background: p.color, ['--ring' as string]: p.color }}
 						title={
 							(p.agent ? `AI agent: ${p.name}\n` : '') + (following === p.id ? `Stop following ${p.name}` : `Follow ${p.name}`)
 						}
 						onClick={() => presence.toggleFollow(p.id)}
 					>
-						{p.agent ? <AgentGlyph /> : initials(p.name)}
+						{p.agent ? <LooperGlyph /> : initials(p.name)}
 					</button>
 				))}
 				{hidden > 0 && <div className="avatar more">+{hidden}</div>}
@@ -58,15 +58,15 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 	)
 }
 
-/** A one-eyed robot with a sparkling antenna: agents aren't people, so they don't get initials. */
-function AgentGlyph() {
+/** Creatures are loopers (see Looper.ts): an arched inchworm with one eye, in the session's colour. */
+function LooperGlyph() {
 	return (
-		<svg className="agent-glyph" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-			<path className="agent-glyph-spark" d="M9 0.6 L9.7 2.3 L11.4 3 L9.7 3.7 L9 5.4 L8.3 3.7 L6.6 3 L8.3 2.3 Z" />
-			<rect x="3" y="6.2" width="12" height="9.6" rx="3.4" />
-			<circle className="agent-glyph-eye" cx="9" cy="11" r="2.6" />
-			<circle className="agent-glyph-pupil" cx="9.7" cy="10.4" r="0.9" />
-			<path d="M3 10 H1.6 M15 10 H16.4" strokeWidth="1.4" strokeLinecap="round" />
+		<svg className="agent-glyph" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+			<path className="agent-glyph-body" d="M5.6 13.6 C5.1 7.2 7.4 4.6 10.4 4.6 C13.5 4.6 15.3 7.2 15.3 15" />
+			<circle className="agent-glyph-head" cx="5.6" cy="14.3" r="2.9" />
+			<circle className="agent-glyph-eye" cx="5.7" cy="14.4" r="2" />
+			<circle className="agent-glyph-pupil" cx="6.1" cy="14.7" r="1" />
+			<path className="agent-glyph-lid" d="M3.7 13.8 A2 2 0 0 1 7.7 13.8 Z" />
 		</svg>
 	)
 }

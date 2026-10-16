@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import type { OpenCodeSessionSummary } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
+import type { Vec } from '../editor/geometry'
 import type { Conjure, PromptAttachment } from '../multiplayer/Conjure'
 import { ownerId } from '../opencode/pairings'
 import { conjure as conjureSession } from '../sync/client'
@@ -27,12 +28,85 @@ export function ConjureButton({
 				<WandIcon />
 				<span className="wide-only">Conjure</span>
 			</button>
-			{open && <ConjurePopover editor={editor} conjure={conjure} canvasId={canvasId} onClose={() => setOpen(false)} />}
+			{open && <ConjurePanel editor={editor} conjure={conjure} canvasId={canvasId} onClose={() => setOpen(false)} />}
 		</>
 	)
 }
 
-function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor; conjure: Conjure; canvasId: string; onClose: () => void }) {
+/** a picker opened by C sits this far from the pointer, and this far inside the window */
+const PICKER_GAP = 14
+const PICKER_MARGIN = 8
+
+/**
+ * The Conjure panel C opens next to the pointer when it isn't over a session (Conjure.picking):
+ * the session picked comes to where the pointer was. Esc, a click outside or C again closes it.
+ */
+export function ConjurePicker({ editor, conjure, canvasId }: { editor: Editor; conjure: Conjure; canvasId: string }) {
+	const picking = useValue(() => conjure.picking.get(), [conjure])
+	const ref = useRef<HTMLDivElement>(null)
+	const [pos, setPos] = useState<Vec | null>(null)
+	const close = () => conjure.picking.set(null)
+
+	useLayoutEffect(() => {
+		const el = ref.current
+		if (!picking || !el) return
+		// Right of the pointer and from its height down, flipped to the left and upwards near the edges;
+		// again whenever its size changes (sessions arriving).
+		const place = () => {
+			const { width: w, height: h } = el.getBoundingClientRect()
+			const { x, y } = picking.screen
+			const vw = window.innerWidth
+			const vh = window.innerHeight
+			let left = x + PICKER_GAP
+			if (left + w > vw - PICKER_MARGIN) left = x - PICKER_GAP - w
+			let top = y - PICKER_GAP
+			if (top + h > vh - PICKER_MARGIN) top = y + PICKER_GAP - h
+			const next = {
+				x: Math.round(Math.max(PICKER_MARGIN, Math.min(left, vw - w - PICKER_MARGIN))),
+				y: Math.round(Math.max(PICKER_MARGIN, Math.min(top, vh - h - PICKER_MARGIN))),
+			}
+			setPos((prev) => (prev && prev.x === next.x && prev.y === next.y ? prev : next))
+		}
+		place()
+		const observer = new ResizeObserver(place)
+		observer.observe(el)
+		return () => observer.disconnect()
+	}, [picking])
+	useEffect(() => {
+		if (!picking) return
+		const outside = (e: PointerEvent) => {
+			if (!ref.current?.contains(e.target as Node)) close()
+		}
+		const escape = (e: KeyboardEvent) => e.key === 'Escape' && close()
+		window.addEventListener('pointerdown', outside, true)
+		window.addEventListener('keydown', escape)
+		return () => {
+			window.removeEventListener('pointerdown', outside, true)
+			window.removeEventListener('keydown', escape)
+		}
+	}, [picking])
+
+	if (!picking) return null
+	return (
+		<div
+			ref={ref}
+			key={`${picking.page.x},${picking.page.y}`}
+			className="toolbar conjure-picker"
+			// (placed properly before it paints; not hidden meanwhile, so its filter can take focus)
+			style={pos ? { left: pos.x, top: pos.y } : { left: picking.screen.x + PICKER_GAP, top: picking.screen.y - PICKER_GAP }}
+			onPointerDown={(e) => e.stopPropagation()}
+			onWheel={(e) => e.stopPropagation()}
+		>
+			<ConjurePanel editor={editor} conjure={conjure} canvasId={canvasId} at={picking.page} onClose={close} />
+		</div>
+	)
+}
+
+/**
+ * Picking an OpenCode session to conjure: onto the middle of the screen (the toolbar's button), or
+ * to `at` (a page point: C's picker), where our own worm already here crawls over too.
+ */
+function ConjurePanel({ editor, conjure, canvasId, at, onClose }: { editor: Editor; conjure: Conjure; canvasId: string; at?: Vec; onClose: () => void }) {
 	const { servers, byServer, errors, reload, retry } = useOpenCode()
 	const [error, setError] = useState<string | null>(null)
 	const [pending, setPending] = useState<string | null>(null)
@@ -52,6 +126,7 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 	const here = useMemo(() => new Set(hereKey.split(' ').filter(Boolean)), [hereKey])
 
 	const pick = async (s: OpenCodeSessionSummary) => {
+		if (at) return summonTo(s, at)
 		if (here.has(s.id)) {
 			conjure.focus(s.id)
 			return onClose()
@@ -76,6 +151,20 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 				conjure.focus(s.id)
 				return onClose()
 			}
+			setError((e as Error).message)
+		} finally {
+			setPending(null)
+		}
+	}
+
+	const summonTo = async (s: OpenCodeSessionSummary, to: Vec) => {
+		setPending(sessionKey(s))
+		setError(null)
+		try {
+			const message = await conjure.summon(s.id, to, { serverKey: s.serverKey, title: s.title })
+			if (message) setError(message)
+			else onClose()
+		} catch (e) {
 			setError((e as Error).message)
 		} finally {
 			setPending(null)
@@ -125,7 +214,7 @@ function ConjurePopover({ editor, conjure, canvasId, onClose }: { editor: Editor
 										key={k}
 										className={`conjure-row${isHere ? ' here' : ''}`}
 										disabled={pending !== null}
-										title={isHere ? 'Already on this canvas: show it' : `Conjure ${s.title || s.id}`}
+										title={isHere ? (at ? 'Already on this canvas: bring it here' : 'Already on this canvas: show it') : `Conjure ${s.title || s.id}`}
 										onClick={() => pick(s)}
 									>
 										<span className={`conjure-dot${s.busy ? ' busy' : ''}`} title={s.busy ? 'Working' : 'Idle'} />

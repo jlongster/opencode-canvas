@@ -13,7 +13,7 @@ import { SharedAnnotations } from '../multiplayer/SharedAnnotations'
 import { SharedNotes } from '../multiplayer/SharedNotes'
 import { Summon } from '../multiplayer/Summon'
 import { AttentionTray, Walkthrough } from './Attention'
-import { ConjureButton, ConjurePrompt } from './Conjure'
+import { ConjureButton, ConjurePicker, ConjurePrompt } from './Conjure'
 import { CursorChat } from './CursorChat'
 import { DeepLink, urlForSelection } from './deepLink'
 import { NotFound } from './NotFound'
@@ -211,6 +211,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			{presence && <FollowIndicator presence={presence} />}
 			{presence && <CursorChat editor={editor} presence={presence} />}
 			{conjure?.canPrompt && <ConjurePrompt editor={editor} conjure={conjure} />}
+			{conjure?.canPrompt && canvas && <ConjurePicker editor={editor} conjure={conjure} canvasId={canvas.id} />}
 			{attention && conjure && <Walkthrough editor={editor} attention={attention} conjure={conjure} />}
 			<div className="top-stack" ref={setTopStack}>
 				{attention && <AttentionTray attention={attention} />}

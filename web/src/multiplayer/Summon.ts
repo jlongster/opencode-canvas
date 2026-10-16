@@ -9,7 +9,9 @@ const LONG_PRESS_SLOP = 8
 /**
  * Summoning a session's worm (edit links): press C while the pointer is over anything of a session
  * frame (an item, a group, the frame's title or background), or long-press it on touch. See
- * Conjure.summon for what happens then; when it can't, the reason shows in the toast.
+ * Conjure.summon for what happens then; when it can't, the reason shows in the toast. C anywhere
+ * else opens the session picker next to the pointer (Conjure.picking), to conjure one there; C
+ * again closes it.
  */
 export class Summon {
 	private disposers: (() => void)[] = []
@@ -58,9 +60,14 @@ export class Summon {
 		if (e.key !== 'c' && e.key !== 'C') return
 		// With a modifier it's Cmd/Ctrl+C (copy) or similar: leave it alone.
 		if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || isEditable(e.target)) return
+		if (this.conjure.picking.peek()) return this.conjure.picking.set(null)
 		const point = this.editor.pointerPage.peek()
 		if (!point || this.editor.inputs.isPointing) return
-		this.summonAt(point)
+		if (this.sessionAt(point)) return this.summonAt(point)
+		// (so the C doesn't land in the picker's filter, focused as it opens)
+		e.preventDefault()
+		this.conjure.close()
+		this.conjure.picking.set({ screen: this.editor.pageToScreen(point), page: point })
 	}
 
 	private onPointerDown = (e: PointerEvent) => {

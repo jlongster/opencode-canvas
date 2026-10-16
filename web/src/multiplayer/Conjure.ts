@@ -39,6 +39,8 @@ const FIND_SESSION_MS = 8_000
 export class Conjure {
 	/** the worm whose box is open */
 	readonly prompting = atom<PromptTarget | null>('conjurePrompting', null)
+	/** the session picker C opened next to the pointer (not over a session): where it shows, and where to conjure */
+	readonly picking = atom<{ screen: Vec; page: Vec } | null>('conjurePicking', null)
 	/** when each worm was last startled (clicked or focused), by awareness client id */
 	readonly startled = new Map<number, number>()
 	/** where worms were just summoned to (C), by session id, for AgentWorms to crawl there right away */
@@ -162,10 +164,11 @@ export class Conjure {
 	/**
 	 * C over a session frame (or a long press): brings the session's worm to `at`. Conjures it when
 	 * it isn't here (from whichever paired OpenCode has the session); otherwise our own worm crawls
-	 * over. One nobody owns (an agent's attention actions made it) is adopted. Resolves to a message
-	 * for the user when it can't, else null.
+	 * over. One nobody owns (an agent's attention actions made it) is adopted. `found`: the session's
+	 * server and title when the caller already knows them. Resolves to a message for the user when
+	 * it can't, else null.
 	 */
-	async summon(sessionId: string, at: Vec): Promise<string | null> {
+	async summon(sessionId: string, at: Vec, found?: { serverKey: string; title: string }): Promise<string | null> {
 		if (!this.canEdit) return null
 		const spot = { x: Math.round(at.x), y: Math.round(at.y) }
 		const r = this.record(sessionId)
@@ -176,7 +179,7 @@ export class Conjure {
 			await this.move(sessionId, spot)
 			return null
 		}
-		const found = await findSession(sessionId)
+		found ??= (await findSession(sessionId)) ?? undefined
 		if (!found) return pairings.peek().length ? 'No paired OpenCode has this session' : 'Pair an OpenCode (Conjure) to summon its sessions'
 		try {
 			await conjureSession(this.canvasId, { sessionId, serverKey: found.serverKey, ownerId, title: found.title, ...spot })

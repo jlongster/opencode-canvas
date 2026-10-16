@@ -182,11 +182,16 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 	const inputRef = useRef<HTMLTextAreaElement>(null)
 	const fileRef = useRef<HTMLInputElement>(null)
 	const dragDepth = useRef(0)
+	const [steered, setSteered] = useState(false)
+	const steerTimer = useRef<number>(undefined)
 
+	useEffect(() => () => window.clearTimeout(steerTimer.current), [])
 	useEffect(() => {
 		setText('')
 		setError(null)
 		setAttachments([])
+		setSteered(false)
+		window.clearTimeout(steerTimer.current)
 		if (target) inputRef.current?.focus()
 	}, [target?.sessionId])
 	// The worm was banished: nothing to talk to. (Waking up or falling asleep changes its client id.)
@@ -201,6 +206,7 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 	const [x, y, thinking, asleep, block, color, ...name] = info.split('|')
 
 	const canAttach = !block
+	const working = thinking === '1'
 
 	const attach = async (files: File[]) => {
 		if (!files.length) return
@@ -261,10 +267,20 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 		if ((!prompt && !attachments.length) || busy) return
 		setBusy(true)
 		setError(null)
+		setSteered(false)
 		try {
-			await conjure.send(target, prompt, attachments)
+			const { steered } = await conjure.send(target, prompt, attachments)
 			setAttachments([])
-			conjure.close()
+			if (steered) {
+				// Stays open a moment to confirm, then closes unless they keep typing.
+				setText('')
+				setSteered(true)
+				window.clearTimeout(steerTimer.current)
+				steerTimer.current = window.setTimeout(() => {
+					if (!inputRef.current?.value) conjure.close()
+					setSteered(false)
+				}, STEER_CONFIRM_MS)
+			} else conjure.close()
 		} catch (e) {
 			setError((e as Error).message)
 		} finally {
@@ -346,7 +362,11 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 						ref={inputRef}
 						value={text}
 						rows={3}
-						placeholder={thinking === '1' ? 'Still thinking about the last one…' : 'Say something… (Enter sends, Shift+Enter for a new line)'}
+						placeholder={
+							working
+								? 'It’s working: anything you send steers it, added to the work in progress…'
+								: 'Say something… (Enter sends, Shift+Enter for a new line)'
+						}
 						onChange={(e) => setText(e.target.value)}
 						onPaste={(e) => {
 							const files = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'))
@@ -395,6 +415,7 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 				</>
 			)}
 			{error && <div className="conjure-prompt-error">{error}</div>}
+			{steered && !error && <div className="conjure-prompt-ok">Steered: added to the work in progress</div>}
 			<div className="conjure-prompt-actions">
 				<button className="conjure-banish" title="Send this worm away for everyone (the session itself stays)" disabled={busy} onClick={banish}>
 					Banish
@@ -418,8 +439,17 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 					</button>
 				)}
 				{!block && (
-					<button className="conjure-send" disabled={busy || (!text.trim() && !attachments.length)} onClick={send}>
-						{busy ? 'Sending…' : 'Send'}
+					<button
+						className="conjure-send"
+						title={
+							working
+								? 'It’s working: this is added to the work in progress (steering it) instead of waiting for it to finish'
+								: 'Send (Enter)'
+						}
+						disabled={busy || (!text.trim() && !attachments.length)}
+						onClick={send}
+					>
+						{busy ? (working ? 'Steering…' : 'Sending…') : working ? 'Steer' : 'Send'}
 					</button>
 				)}
 			</div>
@@ -430,6 +460,7 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 const ATTACH_MAX = 8
 const ATTACH_MAX_BYTES = 20 * 1024 * 1024
+const STEER_CONFIRM_MS = 1800
 let attachmentIds = 0
 
 function readAttachment(file: File): Promise<PromptAttachment> {

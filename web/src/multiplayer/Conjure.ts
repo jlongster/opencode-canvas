@@ -128,9 +128,11 @@ export class Conjure {
 
 	/**
 	 * Prompts the worm's session, straight from this browser; whoever runs the worm shows the reply.
-	 * Attached images go along as data: URLs (they never touch the canvas server).
+	 * Attached images go along as data: URLs (they never touch the canvas server). While the session
+	 * is running, the prompt steers it: OpenCode adds it to the turn in progress (as its TUI does when
+	 * you type while it works). Resolves to whether it steered a running session.
 	 */
-	async send(target: PromptTarget, text: string, attachments: PromptAttachment[] = []) {
+	async send(target: PromptTarget, text: string, attachments: PromptAttachment[] = []): Promise<{ steered: boolean }> {
 		const r = this.record(target.sessionId)
 		if (!r) throw new Error('that worm was banished')
 		const block = this.talkBlock(r.sessionId)
@@ -144,15 +146,16 @@ export class Conjure {
 		const title = this.canvasTitle()
 		const images = attachments.length === 1 ? 'an image' : `${attachments.length} images`
 		const body = prompt || `(sent ${images})`
-		await withServer(r.serverKey, async (c) => {
-			const active = await c.session.active({ signal: AbortSignal.timeout(10_000) })
-			if (r.sessionId in active) throw new Error(`${wormName(r)} is busy right now (its session is already running); try again when it's done`)
+		return withServer(r.serverKey, async (c) => {
+			const active = await c.session.active({ signal: AbortSignal.timeout(10_000) }).catch(() => ({}))
 			await c.session.prompt({
 				sessionID: r.sessionId,
 				text: from ? `${from} (on the canvas "${title}"): ${body}` : body,
 				...(attachments.length ? { files: attachments.map((a) => ({ uri: a.dataUrl, name: a.name })) } : {}),
 				metadata: { source: 'canvas', canvasId: this.canvasId, ...(from ? { from } : {}) },
+				delivery: 'steer',
 			})
+			return { steered: r.sessionId in active }
 		})
 	}
 

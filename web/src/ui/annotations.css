@@ -1,0 +1,246 @@
+/* Annotations: drawn at a constant screen size (not scaled with the camera), above notes. */
+.annotation-layer {
+	--ann-bg: #1c1c1f;
+	--ann-border: rgba(255, 255, 255, 0.08);
+	--ann-border-strong: rgba(255, 255, 255, 0.16);
+	--ann-text: #ececee;
+	--ann-muted: #8e8e96;
+	--ann-faint: #66666e;
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	z-index: 2;
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter Variable', Inter, system-ui, sans-serif;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+.annotation-lines {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	overflow: visible;
+}
+
+/* A thin dark casing keeps the hairline readable on light images without reading as a shadow. */
+.annotation-casing {
+	stroke: rgba(0, 0, 0, 0.28);
+	stroke-width: 3;
+	stroke-linecap: round;
+}
+
+.annotation-line {
+	stroke: var(--author);
+	stroke-width: 1.5;
+	stroke-linecap: round;
+	stroke-opacity: 0.8;
+	transition: stroke-opacity 120ms;
+}
+
+.annotation-ring {
+	fill: rgba(17, 17, 19, 0.45);
+	stroke: var(--author);
+	stroke-width: 1.5;
+}
+
+.annotation-dot {
+	fill: var(--author);
+}
+
+.annotation-tip {
+	fill: var(--author);
+	stroke: rgba(0, 0, 0, 0.35);
+	stroke-width: 1;
+}
+
+.annotation-g.hover .annotation-line,
+.annotation-g.active .annotation-line,
+.annotation-g.drawing .annotation-line {
+	stroke-opacity: 1;
+}
+
+.annotation-g.hover .annotation-ring,
+.annotation-g.active .annotation-ring {
+	fill: rgba(17, 17, 19, 0.7);
+}
+
+/* Collapsed: the anchor plus its number on the item (the same number agents see). */
+.annotation-badge {
+	position: absolute;
+	left: 0;
+	top: 0;
+	min-width: 18px;
+	height: 18px;
+	padding: 0 5px;
+	border: 1px solid var(--ann-border-strong);
+	border-radius: 5px;
+	background: var(--ann-bg);
+	color: var(--ann-text);
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 16px;
+	font-variant-numeric: tabular-nums;
+	text-align: center;
+	cursor: pointer;
+	pointer-events: auto;
+	will-change: transform;
+	transition: border-color 120ms, background-color 120ms;
+}
+
+.annotation-badge:hover,
+.annotation-badge.active {
+	border-color: var(--author);
+	background: #232327;
+}
+
+.annotation-card {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: max-content;
+	min-width: 168px;
+	max-width: 260px;
+	padding: 7px 10px 8px;
+	border: 1px solid var(--ann-border);
+	border-radius: 6px;
+	background: var(--ann-bg);
+	color: var(--ann-text);
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
+	pointer-events: auto;
+	will-change: transform;
+	cursor: default;
+	transition: border-color 120ms;
+}
+
+.annotation-card:hover,
+.annotation-card.active,
+.annotation-card.editing,
+.annotation-card.dragging {
+	z-index: 1;
+	border-color: var(--ann-border-strong);
+}
+
+.annotation-card.dragging {
+	cursor: grabbing;
+}
+
+.annotation-head {
+	position: relative;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: 16px;
+	font-size: 11px;
+	line-height: 16px;
+	color: var(--ann-muted);
+	white-space: nowrap;
+}
+
+.annotation-swatch {
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--author);
+}
+
+.annotation-author {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: #b4b4bb;
+	font-weight: 500;
+}
+
+.annotation-time {
+	flex: 1;
+	color: var(--ann-faint);
+}
+
+.annotation-actions {
+	position: absolute;
+	top: -4px;
+	right: -6px;
+	display: flex;
+	gap: 1px;
+	padding-left: 6px;
+	background: var(--ann-bg);
+	opacity: 0;
+	transition: opacity 100ms;
+}
+
+.annotation-card:hover .annotation-actions {
+	opacity: 1;
+}
+
+.annotation-card.editing .annotation-actions,
+.annotation-card.dragging .annotation-actions {
+	display: none;
+}
+
+.annotation-actions button {
+	display: grid;
+	place-items: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: 0;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--ann-muted);
+	cursor: pointer;
+}
+
+.annotation-actions button:hover {
+	background: rgba(255, 255, 255, 0.07);
+	color: var(--ann-text);
+}
+
+.annotation-actions .annotation-delete:hover {
+	color: #f87171;
+}
+
+.annotation-actions svg {
+	display: block;
+	width: 14px;
+	height: 14px;
+}
+
+.annotation-text {
+	margin-top: 3px;
+	font-size: 13px;
+	line-height: 18px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.annotation-input {
+	display: block;
+	width: 236px;
+	max-width: 100%;
+	margin: 3px 0 0;
+	padding: 0;
+	border: 0;
+	outline: none;
+	resize: none;
+	background: transparent;
+	color: var(--ann-text);
+	caret-color: var(--author);
+	font: inherit;
+	font-size: 13px;
+	line-height: 18px;
+}
+
+.annotation-input::placeholder {
+	color: var(--ann-faint);
+}
+
+.annotation-hint {
+	margin-top: 6px;
+	padding-top: 6px;
+	border-top: 1px solid var(--ann-border);
+	font-size: 11px;
+	line-height: 14px;
+	color: var(--ann-faint);
+	white-space: nowrap;
+}

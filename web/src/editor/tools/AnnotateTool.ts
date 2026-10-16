@@ -61,13 +61,18 @@ class Drawing extends StateNode {
 	}
 
 	override onPointerMove() {
-		this.editor.annotationDrafts?.move(this.editor.inputs.currentPagePoint)
+		this.editor.annotationDrafts?.move(this.pointerPage())
 	}
 
 	override onPointerUp() {
 		this.done = true
-		this.editor.annotationDrafts?.finish(this.editor.inputs.currentPagePoint)
+		this.editor.annotationDrafts?.finish(this.pointerPage())
 		this.parent!.transition('idle')
+	}
+
+	/** Where the pointer is now, even if the camera moved since its last move event. */
+	private pointerPage() {
+		return this.editor.screenToPage(this.editor.inputs.currentScreenPoint)
 	}
 
 	override onKeyDown(e: EventOf<'key_down'>) {

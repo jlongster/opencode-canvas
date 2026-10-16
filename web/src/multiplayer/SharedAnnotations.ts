@@ -4,6 +4,7 @@ import type { AnnotationSnapshot } from '../editor/Deletions'
 import type { Editor } from '../editor/Editor'
 import type { Box, Vec } from '../editor/geometry'
 import type { Presence } from './Presence'
+import '../ui/annotations.css'
 
 /** Below this on-screen item width, annotations collapse to their dot and a badge (hover or click to open). */
 const COLLAPSE_ITEM_PX = 260
@@ -18,6 +19,10 @@ const DRAG_DISTANCE = 4
 const HOVER_GRACE_MS = 250
 const TEXT_MAX = 4000
 const SVG = 'http://www.w3.org/2000/svg'
+/** Radius (screen px) of the anchor's ring; the line starts at its edge. */
+const RING_R = 6
+/** Gap (screen px) between the anchor and its collapsed number chip. */
+const BADGE_GAP = 9
 
 /** A comment being written: anchored on an item, its card at (ox, oy) item widths from the anchor. */
 interface Draft {
@@ -122,6 +127,8 @@ export class SharedAnnotations {
 		view.showDraft(me.name, me.color)
 		this.draft = { itemId, x: anchor.x, y: anchor.y, ox: 0, oy: 0, typing: false, view }
 		this.addView(view)
+		// Drawn right away (not on the next frame) so the dot and line show with the press.
+		this.placeDraft()
 	}
 
 	private moveDraft(point: Vec) {
@@ -130,6 +137,7 @@ export class SharedAnnotations {
 		if (!d || !box) return
 		d.ox = (point.x - (box.x + d.x * box.w)) / box.w
 		d.oy = (point.y - (box.y + d.y * box.h)) / box.w
+		this.placeDraft()
 	}
 
 	private finishDraft(point: Vec) {
@@ -144,6 +152,7 @@ export class SharedAnnotations {
 		}
 		d.typing = true
 		d.view.startTyping()
+		this.placeDraft()
 	}
 
 	/** Drops the draft (only if it's still `view`'s, when given: a stale box's blur mustn't cancel a newer draft). */
@@ -235,6 +244,7 @@ export class SharedAnnotations {
 	/** Create, update and remove views to match the document. */
 	private sync() {
 		const live = new Set<string>()
+		const byItem = new Map<string, CardView[]>()
 		for (const [id, a] of this.map.entries()) {
 			if (!(a instanceof Y.Map)) continue
 			live.add(id)
@@ -245,6 +255,13 @@ export class SharedAnnotations {
 				this.addView(view)
 			}
 			view.update(a)
+			const itemId = view.data!.itemId
+			byItem.set(itemId, [...(byItem.get(itemId) ?? []), view])
+		}
+		// Numbered per item, oldest first, like the marked images agents get (see markedImage on the server).
+		for (const list of byItem.values()) {
+			list.sort((a, b) => a.data!.createdAt - b.data!.createdAt)
+			list.forEach((view, i) => view.setNumber(i + 1))
 		}
 		for (const [id, view] of this.views) {
 			if (live.has(id)) continue
@@ -280,12 +297,25 @@ export class SharedAnnotations {
 			// Small on screen: just the dot and a badge, which stays put while its card is open so the
 			// pointer can stay on it.
 			const small = box.w * z < COLLAPSE_ITEM_PX
-			view.place(this.points(box, a), !small || this.pinned.has(id) || this.hovered === id || view.busy, small)
+			const open = !small || this.pinned.has(id) || this.hovered === id || view.busy
+			view.place(this.points(box, a), { card: open, line: open && !small, badge: small, active: this.pinned.has(id) || view.busy })
 		}
+		this.placeDraft()
+	}
+
+	/**
+	 * While drawing, the line ends exactly under the pointer (its current screen point, so a camera
+	 * change mid-drag can't pull it away); once released, at the stored offset like the others.
+	 */
+	private placeDraft() {
 		const d = this.draft
-		const box = d && this.itemBox(d.itemId)
-		if (d && box) d.view.place(this.points(box, d), d.typing, false)
-		else if (d) this.cancelDraft()
+		if (!d) return
+		const box = this.itemBox(d.itemId)
+		if (!box) return this.cancelDraft()
+		if (d.typing) return d.view.place(this.points(box, d), { card: true, line: true, badge: false, active: true })
+		const anchor = this.editor.pageToScreen({ x: box.x + d.x * box.w, y: box.y + d.y * box.h })
+		const { x, y } = this.editor.inputs.currentScreenPoint
+		d.view.place({ anchor, end: { x, y } }, { card: false, line: true, badge: false, active: true, tip: true })
 	}
 
 	/**
@@ -344,22 +374,40 @@ interface AnnotationData {
 	len: number
 }
 
-/** One annotation (or the draft): its line and dot in the shared SVG, its collapsed badge and its card. */
+const EDIT_ICON =
+	'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M10.2 3.3l2.5 2.5L6 12.5H3.5V10z"/></svg>'
+const DELETE_ICON =
+	'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/></svg>'
+
+/** What a view shows: its card, its line (else just the anchor), the collapsed number chip, and the live end of a line being drawn. */
+interface Placement {
+	card: boolean
+	line: boolean
+	badge: boolean
+	active: boolean
+	tip?: boolean
+}
+
+/** One annotation (or the draft): its line and anchor in the shared SVG, its collapsed number chip and its card. */
 class CardView {
 	readonly lines: SVGGElement
 	readonly badge: HTMLDivElement
 	readonly card: HTMLDivElement
 	data: AnnotationData | null = null
-	private shadow: SVGLineElement
+	private casing: SVGLineElement
 	private line: SVGLineElement
+	private ring: SVGCircleElement
 	private dot: SVGCircleElement
+	private tip: SVGCircleElement
 	private author: HTMLSpanElement
 	private time: HTMLSpanElement
 	private text: HTMLDivElement
 	private input: HTMLTextAreaElement | null = null
+	private hint: HTMLDivElement | null = null
 	private dragging = false
 	private lastKey = ''
 	private shown = ''
+	private active = false
 
 	constructor(
 		private owner: SharedAnnotations,
@@ -367,14 +415,16 @@ class CardView {
 		private editable: boolean,
 	) {
 		this.lines = document.createElementNS(SVG, 'g')
-		this.shadow = document.createElementNS(SVG, 'line')
-		this.shadow.classList.add('annotation-line-shadow')
-		this.line = document.createElementNS(SVG, 'line')
-		this.line.classList.add('annotation-line')
-		this.dot = document.createElementNS(SVG, 'circle')
-		this.dot.classList.add('annotation-dot')
-		this.dot.setAttribute('r', '5')
-		this.lines.append(this.shadow, this.line, this.dot)
+		this.lines.classList.add('annotation-g')
+		this.casing = svgEl('line', 'annotation-casing')
+		this.line = svgEl('line', 'annotation-line')
+		this.ring = svgEl('circle', 'annotation-ring')
+		this.ring.setAttribute('r', String(RING_R))
+		this.dot = svgEl('circle', 'annotation-dot')
+		this.dot.setAttribute('r', '2.5')
+		this.tip = svgEl('circle', 'annotation-tip')
+		this.tip.setAttribute('r', '2.5')
+		this.lines.append(this.casing, this.line, this.ring, this.dot, this.tip)
 
 		this.badge = document.createElement('div')
 		this.badge.className = 'annotation-badge'
@@ -383,7 +433,10 @@ class CardView {
 		this.card.innerHTML =
 			'<div class="annotation-head"><span class="annotation-swatch"></span><span class="annotation-author"></span>' +
 			'<span class="annotation-time"></span>' +
-			(editable && id ? '<button class="annotation-edit" title="Edit">Edit</button><button class="annotation-delete" title="Delete">×</button>' : '') +
+			(editable && id
+				? `<span class="annotation-actions"><button class="annotation-edit" title="Edit" aria-label="Edit">${EDIT_ICON}</button>` +
+					`<button class="annotation-delete" title="Delete" aria-label="Delete">${DELETE_ICON}</button></span>`
+				: '') +
 			'</div><div class="annotation-text"></div>'
 		this.author = this.card.querySelector('.annotation-author')!
 		this.time = this.card.querySelector('.annotation-time')!
@@ -396,8 +449,14 @@ class CardView {
 				if (el === this.card && this.editable && this.id && !this.input) this.startEditing()
 			})
 			if (id) {
-				el.addEventListener('pointerenter', () => owner.setHovered(id))
-				el.addEventListener('pointerleave', () => owner.setHovered(null))
+				el.addEventListener('pointerenter', () => {
+					this.lines.classList.add('hover')
+					owner.setHovered(id)
+				})
+				el.addEventListener('pointerleave', () => {
+					this.lines.classList.remove('hover')
+					owner.setHovered(null)
+				})
 			}
 		}
 		this.card.querySelector('.annotation-edit')?.addEventListener('click', () => this.startEditing())
@@ -428,9 +487,14 @@ class CardView {
 		this.setColor(d.color)
 		if (this.author.textContent !== d.author) this.author.textContent = d.author || 'Someone'
 		if (!this.input && this.text.textContent !== d.text) this.text.textContent = d.text
-		this.badge.textContent = (d.author.trim()[0] ?? '?').toUpperCase()
 		this.badge.title = `${d.author}: ${d.text}`
 		this.updateTime()
+	}
+
+	/** Its number among its item's annotations, shown on the collapsed chip. */
+	setNumber(n: number) {
+		const label = String(n)
+		if (this.badge.textContent !== label) this.badge.textContent = label
 	}
 
 	updateTime() {
@@ -447,9 +511,11 @@ class CardView {
 		this.author.textContent = author
 		this.time.textContent = ''
 		this.card.classList.add('draft')
+		this.lines.classList.add('drawing')
 	}
 
 	startTyping() {
+		this.lines.classList.remove('drawing')
 		this.openInput('', (text) => this.owner.commitDraft(this, text), () => this.owner.cancelDraft(this))
 	}
 
@@ -468,13 +534,18 @@ class CardView {
 		if (this.input) return
 		const input = document.createElement('textarea')
 		input.className = 'annotation-input'
-		input.placeholder = 'Add a comment…'
+		input.placeholder = this.id ? 'Edit comment' : 'Add a comment'
 		input.rows = 1
 		input.maxLength = TEXT_MAX
 		input.value = value
 		input.spellcheck = false
 		this.input = input
 		this.text.replaceWith(input)
+		const hint = document.createElement('div')
+		hint.className = 'annotation-hint'
+		hint.textContent = 'Enter to save · Esc to cancel'
+		this.hint = hint
+		input.after(hint)
 		this.card.classList.add('editing')
 		const fit = () => {
 			input.style.height = 'auto'
@@ -511,16 +582,15 @@ class CardView {
 		if (!this.input) return
 		const input = this.input
 		this.input = null
+		this.hint?.remove()
+		this.hint = null
 		input.replaceWith(this.text)
 		this.card.classList.remove('editing')
 		if (this.data) this.text.textContent = this.data.text
 	}
 
 	private setColor(color: string) {
-		this.card.style.setProperty('--author', color)
-		this.badge.style.setProperty('--author', color)
-		this.line.style.stroke = color
-		this.dot.style.fill = color
+		for (const el of [this.card, this.badge, this.lines]) el.style.setProperty('--author', color)
 	}
 
 	hide() {
@@ -532,33 +602,52 @@ class CardView {
 		this.shown = ''
 	}
 
-	place({ anchor, end }: { anchor: Vec; end: Vec }, open: boolean, badge: boolean) {
-		const key = `${anchor.x.toFixed(1)},${anchor.y.toFixed(1)},${end.x.toFixed(1)},${end.y.toFixed(1)},${open},${badge}`
+	place({ anchor, end }: { anchor: Vec; end: Vec }, p: Placement) {
+		const tip = !!p.tip
+		const key = `${anchor.x},${anchor.y},${end.x},${end.y},${p.card},${p.line},${p.badge},${p.active},${tip}`
 		if (key === this.lastKey) return
 		this.lastKey = key
-		const state = `${open},${badge}`
+		const state = `${p.card},${p.line},${p.badge},${tip}`
 		if (state !== this.shown) {
 			this.shown = state
 			this.lines.style.display = ''
-			this.badge.style.display = badge ? '' : 'none'
-			this.card.style.display = open ? '' : 'none'
-			this.line.style.display = this.shadow.style.display = open ? '' : 'none'
+			this.badge.style.display = p.badge ? '' : 'none'
+			this.card.style.display = p.card ? '' : 'none'
+			this.line.style.display = this.casing.style.display = p.line ? '' : 'none'
+			this.tip.style.display = tip ? '' : 'none'
 		}
-		this.dot.setAttribute('cx', String(anchor.x))
-		this.dot.setAttribute('cy', String(anchor.y))
-		if (badge) this.badge.style.transform = `translate(${anchor.x + 3}px, ${anchor.y - 3}px) translate(0, -100%)`
-		if (!open) return
-		// Opened from its badge: the card sits beside the badge, without the (tiny) line.
-		this.line.style.display = this.shadow.style.display = badge ? 'none' : ''
-		if (badge) {
-			this.card.style.transform = `translate(${anchor.x + 3 + this.badge.offsetWidth + 6}px, ${anchor.y - 3}px) translate(0, -100%)`
+		if (p.active !== this.active) {
+			this.active = p.active
+			for (const el of [this.card, this.badge, this.lines]) el.classList.toggle('active', p.active)
+		}
+		for (const c of [this.ring, this.dot]) {
+			c.setAttribute('cx', String(anchor.x))
+			c.setAttribute('cy', String(anchor.y))
+		}
+		if (p.badge) this.badge.style.transform = `translate(${anchor.x + BADGE_GAP}px, ${anchor.y}px) translate(0, -50%)`
+		if (p.line) {
+			// From the ring's edge to the end; shorter than the ring, just a point at the end.
+			const dx = end.x - anchor.x
+			const dy = end.y - anchor.y
+			const len = Math.hypot(dx, dy)
+			const k = len > RING_R ? RING_R / len : 1
+			for (const l of [this.casing, this.line]) {
+				l.setAttribute('x1', String(anchor.x + dx * k))
+				l.setAttribute('y1', String(anchor.y + dy * k))
+				l.setAttribute('x2', String(end.x))
+				l.setAttribute('y2', String(end.y))
+			}
+		}
+		if (tip) {
+			this.tip.setAttribute('cx', String(end.x))
+			this.tip.setAttribute('cy', String(end.y))
+		}
+		if (!p.card) return
+		// Opened from its chip: the card sits beside the chip, without the (tiny) line.
+		if (p.badge) {
+			const x = anchor.x + BADGE_GAP + this.badge.offsetWidth + 6
+			this.card.style.transform = `translate(${x}px, ${anchor.y - this.badge.offsetHeight / 2}px)`
 			return
-		}
-		for (const l of [this.shadow, this.line]) {
-			l.setAttribute('x1', String(anchor.x))
-			l.setAttribute('y1', String(anchor.y))
-			l.setAttribute('x2', String(end.x))
-			l.setAttribute('y2', String(end.y))
 		}
 		// The card hangs off the line's end, away from the anchor: by its near side's middle when the
 		// line is mostly horizontal, by its top or bottom middle when it's mostly vertical.
@@ -575,15 +664,15 @@ class CardView {
 	}
 
 	/**
-	 * A press on the card or badge: the canvas underneath never sees it. Dragging moves the card
-	 * (edit links); a click on a collapsed badge keeps the card open.
+	 * A press on the card or chip: the canvas underneath never sees it. Dragging moves the card
+	 * (edit links); a click on a collapsed chip keeps the card open.
 	 */
 	private onPointerDown(e: PointerEvent, onBadge: boolean) {
 		if (e.button === 1 || this.owner.editor.inputs.isSpaceDown) return
 		e.stopPropagation()
 		if (e.button !== 0) return
 		const target = e.target as HTMLElement
-		if (target.tagName === 'BUTTON' || target.tagName === 'TEXTAREA') return
+		if (target.closest('button') || target.tagName === 'TEXTAREA') return
 		const id = this.id
 		const box = this.data && this.owner.itemBox(this.data.itemId)
 		if (!id || !this.data || !box) return
@@ -621,6 +710,12 @@ class CardView {
 		el.addEventListener('pointerup', end)
 		el.addEventListener('pointercancel', end)
 	}
+}
+
+function svgEl<K extends 'line' | 'circle'>(tag: K, className: string): SVGElementTagNameMap[K] {
+	const el = document.createElementNS(SVG, tag)
+	el.classList.add(className)
+	return el
 }
 
 /** "just now", "5m ago", "3h ago", "2d ago", then the date. */

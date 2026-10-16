@@ -2,7 +2,7 @@ import type { ConjuredAgent } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import type { Vec } from '../editor/geometry'
 import { ownerId, pairing, pairings, withServer } from '../opencode/pairings'
-import { atom, computed, type Atom } from '../state/signals'
+import { atom, computed, react, type Atom } from '../state/signals'
 import { banishConjured, conjure as conjureSession, updateConjured } from '../sync/client'
 import type { Peer, Presence } from './Presence'
 import { lastAssistantText, runsHere, WormHost, wormName } from './WormHost'
@@ -25,6 +25,9 @@ export type TalkBlock = 'not-yours' | 'not-paired' | 'unowned' | null
 
 const PROMPT_MAX = 20_000
 const FIND_SESSION_MS = 8_000
+const INTERRUPT_MS = 10_000
+/** a worm still thinking this long after its session was interrupted can be stopped again */
+const STOP_WAIT_MS = 20_000
 
 /**
  * Conjured worms on a canvas: OpenCode sessions brought onto it (records from the canvas server,
@@ -66,7 +69,10 @@ export class Conjure {
 				chatSent: true,
 			}))
 	})
+	/** our own worms whose sessions we interrupted, by session id (when), until they stop thinking */
+	readonly stopping = atom<Record<string, number>>('conjureStopping', {})
 	private host: WormHost | null
+	private unwatchStopping: () => void
 
 	constructor(
 		readonly editor: Editor,
@@ -78,6 +84,12 @@ export class Conjure {
 		private canvasTitle: () => string,
 	) {
 		this.host = new WormHost(canvasId, records)
+		this.unwatchStopping = react(() => {
+			const peers = this.presence.peers.get()
+			const stopping = this.stopping.peek()
+			const still = Object.keys(stopping).filter((id) => peers.some((p) => p.user.conjured && p.user.sessionId === id && p.thinking))
+			if (still.length !== Object.keys(stopping).length) this.stopping.set(Object.fromEntries(still.map((id) => [id, stopping[id]])))
+		})
 	}
 
 	get canPrompt() {
@@ -162,6 +174,31 @@ export class Conjure {
 	}
 
 	/**
+	 * Interrupts our own worm's session (OpenCode's session.interrupt, as its TUI does on Esc): the
+	 * turn in progress stops. The worm shows as stopping until it stops thinking.
+	 */
+	async interrupt(sessionId: string) {
+		const r = this.record(sessionId)
+		if (!r) throw new Error('that worm was banished')
+		if (this.talkBlock(sessionId)) throw new Error('only the browser that conjured this worm can stop it')
+		if (this.stopping.peek()[sessionId]) return
+		const at = Date.now()
+		this.setStopping(sessionId, at)
+		try {
+			await withServer(r.serverKey, (c) => c.session.interrupt({ sessionID: sessionId }, { signal: AbortSignal.timeout(INTERRUPT_MS) }))
+		} catch (e) {
+			this.setStopping(sessionId, null)
+			throw e
+		}
+		window.setTimeout(() => this.stopping.peek()[sessionId] === at && this.setStopping(sessionId, null), STOP_WAIT_MS)
+	}
+
+	private setStopping(sessionId: string, at: number | null) {
+		const { [sessionId]: _, ...rest } = this.stopping.peek()
+		this.stopping.set(at === null ? rest : { ...rest, [sessionId]: at })
+	}
+
+	/**
 	 * C over a session frame (or a long press): brings the session's worm to `at`. Conjures it when
 	 * it isn't here (from whichever paired OpenCode has the session); otherwise our own worm crawls
 	 * over. One nobody owns (an agent's attention actions made it) is adopted. `found`: the session's
@@ -239,6 +276,7 @@ export class Conjure {
 	}
 
 	destroy() {
+		this.unwatchStopping()
 		this.host?.destroy()
 		this.host = null
 	}

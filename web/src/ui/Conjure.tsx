@@ -268,6 +268,10 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 		const t = conjure.prompting.get()
 		return !!t && (!!conjure.saying(t.sessionId) || conjure.talkBlock(t.sessionId) === null)
 	}, [conjure])
+	const stopping = useValue(() => {
+		const t = conjure.prompting.get()
+		return !!t && !!conjure.stopping.get()[t.sessionId]
+	}, [conjure])
 	const [text, setText] = useState('')
 	const [error, setError] = useState<string | null>(null)
 	const [busy, setBusy] = useState(false)
@@ -383,6 +387,15 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 		}
 	}
 
+	const stop = async () => {
+		setError(null)
+		try {
+			await conjure.interrupt(target.sessionId)
+		} catch (e) {
+			setError(`Couldn't stop it: ${(e as Error).message}`)
+		}
+	}
+
 	const showLastReply = async () => {
 		setReplaying(true)
 		setError(null)
@@ -422,6 +435,9 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 					{name.join('|')}
 					{asleep === '1' ? ' (asleep)' : ''}
 				</span>
+				<button className="conjure-banish" title="Send this looper away for everyone (the session itself stays)" disabled={busy} onClick={banish}>
+					Banish
+				</button>
 				<button title="Close (Esc)" onClick={() => conjure.close()}>
 					×
 				</button>
@@ -512,39 +528,47 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 			{error && <div className="conjure-prompt-error">{error}</div>}
 			{steered && !error && <div className="conjure-prompt-ok">Steered: added to the work in progress</div>}
 			<div className="conjure-prompt-actions">
-				<button className="conjure-banish" title="Send this looper away for everyone (the session itself stays)" disabled={busy} onClick={banish}>
-					Banish
-				</button>
 				<button
-					className="conjure-replay"
+					className={`conjure-replay${block ? '' : ' conjure-icon'}`}
 					title={canReplay ? 'Show its most recent reply again' : 'Nothing to show: only its owner can fetch earlier replies'}
+					aria-label="Show last reply"
 					disabled={!canReplay || replaying}
 					onClick={showLastReply}
 				>
-					{replaying ? 'Loading…' : 'Show last reply'}
+					{block ? (replaying ? 'Loading…' : 'Show last reply') : replaying ? <Spinner /> : <ReplayIcon />}
 				</button>
 				{!block && (
 					<button
-						className="conjure-attach"
+						className="conjure-attach conjure-icon"
 						title={`Attach images (or drop or paste them here; up to ${ATTACH_MAX})`}
+						aria-label="Attach images"
 						disabled={busy || attachments.length >= ATTACH_MAX}
 						onClick={() => fileRef.current?.click()}
 					>
 						<PaperclipIcon />
 					</button>
 				)}
+				{!block && working && (
+					<button className="conjure-stop" title={stopping ? 'Stopping…' : 'Interrupt the session'} disabled={stopping} onClick={stop}>
+						{stopping ? <Spinner /> : <StopIcon />} Stop
+					</button>
+				)}
 				{!block && (
 					<button
 						className="conjure-send"
 						title={
-							working
-								? 'It’s working: this is added to the work in progress (steering it) instead of waiting for it to finish'
-								: 'Send (Enter)'
+							busy
+								? working
+									? 'Steering…'
+									: 'Sending…'
+								: working
+									? 'It’s working: this is added to the work in progress (steering it) instead of waiting for it to finish'
+									: 'Send (Enter)'
 						}
 						disabled={busy || (!text.trim() && !attachments.length)}
 						onClick={send}
 					>
-						{busy ? (working ? 'Steering…' : 'Sending…') : working ? 'Steer' : 'Send'}
+						{busy ? <Spinner /> : working ? 'Steer' : 'Send'}
 					</button>
 				)}
 			</div>
@@ -566,6 +590,28 @@ function readAttachment(file: File): Promise<PromptAttachment> {
 		reader.onerror = () => reject(new Error(`couldn't read ${file.name || 'that image'}`))
 		reader.readAsDataURL(file)
 	})
+}
+
+function Spinner() {
+	return <span className="conjure-spinner" aria-hidden="true" />
+}
+
+function ReplayIcon() {
+	return (
+		<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+			<path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+			<path d="M3 3v5h5" />
+			<path d="M12 7v5l3 2" />
+		</svg>
+	)
+}
+
+function StopIcon() {
+	return (
+		<svg viewBox="0 0 10 10" width="9" height="9" aria-hidden="true">
+			<rect x="1" y="1" width="8" height="8" rx="1.5" fill="currentColor" />
+		</svg>
+	)
 }
 
 function PaperclipIcon() {

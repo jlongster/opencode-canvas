@@ -14,8 +14,8 @@
  * by themselves.
  *
  * MCP is only a way to call tools: agents have no presence of their own on a canvas. To get
- * people's attention, say and highlight queue actions for the calling session (see attention.ts),
- * which show on its frame's status rail and which people step through on the canvas.
+ * people's attention, say and highlight queue actions on the calling session's creature (see
+ * attention.ts), which people step through on the canvas.
  */
 import type { BunFile } from 'bun'
 import { isAbsolute } from 'node:path'
@@ -229,13 +229,13 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 		.describe(`Canvas id, or a canvas URL such as ${deps.webBase}/c/<id> or a view link …/v/<viewKey>`)
 	const sessionIdArg = z
 		.string()
-		.describe('Your exact OpenCode session id, $OPENCODE_SESSION_ID ("ses_" + 26 characters): your frame on the canvas')
+		.describe('Your exact OpenCode session id, $OPENCODE_SESSION_ID ("ses_" + 26 characters): your frame and creature on the canvas')
 	const sessionTitleArg = z
 		.string()
 		.optional()
 		.describe(
 			'Your OpenCode session\'s title (e.g. from `opencode api get /api/session/$OPENCODE_SESSION_ID` → .data.title). ' +
-				'Names your frame while it is new or untitled; pass it every time.',
+				'Names your frame or creature while it is new or untitled; pass it every time.',
 		)
 
 	function buildServer() {
@@ -244,9 +244,9 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			{
 				instructions:
 					'Review canvases where you post images, videos and HTML for the user. These are tools only: you have no ' +
-					'presence on the canvas yourself. Your OpenCode session has a frame (what you post), with a status rail along ' +
-					'its top. To get the user\'s attention, say (a Markdown message) and highlight (point at an item, group, frame ' +
-					'or note) queue steps on your session\'s frame, which the user plays through from its status rail when they look; ' +
+					'presence on the canvas yourself. Your OpenCode session has a frame (what you post) and a creature (a small ' +
+					'character beside the frame). To get the user\'s attention, say (a Markdown message) and highlight (point at an ' +
+					'item, group, frame or note) queue steps on your creature, which the user plays through when they look; ' +
 					'queue them in the order they should be read. Pass sessionId and sessionTitle (your OpenCode session\'s ' +
 					'title) on every post_item, say and highlight. The user gives feedback on a specific spot of an image with ' +
 					'annotations: check list_annotations (filter by your sessionId) for comments on what you posted; their ' +
@@ -318,7 +318,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'What each person who has the canvas open has selected right now, resolved into the selected items (with ids, ' +
 					'names, groups, sessions and media urls), session frames and sticky notes. Use this when the user says ' +
 					'"look at what I selected" or refers to "this"/"these" on the canvas. Pass the result\'s item ids to get_item ' +
-					'with includeImage to actually see images.',
+					'with includeImage to actually see images. Creatures (conjured sessions) are marked agent: true.',
 				inputSchema: { canvas: canvasArg },
 			},
 			tool(async ({ canvas }: { canvas: string }) => {
@@ -345,7 +345,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			{
 				description:
 					'Who has the canvas open right now: name, colour, cursor position and visible area (page coordinates), ' +
-					'cursor-chat message and raw selection ids. Conjured sessions\' live status entries are marked agent: true.',
+					'cursor-chat message and raw selection ids. Creatures (conjured sessions) are marked agent: true.',
 				inputSchema: { canvas: canvasArg },
 			},
 			tool(async ({ canvas }: { canvas: string }) => {
@@ -365,7 +365,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			}),
 		)
 
-		/** Queues one attention action for the caller's session. */
+		/** Queues one attention action on the caller's creature. */
 		async function queue(
 			args: { canvas: string; sessionId: string; sessionTitle?: string; text?: string; target?: string },
 			kind: 'say' | 'highlight',
@@ -386,8 +386,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			'say',
 			{
 				description:
-					'Queue a message for the people on the canvas, from your session: it shows as a count on your frame\'s status ' +
-					'rail (an empty frame is made if you have none yet) until someone reads it. Markdown. Each call adds one step to ' +
+					'Queue a message for the people on the canvas, from your session\'s creature (it appears beside your frame if ' +
+					'it is not there yet, and calls for attention until someone reads it). Markdown. Each call adds one step to ' +
 					'your queue, played in order with highlight steps: e.g. say what you did, highlight the item to look at, say ' +
 					'what you want to know. Returns the step\'s id and position in your queue. Fire-and-forget: you are not told ' +
 					'when it is read.',
@@ -407,7 +407,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				description:
 					'Queue a step that points the people on the canvas at something: the canvas outlines it and brings it into ' +
 					'view when they reach this step, with your optional Markdown message beside it. Like say, it goes on your ' +
-					'session\'s queue, in order. Target: an item id, a group as "<sessionId>/<group name>", a session frame ' +
+					'creature\'s queue, in order. Target: an item id, a group as "<sessionId>/<group name>", a session frame ' +
 					'"frame:<sessionId>", or a sticky note "note:<noteId>".',
 				inputSchema: {
 					canvas: canvasArg,

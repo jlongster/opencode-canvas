@@ -7,13 +7,13 @@ const MAX_SHOWN = 6
 /** On phones the rest collapse into the "+N" count, leaving room for the title and toolbar. */
 const MAX_SHOWN_NARROW = 1
 
-/** Overlapping avatars of everyone here (people: live sessions show on their frames). Click someone to follow them; click yourself to rename. */
+/** Overlapping avatars of everyone here. Click someone to follow them; click yourself to rename. */
 export function PresenceBar({ presence }: { presence: Presence }) {
 	const peers = useValue(
 		() =>
 			presence.peers
 				.get()
-				.filter((p) => !p.user.agent)
+				.filter((p) => !p.user.agent || p.user.conjured)
 				.map((p) => ({ id: p.clientId, ...p.user })),
 		[presence],
 	)
@@ -32,12 +32,14 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 				{shown.map((p) => (
 					<button
 						key={p.id}
-						className={`avatar${following === p.id ? ' following' : ''}`}
-						style={{ background: p.color, ['--ring' as string]: p.color }}
-						title={following === p.id ? `Stop following ${p.name}` : `Follow ${p.name}`}
+						className={`avatar${p.agent ? ' agent' : ''}${following === p.id ? ' following' : ''}`}
+						style={p.agent ? { color: p.color, ['--ring' as string]: p.color } : { background: p.color, ['--ring' as string]: p.color }}
+						title={
+							(p.agent ? `AI agent: ${p.name}\n` : '') + (following === p.id ? `Stop following ${p.name}` : `Follow ${p.name}`)
+						}
 						onClick={() => presence.toggleFollow(p.id)}
 					>
-						{initials(p.name)}
+						{p.agent ? <LooperGlyph /> : initials(p.name)}
 					</button>
 				))}
 				{hidden > 0 && <div className="avatar more">+{hidden}</div>}
@@ -53,6 +55,19 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 			</div>
 			{editing && <NameEditor presence={presence} onDone={() => setEditing(false)} />}
 		</div>
+	)
+}
+
+/** Creatures are loopers (see Looper.ts): an arched inchworm with one eye, in the session's colour. */
+function LooperGlyph() {
+	return (
+		<svg className="agent-glyph" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+			<path className="agent-glyph-body" d="M5.6 13.6 C5.1 7.2 7.4 4.6 10.4 4.6 C13.5 4.6 15.3 7.2 15.3 15" />
+			<circle className="agent-glyph-head" cx="5.6" cy="14.3" r="2.9" />
+			<circle className="agent-glyph-eye" cx="5.7" cy="14.4" r="2" />
+			<circle className="agent-glyph-pupil" cx="6.1" cy="14.7" r="1" />
+			<path className="agent-glyph-lid" d="M3.7 13.8 A2 2 0 0 1 7.7 13.8 Z" />
+		</svg>
 	)
 }
 

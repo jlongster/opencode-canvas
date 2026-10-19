@@ -9,6 +9,7 @@ import { AnnotateTool } from './tools/AnnotateTool'
 import { HandTool } from './tools/HandTool'
 import { NoteTool } from './tools/NoteTool'
 import { SelectTool } from './tools/SelectTool'
+import { SLAP_CURSOR, SlapTool } from './tools/SlapTool'
 import type { EditorEvent, EventOf, Modifiers, Target } from './types'
 
 export interface Camera {
@@ -45,10 +46,10 @@ export const GROUP_OUTLINE_PADDING = 14
 class Root extends StateNode {
 	static override id = 'root'
 	static override initial = 'select'
-	static override children = () => [SelectTool, HandTool, NoteTool, AnnotateTool]
+	static override children = () => [SelectTool, HandTool, NoteTool, AnnotateTool, SlapTool]
 }
 
-export type ToolId = 'select' | 'hand' | 'note' | 'annotate'
+export type ToolId = 'select' | 'hand' | 'note' | 'annotate' | 'slap'
 
 /**
  * Drawing a new annotation (set by SharedAnnotations on edit links): the annotate tool starts a
@@ -150,13 +151,6 @@ export class Editor {
 	readonly connection = atom<'connecting' | 'open' | 'closed'>('connection', 'connecting')
 	/** The frame being dragged by its title, if any. */
 	readonly frameDrag = atom<FrameDrag | null>('frameDrag', null)
-	/** Sessions whose frames have a status rail (live sessions, see Rails): their layout keeps room for it. */
-	readonly railed = atom<ReadonlySet<string>>('railed', new Set(), setEquals)
-	/**
-	 * How far each frame is drawn from its place in the layout while the layout eases into a new one
-	 * (written by the renderer every frame), so things pinned to frames can follow.
-	 */
-	readonly frameShift = new Map<string, Vec>()
 	/** A deep link that pointed into a hidden frame (see DeepLink), until dismissed. */
 	readonly hiddenLink = atom<{ key: string; sessionId: string } | null>('hiddenLink', null)
 
@@ -166,7 +160,7 @@ export class Editor {
 		orderSessions(Object.values(this.sessions.get()), this.frameDrag.get()?.order ?? this.sessionOrder.get()),
 	)
 	private readonly baseLayout = computed<Layout>('baseLayout', () =>
-		computeLayout(this.sessions.get(), this.items.get(), this.frameDrag.get()?.order ?? this.sessionOrder.get(), this.railed.get()),
+		computeLayout(this.sessions.get(), this.items.get(), this.frameDrag.get()?.order ?? this.sessionOrder.get()),
 	)
 	/**
 	 * Where everything is. A dragged frame follows the pointer (loosely up and down) while the others
@@ -204,6 +198,8 @@ export class Editor {
 	readonly deletions = new Deletions(this)
 	/** Set on edit links: hiding, showing and reordering frames. */
 	frames: FrameBackend | null = null
+	/** Called after this editor hid, showed or reordered frames, with where they were and are now. */
+	onFramesMoved: ((before: Layout, after: Layout) => void) | null = null
 	readonly root: Root
 
 	private cameraAnimation: { from: Camera; to: Camera; start: number; duration: number } | null = null
@@ -317,7 +313,9 @@ export class Editor {
 		const session = this.sessions.peek()[sessionId]
 		if (!this.frames || !session || !!session.hidden === hidden) return
 		const { hidden: _, hiddenAt: __, ...rest } = session
+		const before = this.committedLayout()
 		this.putSession(hidden ? { ...rest, hidden: true, hiddenAt: Date.now() } : rest)
+		this.onFramesMoved?.(before, this.committedLayout())
 		if (!hidden && this.hiddenLink.peek()?.sessionId === sessionId) this.hiddenLink.set(null)
 		this.frames.setHidden(sessionId, hidden).catch((e) => {
 			console.error('could not change whether the frame is hidden', e)
@@ -332,11 +330,18 @@ export class Editor {
 		const before = this.sessionOrder.peek()
 		const current = orderSessions(Object.values(this.sessions.peek()), before).map((s) => s.id)
 		if (arrayEquals(current, sessionIds)) return
+		const layoutBefore = this.committedLayout()
 		this.sessionOrder.set(sessionIds)
+		this.onFramesMoved?.(layoutBefore, this.committedLayout())
 		this.frames.setOrder(sessionIds).catch((e) => {
 			console.error('could not save the frame order', e)
 			this.sessionOrder.set(before)
 		})
+	}
+
+	/** The layout as saved: without a drag in progress. */
+	private committedLayout() {
+		return computeLayout(this.sessions.peek(), this.items.peek(), this.sessionOrder.peek())
 	}
 
 	/** Moves a session to an index of the full order (hidden sessions included). */
@@ -397,7 +402,7 @@ export class Editor {
 	/** The cursor the current tool shows at rest (used after a space-pan ends). */
 	private restingCursor() {
 		const tool = this.currentToolId.get()
-		return tool === 'hand' ? 'grab' : tool === 'note' || tool === 'annotate' ? 'crosshair' : 'default'
+		return tool === 'hand' ? 'grab' : tool === 'note' || tool === 'annotate' ? 'crosshair' : tool === 'slap' ? SLAP_CURSOR : 'default'
 	}
 
 	// ---------- hit testing ----------
@@ -1100,6 +1105,7 @@ export class Editor {
 		if (!mod && !e.altKey && (e.key === 'h' || e.key === 'H')) return this.setCurrentTool('hand')
 		if (!mod && !e.altKey && (e.key === 'n' || e.key === 'N') && this.createNote) return this.setCurrentTool('note')
 		if (!mod && !e.altKey && (e.key === 'a' || e.key === 'A') && this.annotationDrafts) return this.setCurrentTool('annotate')
+		if (!mod && !e.altKey && (e.key === 's' || e.key === 'S') && this.createNote) return this.setCurrentTool('slap')
 
 		this.dispatch({ name: 'key_down', key: e.key, code: e.code, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey })
 	}
@@ -1246,10 +1252,4 @@ function isEditable(target: EventTarget | null) {
 
 function midpoint(a: Vec, b: Vec): Vec {
 	return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
-}
-
-function setEquals(a: ReadonlySet<string>, b: ReadonlySet<string>) {
-	if (a.size !== b.size) return false
-	for (const x of a) if (!b.has(x)) return false
-	return true
 }

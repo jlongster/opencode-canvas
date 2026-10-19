@@ -6,13 +6,15 @@ import type { Conjure } from './Conjure'
 const LONG_PRESS_MS = 500
 /** screen px a finger may wander and still be a long press */
 const LONG_PRESS_SLOP = 8
+/** screen px from a creature's spot that still counts as over it */
+const CREATURE_REACH = 36
 
 /**
- * C: press it while the pointer is over anything of a session frame (an item, a group, the frame's
- * title, rail or background), or long-press the frame on touch, to open that session's C dialog
- * (see SessionDialog); C again closes it. Over a frame whose session isn't conjured, the dialog
- * offers to connect it. C anywhere else opens the session picker next to the pointer
- * (Conjure.picking), to conjure one; C again closes it.
+ * Summoning a session's worm (edit links): press C while the pointer is over anything of a session
+ * frame (an item, a group, the frame's title or background), or long-press it on touch. See
+ * Conjure.summon for what happens then; when it can't, the reason shows in the toast. C anywhere
+ * else opens the session picker next to the pointer (Conjure.picking), to conjure one there; C
+ * again closes it.
  */
 export class Summon {
 	private disposers: (() => void)[] = []
@@ -22,15 +24,13 @@ export class Summon {
 		private editor: Editor,
 		private conjure: Conjure,
 		private container: HTMLElement,
-		/** whether C over empty canvas opens the picker (edit links) */
-		private canConjure: boolean,
 	) {
 		const listen = <K extends keyof HTMLElementEventMap>(el: HTMLElement | Window, type: K, fn: (e: HTMLElementEventMap[K]) => void) => {
 			el.addEventListener(type, fn as EventListener)
 			this.disposers.push(() => el.removeEventListener(type, fn as EventListener))
 		}
 		listen(window, 'keydown', this.onKeyDown)
-		// On the container, so presses that a note or a rail took never get here.
+		// On the container, so presses that a worm or a note took never get here.
 		listen(container, 'pointerdown', this.onPointerDown)
 		listen(window, 'pointermove', this.onPointerMove)
 		listen(window, 'pointerup', this.cancelPress)
@@ -42,13 +42,34 @@ export class Summon {
 		for (const d of this.disposers.splice(0)) d()
 	}
 
-	/** The session whose frame (title included) contains the page point, whatever is on it. */
+	/**
+	 * The session under a page point, if any: a creature's (near where it's perched), else the
+	 * session whose frame (title strip included) contains the point, whatever is on it.
+	 */
 	private sessionAt(point: Vec): string | null {
 		const z = this.editor.getZoom()
+		let best: { sessionId: string; d: number } | null = null
+		for (const peer of this.conjure.worms()) {
+			const at = peer.cursor
+			const sessionId = peer.user.sessionId
+			if (!at || !sessionId || this.editor.isSessionHidden(sessionId)) continue
+			const d = Math.hypot(at.x - point.x, at.y - point.y) * z
+			if (d <= CREATURE_REACH && (!best || d < best.d)) best = { sessionId, d }
+		}
+		if (best) return best.sessionId
 		for (const section of this.editor.layout.get().sections) {
 			if (Box.contains(section.box, point) || Box.contains(frameTitleBox(section, z), point)) return section.id
 		}
 		return null
+	}
+
+	private summonAt(point: Vec) {
+		const sessionId = this.sessionAt(point)
+		if (!sessionId) return
+		this.conjure
+			.summon(sessionId, point)
+			.then((message) => message && this.editor.deletions.notify(message))
+			.catch((e: Error) => this.editor.deletions.notify(`Couldn't summon it: ${e.message}`))
 	}
 
 	private onKeyDown = (e: KeyboardEvent) => {
@@ -56,17 +77,12 @@ export class Summon {
 		// With a modifier it's Cmd/Ctrl+C (copy) or similar: leave it alone.
 		if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || isEditable(e.target)) return
 		if (this.conjure.picking.peek()) return this.conjure.picking.set(null)
-		if (this.conjure.dialog.peek()) return this.conjure.closeDialog()
 		const point = this.editor.pointerPage.peek()
 		if (!point || this.editor.inputs.isPointing) return
-		const sessionId = this.sessionAt(point)
-		if (sessionId) {
-			e.preventDefault()
-			return this.conjure.openDialog(sessionId)
-		}
-		if (!this.canConjure) return
+		if (this.sessionAt(point)) return this.summonAt(point)
 		// (so the C doesn't land in the picker's filter, focused as it opens)
 		e.preventDefault()
+		this.conjure.close()
 		this.conjure.picking.set({ screen: this.editor.pageToScreen(point), page: point })
 	}
 
@@ -79,10 +95,8 @@ export class Summon {
 		const timer = window.setTimeout(() => {
 			this.press = null
 			if (this.editor.inputs.isPanning) return
-			const sessionId = this.sessionAt(this.editor.screenToPage(start))
-			if (!sessionId) return
 			navigator.vibrate?.(15)
-			this.conjure.openDialog(sessionId)
+			this.summonAt(this.editor.screenToPage(start))
 		}, LONG_PRESS_MS)
 		this.press = { pointerId, start, timer }
 	}

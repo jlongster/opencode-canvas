@@ -20,8 +20,6 @@ export interface SectionLayout {
 	box: Box
 	/** where the session title goes, inside the top of the frame */
 	header: Box
-	/** page height of the band kept clear along the top of the frame for its status rail (0: no rail) */
-	rail: number
 	groups: GroupLayout[]
 	/** all items in display order (group by group) */
 	itemIds: string[]
@@ -61,8 +59,6 @@ export const LAYOUT = {
 	framePadding: 40,
 	/** the session title strip at the top of a frame */
 	frameHeaderHeight: 96,
-	/** the band above it on frames with a status rail (live sessions, see Rails) */
-	frameRailHeight: 28,
 	frameGap: 160,
 	/** the heading above a named group */
 	groupHeadingHeight: 52,
@@ -76,28 +72,13 @@ export const LAYOUT = {
 }
 
 /**
- * How a session's title is drawn at zoom z: the header box it's anchored to (at its bottom-left)
- * and the scale it's drawn at. Below page scale it stays readable by growing upward out of the
- * frame; a frame with a status rail then moves its title above the frame, clear of the rail.
- */
-export function frameTitlePlacement(section: SectionLayout, z: number): { anchor: Box; scale: number } {
-	const scale = Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx)
-	if (!section.rail || scale <= z) return { anchor: section.header, scale }
-	// The title's line (4px padding + 1.2 × 40px) sits at the top of the 96px label: its text then
-	// ends 4 screen px above the frame.
-	const h = section.header.h
-	const bottom = section.box.y + ((h - 52) * scale - 4) / z
-	return { anchor: { ...section.header, y: bottom - h }, scale }
-}
-
-/**
  * Where a session's title is on the page at zoom z: the header strip, from the top of the frame,
  * extended upward when the title is drawn bigger than page scale (see SectionLabels).
  */
 export function frameTitleBox(section: SectionLayout, z: number): Box {
-	const { anchor, scale } = frameTitlePlacement(section, z)
-	const bottom = anchor.y + anchor.h
-	const top = Math.min(section.box.y, bottom - (anchor.h * scale) / z)
+	const grow = Math.max(1, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx / z)
+	const bottom = section.header.y + section.header.h
+	const top = Math.min(section.box.y, bottom - section.header.h * grow)
 	return { x: section.box.x, y: top, w: section.box.w, h: bottom - top }
 }
 
@@ -120,15 +101,9 @@ export function orderSessions<S extends Session>(sessions: Iterable<S>, order?: 
  * frame order (see orderSessions), and hidden sessions take no space. Inside a frame, groups stack top to
  * bottom: the untitled group first, then named groups in the order they first appeared. Each group's
  * items flow left to right into justified rows that keep every item's aspect ratio. A frame is as
- * wide as its widest group, so a wider row pushes every frame to its right further out. Frames
- * of sessions in `railed` keep a band clear along their top for their status rail.
+ * wide as its widest group, so a wider row pushes every frame to its right further out.
  */
-export function computeLayout(
-	sessions: Record<string, Session>,
-	items: Record<string, Item>,
-	order?: readonly string[],
-	railed?: ReadonlySet<string>,
-): Layout {
+export function computeLayout(sessions: Record<string, Session>, items: Record<string, Item>, order?: readonly string[]): Layout {
 	const L = LAYOUT
 	const bySession = new Map<string, Item[]>()
 	for (const item of Object.values(items)) {
@@ -154,9 +129,8 @@ export function computeLayout(
 		const groups = [...named.entries()].sort(([a], [b]) => (a === null ? -1 : b === null ? 1 : 0))
 
 		// Lay out each group relative to the frame's content origin, then shift into place.
-		const rail = railed?.has(session.id) ? L.frameRailHeight : 0
 		const contentX = frameX + L.framePadding
-		const contentY = rail + L.framePadding + L.frameHeaderHeight
+		const contentY = L.framePadding + L.frameHeaderHeight
 		let y = contentY
 		let contentWidth = 0
 		const sectionGroups: GroupLayout[] = []
@@ -185,7 +159,7 @@ export function computeLayout(
 
 		const innerWidth = Math.max(contentWidth, L.minFrameWidth)
 		const contentHeight = sectionGroups.length ? y - L.groupGap - contentY : L.emptyFrameHeight
-		const box = { x: frameX, y: 0, w: innerWidth + L.framePadding * 2, h: rail + L.frameHeaderHeight + contentHeight + L.framePadding * 2 }
+		const box = { x: frameX, y: 0, w: innerWidth + L.framePadding * 2, h: L.frameHeaderHeight + contentHeight + L.framePadding * 2 }
 		// Headings span the frame so long group names have room.
 		for (const g of sectionGroups) if (g.heading) g.heading.w = innerWidth
 
@@ -193,8 +167,7 @@ export function computeLayout(
 			id: session.id,
 			title: session.title,
 			box,
-			header: { x: contentX, y: rail + L.framePadding, w: innerWidth, h: L.frameHeaderHeight },
-			rail,
+			header: { x: contentX, y: L.framePadding, w: innerWidth, h: L.frameHeaderHeight },
 			groups: sectionGroups,
 			itemIds: sectionGroups.flatMap((g) => g.itemIds),
 		})

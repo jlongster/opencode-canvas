@@ -8,13 +8,15 @@ import { url, wsUrl } from '../base'
 export interface PeerUser {
 	name: string
 	color: string
-	/** not a person: set by conjured sessions' live status (see SessionHost), which has no pointer or view */
+	/** not a person: set by conjured creatures (see WormHost), which have no pointer or view */
 	agent?: boolean
-	/** a conjured session's live status: an OpenCode session brought onto the canvas, which its owner can prompt */
+	/** a conjured worm: an OpenCode session brought onto the canvas, which edit links can prompt */
 	conjured?: boolean
-	/** conjured sessions: the session, and the (non-secret key of the) OpenCode it lives on */
+	/** conjured worms: their OpenCode session, and the (non-secret key of the) OpenCode it lives on */
 	sessionId?: string
 	serverKey?: string
+	/** conjured worms nobody is running right now (drawn locally from their record, never broadcast) */
+	asleep?: boolean
 }
 
 /** What each person broadcasts through Yjs awareness. */
@@ -29,14 +31,36 @@ export interface PresenceState {
 	chat: string | null
 	/** true once the message was sent (Enter), so viewers can fade it out */
 	chatSent: boolean
-	/** conjured sessions: chat is their reply (streaming while chatSent is false) rather than a cursor chat */
+	/** agents: chat is something they say (a speech bubble) rather than an activity */
 	speaking?: boolean
-	/** conjured sessions: working (on a prompt from anywhere) */
+	/** conjured worms: their session is working on a prompt */
 	thinking?: boolean
-	/** conjured sessions: their subagents (child sessions), running ones first, then ones done this turn */
+	/** conjured worms: their busy subagents (child sessions), oldest first */
 	subagents?: SubagentInfo[]
-	/** conjured sessions: what they're up to (see LiveInfo) */
-	live?: LiveInfo
+	/** the last creature fight this person started by dropping one on another (see Fight) */
+	fight?: FightCall | null
+	/** the last slap this person gave a creature (see Slap) */
+	slap?: SlapCall | null
+}
+
+/** A slap: the creature (session id), the point of its body hit, and the way the blow went (a unit vector, screen space). */
+export interface SlapCall {
+	id: string
+	s: string
+	i: number
+	dx: number
+	dy: number
+	at: number
+}
+
+/** Two creatures (by session id) set fighting, and how it ends; `d` is how far apart they were, page px. */
+export interface FightCall {
+	id: string
+	a: string
+	b: string
+	winner: string
+	d: number
+	at: number
 }
 
 export interface SubagentInfo {
@@ -44,28 +68,6 @@ export interface SubagentInfo {
 	title: string
 	/** the agent it runs as, e.g. "general" */
 	agent?: string
-	/** when it last started working (ms) */
-	since?: number
-	/** finished (since its parent's turn started) */
-	done?: boolean
-}
-
-/** A conjured session's status beyond busy/idle, published by its owner's tab (see SessionHost). */
-export interface LiveInfo {
-	/** working since (ms), while busy */
-	since?: number
-	/** the step in progress, e.g. "read web/src/editor/layout.ts" (or the last one, once idle) */
-	activity?: string
-	/** text is streaming in right now */
-	replying?: boolean
-	/** when the last turn ended (ms) */
-	endedAt?: number
-	/** how the last turn ended when it didn't finish cleanly: "interrupted" or the error */
-	error?: string
-	/** what it runs as: e.g. "gemini-3.5-flash", "build", and its directory */
-	model?: string
-	agent?: string
-	directory?: string
 }
 
 export interface Peer extends PresenceState {
@@ -94,6 +96,10 @@ export class Presence {
 	/** Our cursor chat message (null when there's none) and whether we're still typing it */
 	readonly chat = atom<string | null>('chat', null)
 	readonly chatOpen = atom<boolean>('chatOpen', false)
+	/** our last fight call, broadcast for a few seconds */
+	readonly fight = atom<FightCall | null>('fight', null)
+	/** our last slap, broadcast for a few seconds */
+	readonly slap = atom<SlapCall | null>('slap', null)
 	private chatTimer = 0
 
 	/** The canvas's document: notes (and later drawings). Read-only on view links. */
@@ -126,6 +132,8 @@ export class Presence {
 				this.me.get()
 				this.chat.get()
 				this.chatOpen.get()
+				this.fight.get()
+				this.slap.get()
 				editor.pointerPage.get()
 				editor.selectedIds.get()
 				editor.viewportPageBounds.get()
@@ -262,6 +270,8 @@ export class Presence {
 			chat: this.chat.peek(),
 			chatSent: !this.chatOpen.peek(),
 			view: editor.viewportPageBounds.get(),
+			fight: this.fight.peek(),
+			slap: this.slap.peek(),
 		}
 		this.provider.awareness.setLocalState(state)
 	}

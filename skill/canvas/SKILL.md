@@ -8,7 +8,7 @@ description: >
   canvas URL or id: post each one immediately, as soon as it exists, without waiting to be asked.
   Also use to post HTML (diagrams, flowcharts, charts, annotated explanations, SVG drawings) to
   tell the user things visually, to point the user at what to look at (say / highlight on your
-  session's frame), and to create, list, rename, delete or restore canvases, sessions, groups
+  session's creature), and to create, list, rename, delete or restore canvases, sessions, groups
   and items.
 ---
 
@@ -201,13 +201,13 @@ JSON works too (when the server runs on this machine): `curl -s -X POST $API/can
 
 ## Getting the user's attention: say and highlight
 
-Your session has a **frame** on the canvas (what you post), with a **status rail** along its top
-(the canvas makes an empty frame if you haven't posted yet, named after `sessionTitle`). When you
-want the user to look at something, queue it on your frame: the rail shows it ("needs you" and a
-count), and so does the "N things want your attention" tray at the top, without interrupting
-anyone; the user plays your queue as a walkthrough from the rail when they're ready.
+Your session has a **creature** on the canvas: a small character beside your frame (the canvas
+makes one if it isn't there yet, in your session's colour, named after `sessionTitle`). When you
+want the user to look at something, queue it on your creature: it calls for attention (a badge
+with the count, a pulsing ring, the "N things want your attention" tray at the top) without
+interrupting anyone, and the user plays your queue as a walkthrough when they're ready.
 
-- **say**: a Markdown message from your session.
+- **say**: a Markdown message from your creature.
 - **highlight**: point at something (the canvas outlines it and brings it into view), with an
   optional Markdown message. Targets: an item id, a group as `<sessionId>/<group name>`, your
   frame `frame:<sessionId>`, or a sticky note `note:<noteId>`.
@@ -246,19 +246,18 @@ what the comment points at. `get_canvas` lists annotations too.
 
 The same server speaks MCP (Streamable HTTP) at `<base>/mcp`, usually configured in OpenCode as
 the `canvas` MCP server. It only provides tools: you don't appear on the canvas yourself (your
-frame's status rail does, for say and highlight). Tools take a canvas id or URL; the ones that
-act for your session take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
+creature does, for say and highlight). Tools take a canvas id or URL; the ones that act for your
+session take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
 
 - `post_item {canvas, sessionId, sessionTitle, path | url | html, width?, height?, group?, title?, caption?, name?}`:
   post into your frame (`path` must be absolute, on the canvas server's machine). **Always pass `sessionTitle`.**
 - `say {canvas, sessionId, sessionTitle, text}` and `highlight {canvas, sessionId, sessionTitle, target, text?}`:
-  queue steps on your frame (see above). Return the step's `id` and `position` in your queue.
+  queue steps on your creature (see above). Return the step's `id` and `position` in your queue.
 - `update_item`, `delete_item`, `restore`: edit, soft-delete, undo deletes.
 - `list_canvases`, `create_canvas`, `get_canvas` (sessions, groups, items, notes, annotations), `find_items`, `list_notes`.
 - `list_annotations {canvas, sessionId?, itemId?}`: the user's comments pinned to spots on items, with pixel coordinates (see above).
 - `get_item {itemId, includeImage?, fullSize?}`: see an image (or an HTML item's source).
 - `get_selection`: what people on the canvas have selected ("look at this"); `get_presence`: who's there.
 
-Users can also "conjure" OpenCode sessions from the browser: the session's frame then shows what
-it's doing live (working, current step, reply, subagents) and they can prompt it from there (C
-over the frame); that's user-facing, nothing for you to do.
+Users can also "conjure" OpenCode sessions from the browser, which lets them prompt the session
+through its creature; that's user-facing, nothing for you to do.

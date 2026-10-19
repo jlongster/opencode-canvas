@@ -1,13 +1,16 @@
 import type { Editor } from '../editor/Editor'
 import type { Vec } from '../editor/geometry'
-import type { Presence } from './Presence'
+import { AgentWorms } from './AgentWorms'
+import type { Attention } from './Attention'
+import type { Conjure } from './Conjure'
+import type { Peer, Presence } from './Presence'
 
 const EASE_MS = 45
 
 /**
  * Other people's cursors, drawn as DOM in screen space. Positions are eased toward the latest
  * broadcast point every frame, so cursors glide instead of stepping at the network rate.
- * Conjured sessions' live status has no cursor: it shows on their frames' rails (see Rails).
+ * Sessions' creatures are drawn instead of a cursor (see AgentWorms).
  */
 export class PeerCursors {
 	private host: HTMLDivElement
@@ -15,26 +18,36 @@ export class PeerCursors {
 		number,
 		{ el: HTMLDivElement; label: HTMLSpanElement; message: HTMLSpanElement; shown: Vec; color: string; name: string; chat: string | null }
 	>()
+	private worms: AgentWorms
 	private dispose: () => void
 
 	constructor(
 		parent: HTMLElement,
 		private editor: Editor,
 		private presence: Presence,
+		private conjure: Conjure | null = null,
+		attention: Attention | null = null,
 	) {
 		this.host = document.createElement('div')
 		this.host.className = 'peer-cursors'
 		parent.appendChild(this.host)
-		this.dispose = editor.onFrame((_now, elapsed) => this.update(elapsed))
+		this.worms = new AgentWorms(this.host, editor, conjure, attention)
+		this.dispose = editor.onFrame((now, elapsed) => this.update(now, elapsed))
 	}
 
-	private update(elapsed: number) {
+	private update(now: number, elapsed: number) {
 		const k = 1 - Math.exp(-elapsed / EASE_MS)
 		const followingId = this.presence.followingId.peek()
 		const seen = new Set<number>()
+		const agents: Peer[] = []
 
 		for (const peer of this.presence.peers.peek()) {
-			if (peer.user.agent || !peer.cursor) continue
+			if (peer.user.agent) {
+				// (Only creatures: agents using the canvas through MCP have no presence of their own.)
+				if (peer.user.conjured) agents.push(peer)
+				continue
+			}
+			if (!peer.cursor) continue
 			seen.add(peer.clientId)
 			let c = this.cursors.get(peer.clientId)
 			if (!c) {
@@ -77,10 +90,17 @@ export class PeerCursors {
 			c.el.remove()
 			this.cursors.delete(id)
 		}
+
+		// Conjured worms nobody runs right now sleep where they were put.
+		if (this.conjure) agents.push(...this.conjure.sleepers.get())
+		// Creatures of hidden frames hide with them.
+		const sessions = this.editor.sessions.peek()
+		this.worms.update(now, elapsed, agents.filter((p) => !p.user.sessionId || !sessions[p.user.sessionId]?.hidden))
 	}
 
 	destroy() {
 		this.dispose()
+		this.worms.destroy()
 		this.host.remove()
 	}
 }

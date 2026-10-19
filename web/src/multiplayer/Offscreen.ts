@@ -2,7 +2,7 @@ import type { Editor } from '../editor/Editor'
 import type { Box, Vec } from '../editor/geometry'
 import type { Worm } from './AgentWorms'
 import type { Conjure } from './Conjure'
-import { LIFT, NATIVE, POINTER_EYE, pointerD } from './Pointer'
+import { LIFT, SIZE, drawPointer, place } from './Pointer'
 import './offscreen.css'
 
 /** the arrow's half size, screen px: its centre sits this far inside the edge */
@@ -15,12 +15,12 @@ const PILL_H = 24
 const PILL_MAX = 220
 /**
  * The room each marker keeps along its edge, whatever its pill says: an arrow's (turned
- * diagonally it takes a little more), or on the top and bottom, a busy one's whole pill. Hovering
- * and changing text never change it; only going busy or quiet does.
+ * diagonally it takes a little more), or on the top and bottom, a calling one's whole pill. Hovering
+ * and changing text never change it; only starting or stopping calling does.
  */
 const SLOT = ARROW * 2 + 4 + GAP
 const BUSY_SLOT = PILL_MAX + GAP
-/** gone quiet, a marker keeps a busy one's room this long, so a status flickering off doesn't move its neighbours */
+/** done calling, a marker keeps a calling one's room this long, so a queue flickering empty doesn't move its neighbours */
 const BUSY_HOLD_MS = 2500
 /** quiet markers sharing one stay together until they're this much further apart than MERGE_PX */
 const MERGE_SLACK = 10
@@ -33,8 +33,9 @@ const OUT_PX = 2
 const IN_PX = 14
 /** quiet markers (pointer only) closer than this along an edge share one, with a count */
 const MERGE_PX = 14
-/** the marker's pointer: its height, px */
+/** the marker's pointer: its length, px, and the square it's drawn in (room for its glow, wiggles and babies) */
 const GLYPH = 21
+const PAINT = 96
 /** a creature moving less than this (screen px) where it sits, bobbing or trembling, doesn't move its marker */
 const STAND_PX = 3
 /** how often the bars around the edges are measured again, ms */
@@ -49,17 +50,6 @@ const FLY_MS = 320
 
 type Edge = 'left' | 'right' | 'top' | 'bottom'
 
-/** The marker: the eye pointer itself, turned to point at its creature, its pupil looking where it points. */
-const GLYPH_SVG = (() => {
-	const e = { x: POINTER_EYE.x * GLYPH, y: POINTER_EYE.y * GLYPH, r: POINTER_EYE.r * GLYPH * 1.15 }
-	const look = { x: Math.cos(NATIVE) * e.r * 0.35, y: Math.sin(NATIVE) * e.r * 0.35 }
-	return (
-		`<path d="${pointerD(GLYPH)}"/>` +
-		`<circle class="offscreen-eye" cx="${e.x.toFixed(2)}" cy="${e.y.toFixed(2)}" r="${e.r.toFixed(2)}"/>` +
-		`<circle class="offscreen-pupil" cx="${(e.x + look.x).toFixed(2)}" cy="${(e.y + look.y).toFixed(2)}" r="${(e.r * 0.58).toFixed(2)}"/>`
-	)
-})()
-
 /** One creature out of view this frame. */
 interface Target {
 	worm: Worm
@@ -70,7 +60,7 @@ interface Target {
 	edge: Edge
 	s: number
 	status: string | null
-	/** whether it keeps a busy marker's room (see BUSY_HOLD_MS) */
+	/** calling for attention: it keeps a pill's room (see BUSY_HOLD_MS) */
 	busy: boolean
 }
 
@@ -94,6 +84,8 @@ interface Marker {
 	key: string
 	el: HTMLButtonElement
 	arrow: HTMLSpanElement
+	/** where its pointer is drawn */
+	glyph: HTMLCanvasElement
 	count: HTMLSpanElement
 	pill: HTMLSpanElement
 	status: HTMLSpanElement
@@ -112,9 +104,11 @@ interface Marker {
 
 /**
  * Markers at the edges of the view for creatures out of it, like a game's for teammates off
- * screen: an arrow in the session's colour pointing toward each one, from where the line from the
- * middle of the view to it crosses the edge, and, when there's something to tell (thinking,
- * replying, calling for attention, subagents), a pill saying so. Asleep ones get a dim arrow.
+ * screen: the creature's eye pointer itself, pointing toward it and otherwise drawn just as it is
+ * this frame (glow, trembles, wiggles, its eye, its subagents' babies; see Worm.live), from where
+ * the line from the middle of the view to it crosses the edge, and, only while it calls for
+ * attention, a pill saying so (hovered, any one shows its name and what it's doing). Asleep ones
+ * are dimmed.
  * Clicking one flies the camera to it. Laid out every frame from the camera, after the creatures
  * are drawn (see AgentWorms).
  */
@@ -201,7 +195,7 @@ export class Offscreen {
 			const k = Math.min(kx, ky)
 			const edge: Edge = side ? (d.x < 0 ? 'left' : 'right') : d.y < 0 ? 'top' : 'bottom'
 			const s = side ? c.y + d.y * k : c.x + d.x * k
-			if (status !== null) this.busyAt.set(key, now)
+			if (worm.calls) this.busyAt.set(key, now)
 			const busy = now - (this.busyAt.get(key) ?? -Infinity) < BUSY_HOLD_MS
 			targets.push({ worm, key, at, edge, s, status, busy })
 		}
@@ -232,7 +226,7 @@ export class Offscreen {
 
 	// ---------- what each one is doing ----------
 
-	/** What its pill says, or null for nothing to report (just the arrow). */
+	/** What it's doing, for its tooltip and its pill (shown hovered, or calling), or null for nothing to report. */
 	private status(worm: Worm, key: string, now: number): string | null {
 		const stopping = !!worm.sessionId && !!this.conjure?.stopping.peek()[worm.sessionId]
 		if (worm.thinking) {
@@ -242,7 +236,7 @@ export class Offscreen {
 			this.since.delete(key)
 			if (this.stopping.delete(key)) this.interruptedAt.set(key, now)
 		}
-		const subagents = [...worm.dots.values()].filter((t) => !t.leaving).length
+		const subagents = worm.colony.count
 		const subs = subagents ? `${subagents} subagent${subagents === 1 ? '' : 's'}` : ''
 		const busy = (s: string) => (subs ? `${s} · ${subs}` : s)
 		if (worm.calls) return `needs you · ${worm.calls > 99 ? '99+' : worm.calls}`
@@ -332,20 +326,20 @@ export class Offscreen {
 		return { members, edge, s, p: s, ext, depth: reach, min: -Infinity, max: Infinity, marker, busy }
 	}
 
-	/** The pill's line for these creatures (null: no pill, just the arrow). */
+	/** The pill's line for these creatures: only while one calls for attention, or hovered (null: no pill, just the pointer). */
 	private pillText(members: Target[]): { status: string; title: string } | null {
 		const hovered = members.some((m) => m.key === this.hovered)
 		if (members.length === 1) {
 			const m = members[0]
 			const title = m.worm.nameText || 'Untitled session'
-			if (m.status) return { status: m.status, title }
-			return hovered ? { status: m.worm.asleep ? 'asleep' : 'idle', title } : null
+			if (m.worm.calls || hovered) return { status: m.status ?? (m.worm.asleep ? 'asleep' : 'idle'), title }
+			return null
 		}
 		const calls = members.reduce((a, m) => a + m.worm.calls, 0)
 		const busy = members.filter((m) => m.status).length
-		if (calls) return { status: `needs you · ${calls}`, title: `${members.length} agents` }
-		if (busy) return { status: `${busy} busy`, title: `${members.length} agents` }
-		return hovered ? { status: `${members.length} agents`, title: members.map((m) => m.worm.nameText).join(', ') } : null
+		const names = members.map((m) => m.worm.nameText || 'Untitled session').join(', ')
+		if (calls) return { status: `needs you · ${calls}`, title: hovered ? names : `${members.length} agents` }
+		return hovered ? { status: busy ? `${busy} of ${members.length} busy` : `${members.length} agents`, title: names } : null
 	}
 
 	// ---------- markers ----------
@@ -358,7 +352,7 @@ export class Offscreen {
 		el.className = 'offscreen-marker'
 		el.innerHTML =
 			'<span class="offscreen-body">' +
-			`<span class="offscreen-arrow"><svg viewBox="-13 -13 26 26" width="26" height="26" aria-hidden="true">${GLYPH_SVG}</svg></span>` +
+			'<span class="offscreen-arrow"><canvas aria-hidden="true"></canvas></span>' +
 			'<span class="offscreen-count" hidden></span>' +
 			'<span class="offscreen-pill" hidden><span class="offscreen-status"></span><span class="offscreen-title"></span></span>' +
 			'</span>'
@@ -366,6 +360,7 @@ export class Offscreen {
 			key,
 			el,
 			arrow: el.querySelector<HTMLSpanElement>('.offscreen-arrow')!,
+			glyph: el.querySelector<HTMLCanvasElement>('.offscreen-arrow canvas')!,
 			count: el.querySelector<HTMLSpanElement>('.offscreen-count')!,
 			pill: el.querySelector<HTMLSpanElement>('.offscreen-pill')!,
 			status: el.querySelector<HTMLSpanElement>('.offscreen-status')!,
@@ -441,7 +436,7 @@ export class Offscreen {
 		const aim = g.members.reduce((a, t) => ({ x: a.x + t.at.x / g.members.length, y: a.y + t.at.y / g.members.length }), { x: 0, y: 0 })
 		const angle = Math.atan2(aim.y - y, aim.x - x)
 		m.el.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`
-		m.arrow.style.transform = `rotate(${(angle - NATIVE).toFixed(3)}rad)`
+		paint(m.glyph, lead.worm, angle)
 		if (m.color !== lead.worm.color) {
 			m.color = lead.worm.color
 			m.el.style.setProperty('--marker-color', m.color)
@@ -635,6 +630,27 @@ function bodyBox(worm: Worm, editor: Editor): Box {
 		y1 = Math.max(y1, p.y)
 	}
 	return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+}
+
+/**
+ * The marker's pointer, drawn as its creature is drawn this frame (see AgentWorms.drawCreature),
+ * but smaller and pointing along `heading`. Its wiggles and trembles are drawing only: the marker
+ * itself never moves for them.
+ */
+function paint(canvas: HTMLCanvasElement, worm: Worm, heading: number) {
+	const dpr = window.devicePixelRatio || 1
+	const px = Math.round(PAINT * dpr)
+	if (canvas.width !== px) canvas.width = canvas.height = px
+	const ctx = canvas.getContext('2d')!
+	ctx.setTransform(1, 0, 0, 1, 0, 0)
+	ctx.clearRect(0, 0, px, px)
+	ctx.setTransform(dpr, 0, 0, dpr, px / 2, px / 2)
+	const live = worm.live
+	const k = GLYPH / SIZE
+	// (the babies drift about where it sits, as they do round it)
+	if (worm.colony.size) worm.colony.draw(ctx, { x: 0, y: 0 }, k, dpr)
+	const shape = place({ x: live.dx, y: live.dy }, heading + live.turn, Math.max(0.001, k * live.scale))
+	drawPointer(ctx, shape, worm.palette, worm.eye, { dpr, glow: live.glow, glowColor: worm.color })
 }
 
 function centre(b: Box): Vec {

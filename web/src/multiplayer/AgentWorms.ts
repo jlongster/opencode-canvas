@@ -3,11 +3,12 @@ import { markdownToHtml } from '../ui/markdown'
 import type { Box, Vec } from '../editor/geometry'
 import type { Attention } from './Attention'
 import type { Conjure } from './Conjure'
+import { Colony, type Baby } from './Babies'
 import { Offscreen } from './Offscreen'
 import { Slaps, type Pose } from './Slap'
 import './farAway.css'
 import type { Peer, SubagentInfo } from './Presence'
-import { LIFT, NATIVE, SIZE, TIP_REACH, drawPointer, hits, mixColor, openEye, palette, place, turn, wobble, type EyeState, type Palette, type Shape } from './Pointer'
+import { LIFT, NATIVE, SIZE, TIP_REACH, drawPointer, hits, openEye, palette, place, turn, wobble, type EyeState, type Palette, type Shape } from './Pointer'
 
 /** Where it sits, relative to the top-right corner of what the agent is working on. */
 const PERCH: Vec = { x: 30, y: -10 }
@@ -55,14 +56,6 @@ const DRAG_PX = 5
 const STARE_PX = 170
 /** a conjured creature's finished reply puts itself away (locally) after this long, unless it's pinned */
 const REPLY_HIDE_MS = 7000
-/** subagents' dots: radius, their orbit round it (screen px), how fast it turns (rad/s), popping in and leaving */
-const DOT_R = 2.6
-const ORBIT = { x: 27, y: 17 }
-const ORBIT_SPEED = 0.55
-const DOT_POP_MS = 380
-const DOT_LEAVE_MS = 460
-/** how close the pointer has to be to a dot for its tooltip, screen px */
-const DOT_HOVER_PX = 9
 /** zoom at and above which speech bubbles are full size; below it they shrink with the canvas */
 const FULL_BUBBLE_ZOOM = 0.6
 /** below this zoom the creatures' name tags and attention badges hide; once hidden, they come back at FAR_ZOOM */
@@ -91,31 +84,24 @@ interface Trip {
 	dur: number
 }
 
-/** A subagent's dot, orbiting its parent. */
-interface Dot {
-	id: string
-	tip: string
-	seed: number
-	/** its place among the parent's dots, which spaces them round the orbit */
-	slot: number
-	/** where it is round the orbit, radians */
-	a: number
+/**
+ * How it's drawn this frame on top of where it sits and points: bobbing, trembling, hopping and
+ * wiggling, breathing, popping, its glow. Its off-screen marker (see Offscreen) draws with the same.
+ */
+export interface Live {
+	/** screen px from where it sits */
+	dx: number
+	dy: number
+	/** radians from where it means to point at rest (wiggles, tilts, trembles) */
+	turn: number
 	scale: number
-	popStart: number
-	leaving: boolean
-	leaveStart: number
-	/** 1, fading to 0 as it leaves */
-	fade: number
-	/** on screen as last placed, and whether it's in front of its parent */
-	screen: Vec
-	depth: number
+	glow: number
 }
 
 export interface Worm {
 	id: number
 	color: string
 	palette: Palette
-	dotColor: string
 	/** the point on the page where it is (its centre is LIFT screen px above) */
 	root: Vec
 	/** how fast root moves, page units/s */
@@ -169,6 +155,7 @@ export interface Worm {
 	startleSeen: number
 	/** as last drawn */
 	shape: Shape | null
+	live: Live
 	/** where the labels hang (screen, from root), and its top and middle from there, eased */
 	anchor: Vec | null
 	headAt: Vec
@@ -202,8 +189,6 @@ export interface Worm {
 	startledAt: number
 	/** its prompt box is open */
 	listening: boolean
-	/** the "•••" thought cloud while thinking */
-	thought: HTMLDivElement
 	bubbleScroll: HTMLDivElement | null
 	/** a reply dismissed with × (locally), hidden until it says something else */
 	dismissed: string | null
@@ -213,11 +198,10 @@ export interface Worm {
 	speechPinned: boolean
 	/** when the reply finished (typed out, nothing more coming), 0 while it isn't */
 	speechDoneAt: number
-	/** the speech bubbles' and thought cloud's scale for the zoom, last set on el as --bubble-scale */
+	/** the speech bubbles' scale for the zoom, last set on el as --bubble-scale */
 	bubbleScale: number
-	/** dots for its busy subagents, by session id, and how far round their orbit has turned */
-	dots: Map<string, Dot>
-	orbit: number
+	/** its busy subagents, as babies drifting about near it */
+	colony: Colony
 	sessionId: string | null
 	/** when its record was created, to tell a new one of the same session from the last */
 	conjuredAt: number
@@ -241,7 +225,7 @@ interface Press {
  * Sessions' creatures (real OpenCode sessions, see Conjure): eye pointers (see Pointer.ts) that sit
  * where the canvas server put them and glide about when it (or their agent) moves them, the tip
  * always facing the way they go, then turn to point at what they're pointing at. People can't move
- * them: clicking one opens its box, and dragging from one pans the canvas. Their busy subagents are little dots orbiting them. They're
+ * them: clicking one opens its box, and dragging from one pans the canvas. Their busy subagents are babies drifting about near them (see Babies). They're
  * drawn on one 2D canvas in screen space; the name label, bubbles and badges are DOM, like human
  * cursor labels.
  *
@@ -265,7 +249,7 @@ export class AgentWorms {
 	private swallowed = new Set<number>()
 	private press: Press | null = null
 	private disposers: (() => void)[] = []
-	/** the pointer over the canvas (screen space), for staring at and dots' tooltips */
+	/** the pointer over the canvas (screen space), for staring at and babies' tooltips */
 	private pointer: Vec | null = null
 	/** what the mouse was last over, so a peeked creature's tag or badge keeps it peeked */
 	private pointerOver: Element | null = null
@@ -273,7 +257,7 @@ export class AgentWorms {
 	private peeked: Worm | null = null
 	private peekLeftAt = 0
 	private tip: HTMLDivElement
-	private tipFor: Dot | null = null
+	private tipFor: Baby | null = null
 	/** when this page started showing creatures (wall clock), to tell sessions conjured since from ones already here */
 	private bornAt = Date.now()
 	/** the slap tool's blows (see Slap) */
@@ -355,7 +339,7 @@ export class AgentWorms {
 			}
 			this.syncVisit(worm)
 			this.syncLabel(worm, peer, now)
-			if (worm.conjured) this.syncDots(worm, peer.user.asleep ? [] : (peer.subagents ?? []), now)
+			if (worm.conjured) worm.colony.sync(peer.subagents ?? [], peer.user.color, now, this.reducedMotion.matches)
 		}
 		for (const worm of this.worms.values()) {
 			if (!seen.has(worm.id) && !worm.leaving) this.leave(worm, now)
@@ -542,11 +526,9 @@ export class AgentWorms {
 		el.className = 'agent-worm'
 		el.innerHTML =
 			'<span class="peer-cursor-label agent-worm-label"><span class="peer-cursor-name"></span></span>' +
-			'<div class="agent-worm-thought" aria-hidden="true"><b></b><b></b><span class="agent-worm-thought-cloud"><i></i><i></i><i></i></span></div>' +
 			'<div class="agent-worm-zzz" aria-hidden="true"><i>z</i><i>z</i><i>z</i></div>'
 		const label = el.querySelector<HTMLSpanElement>('.agent-worm-label')!
 		const name = el.querySelector<HTMLSpanElement>('.peer-cursor-name')!
-		const thought = el.querySelector<HTMLDivElement>('.agent-worm-thought')!
 		const conjured = !!peer.user.conjured
 		el.classList.toggle('conjured', conjured)
 		this.labels.appendChild(el)
@@ -557,7 +539,6 @@ export class AgentWorms {
 			id: peer.clientId,
 			color: '',
 			palette: palette('#22d3ee'),
-			dotColor: mixColor('#22d3ee', 255, 0.35),
 			root: { ...at },
 			vel: { x: 0, y: 0 },
 			goal: { ...at },
@@ -596,6 +577,7 @@ export class AgentWorms {
 			nextFit: 0,
 			startleSeen: -1e9,
 			shape: null,
+			live: { dx: 0, dy: 0, turn: 0, scale: 1, glow: 0 },
 			anchor: null,
 			headAt: { x: 0, y: -SIZE },
 			middleAt: { x: 0, y: -LIFT },
@@ -619,15 +601,13 @@ export class AgentWorms {
 			think: 0,
 			startledAt: -1e9,
 			listening: false,
-			thought,
 			bubbleScroll: null,
 			dismissed: null,
 			speechText: null,
 			speechPinned: false,
 			speechDoneAt: 0,
 			bubbleScale: 1,
-			dots: new Map(),
-			orbit: Math.random() * Math.PI * 2,
+			colony: new Colony(),
 			calls: 0,
 			badge: null,
 			sessionId: peer.user.sessionId ?? null,
@@ -651,7 +631,7 @@ export class AgentWorms {
 		if (prev) {
 			// Leaving, it was blinking out: back as it was.
 			if (prev.leaving && prev.mode === 'vanish' && !prev.warpTo) prev.mode = 'here'
-			for (const key of ['root', 'vel', 'dest', 'trip', 'heading', 'spin', 'off', 'offV', 'mode', 'modeAt', 'warpTo', 'seed', 'eye', 'glance', 'squash', 'wakeAt', 'recoilAt', 'anchor', 'headAt', 'middleAt', 'shape', 'dots', 'orbit'] as const) {
+			for (const key of ['root', 'vel', 'dest', 'trip', 'heading', 'spin', 'off', 'offV', 'mode', 'modeAt', 'warpTo', 'seed', 'eye', 'glance', 'squash', 'wakeAt', 'recoilAt', 'anchor', 'headAt', 'middleAt', 'shape', 'colony'] as const) {
 				;(worm as unknown as Record<string, unknown>)[key] = prev[key]
 			}
 			worm.startleSeen = prev.startleSeen
@@ -737,7 +717,6 @@ export class AgentWorms {
 		if (worm.color !== peer.user.color) {
 			worm.color = peer.user.color
 			worm.palette = palette(worm.color)
-			worm.dotColor = mixColor(worm.color, 255, 0.35)
 			worm.label.style.background = worm.color
 			worm.el.style.setProperty('--agent-color', worm.color)
 		}
@@ -777,8 +756,7 @@ export class AgentWorms {
 		this.syncSpeech(worm, hidden ? null : speech, speechSent)
 		if (replayed) worm.speechPinned = true
 		if (worm.conjured) {
-			// Working: the thought cloud, or while it's saying something, a little "•••" in the bubble.
-			worm.el.classList.toggle('thinking', worm.thinking && !worm.bubble)
+			// Working while it's saying something: a little "•••" in the bubble.
 			worm.el.classList.toggle('working', worm.thinking && !!worm.bubble)
 		}
 		const chat = (!speaking && peer.chat) || null
@@ -1370,109 +1348,18 @@ export class AgentWorms {
 		}
 	}
 
-	// ---------- subagents' dots ----------
-
-	/** Adds dots for subagents that started and sends off those whose subagent finished. */
-	private syncDots(worm: Worm, subagents: SubagentInfo[], now: number) {
-		const ids = new Set(subagents.map((s) => s.id))
-		for (const dot of worm.dots.values()) {
-			if (!ids.has(dot.id) && !dot.leaving) {
-				dot.leaving = true
-				dot.leaveStart = now
-			}
-		}
-		subagents.forEach((s, slot) => {
-			const tip = s.agent ? `${s.title || 'Subagent'} · @${s.agent}` : s.title || 'Subagent'
-			let dot = worm.dots.get(s.id)
-			if (!dot || dot.leaving) {
-				dot = {
-					id: s.id,
-					tip,
-					seed: Math.random() * 1000,
-					slot,
-					a: worm.orbit + (slot * Math.PI * 2) / Math.max(1, subagents.length),
-					scale: 0,
-					popStart: now,
-					leaving: false,
-					leaveStart: 0,
-					fade: 1,
-					screen: { x: -1e9, y: -1e9 },
-					depth: 0,
-				}
-				worm.dots.set(s.id, dot)
-			}
-			dot.slot = slot
-			dot.tip = tip
-		})
-	}
-
-	/** Moves the dots round their orbit about `c` (screen), spaced evenly; false-free: removes the ones gone. */
-	private moveDots(worm: Worm, now: number, elapsed: number, c: Vec) {
-		const still = this.reducedMotion.matches
-		const dt = elapsed / 1000
-		const t = now / 1000
-		if (!still) worm.orbit += ORBIT_SPEED * dt
-		const active = [...worm.dots.values()].filter((d) => !d.leaving).sort((a, b) => a.slot - b.slot)
-		const n = active.length
-		for (const dot of [...worm.dots.values()]) {
-			if (dot.leaving) {
-				const u = still ? 1 : (now - dot.leaveStart) / DOT_LEAVE_MS
-				if (u >= 1 || worm.asleep) {
-					worm.dots.delete(dot.id)
-					if (this.tipFor === dot) this.tipFor = null
-					continue
-				}
-				dot.fade = 1 - u
-				if (!still) dot.a += ORBIT_SPEED * 1.5 * dt
-			} else {
-				dot.scale = still ? 1 : easeOutBack(Math.min(1, (now - dot.popStart) / DOT_POP_MS))
-				const want = worm.orbit + (active.indexOf(dot) * Math.PI * 2) / Math.max(1, n)
-				dot.a += turn(dot.a, want) * (still ? 1 : 1 - Math.exp(-elapsed / 450))
-			}
-			const out = dot.leaving ? 1 + 0.8 * (1 - dot.fade) : 0.45 + 0.55 * Math.min(1, dot.scale)
-			const r = out * (1 + 0.1 * (dot.slot % 2))
-			const bob = still ? 0 : 2 * Math.sin(t * 1.7 + dot.seed)
-			const drift = still ? 0 : 1.5 * wobble(t * 0.9 + dot.seed)
-			dot.depth = Math.sin(dot.a)
-			dot.screen = { x: c.x + Math.cos(dot.a) * ORBIT.x * r + drift, y: c.y + 2 + Math.sin(dot.a) * ORBIT.y * r + bob }
-		}
-	}
-
-	/** Draws the dots behind the pointer (the far side of their orbit) or in front of it. */
-	private drawDots(worm: Worm, front: boolean) {
-		const ctx = this.ctx
-		const dpr = window.devicePixelRatio || 1
-		ctx.save()
-		for (const dot of worm.dots.values()) {
-			if (dot.depth > 0 !== front || dot.screen.x < -1e8) continue
-			const r = DOT_R * (dot.leaving ? 1 - 0.4 * (1 - dot.fade) : dot.scale) * (0.85 + 0.15 * dot.depth)
-			if (r < 0.2) continue
-			ctx.globalAlpha = dot.fade * (0.8 + 0.2 * dot.depth)
-			ctx.shadowColor = worm.color || worm.dotColor
-			ctx.shadowBlur = 6 * dpr
-			ctx.fillStyle = worm.dotColor
-			ctx.beginPath()
-			ctx.arc(dot.screen.x, dot.screen.y, r, 0, Math.PI * 2)
-			ctx.fill()
-		}
-		ctx.restore()
-	}
-
-	/** The tooltip of the dot under the pointer, following it. */
+	/** The tooltip of the baby under the pointer, following it. */
 	private showTip() {
-		let best: Dot | null = null
+		let best: Baby | null = null
 		const p = this.pointer
 		if (p && !this.press) {
-			let bestD = DOT_HOVER_PX + (this.tipFor ? 4 : 0)
+			let bestD = Infinity
 			for (const worm of this.worms.values()) {
-				if (worm.leaving || worm.asleep) continue
-				for (const dot of worm.dots.values()) {
-					if (dot.leaving || dot.scale < 0.5) continue
-					const d = Math.hypot(dot.screen.x - p.x, dot.screen.y - p.y)
-					if (d < bestD) {
-						bestD = d
-						best = dot
-					}
+				if (worm.leaving) continue
+				const hit = worm.colony.hit(p, this.tipFor ? 4 : 0)
+				if (hit && hit.d < bestD) {
+					bestD = hit.d
+					best = hit.baby
 				}
 			}
 		}
@@ -1558,21 +1445,28 @@ export class AgentWorms {
 		}
 		const shape = place(c, heading, Math.max(0.001, scale))
 		worm.shape = shape
-		if (worm.dots.size) {
-			this.moveDots(worm, now, elapsed, c)
-			this.drawDots(worm, false)
+		if (worm.colony.size) {
+			// (drifting about where it sits, not bobbing with it; blinking out with it)
+			worm.colony.step(now, elapsed, home, worm.asleep, still)
+			const carry = worm.mode === 'pop' || worm.mode === 'vanish' ? scale : 1
+			this.ctx.save()
+			this.ctx.globalAlpha *= Math.min(1, Math.max(0, carry))
+			worm.colony.draw(this.ctx, home, 1, window.devicePixelRatio || 1)
+			this.ctx.restore()
 		}
 		// thinking: a soft glow pulsing in its colour
 		const glow = worm.think * (still ? 0.6 : 0.5 + 0.3 * Math.sin(now * 0.0055))
 		drawPointer(this.ctx, shape, worm.palette, worm.eye, { dpr: window.devicePixelRatio || 1, glow, glowColor: worm.color })
-		if (worm.dots.size) this.drawDots(worm, true)
+		// (where it goes and the way it travels aren't part of it: its marker stays put, pointing at it)
+		const posed = worm.mode === 'here' && !worm.trip && !this.slaps.holds(worm, now)
+		worm.live = { dx: c.x - worm.off.x - home.x, dy: c.y - worm.off.y - home.y, turn: posed ? turn(worm.rest, heading) : heading - worm.heading, scale, glow }
 		this.placeLabels(worm, shape, elapsed)
 	}
 
 	/**
 	 * Where the name tag hangs (under it, where it is on the page, following knocks and dangling),
-	 * and its top and middle from there (CSS --hx/--hy and --mx/--my), which the bubbles, thought
-	 * cloud, zzz and ring follow. Placed from this frame's camera, so they move with the canvas
+	 * and its top and middle from there (CSS --hx/--hy and --mx/--my), which the bubbles, zzz
+	 * and ring follow. Placed from this frame's camera, so they move with the canvas
 	 * exactly; only how they sit on the shape is eased.
 	 */
 	private placeLabels(worm: Worm, shape: Shape, elapsed: number) {

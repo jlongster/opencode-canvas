@@ -1,5 +1,4 @@
 import type { Editor } from '../editor/Editor'
-import { markdownToHtml } from '../ui/markdown'
 import type { Box, Vec } from '../editor/geometry'
 import type { Attention } from './Attention'
 import type { Conjure } from './Conjure'
@@ -40,13 +39,7 @@ const RECOIL_MS = 340
 /** thinking hard: a fit of frustration now and then */
 const FIT_MS = 1500
 const FIT_GAP_MS = 5200
-/** looking round while it sits about, and how often */
-const FIDGET_MS = 1300
-const FIDGET_EVERY_MS = 9000
 const CHAT_MS = 5000
-/** local typewriter speed for speech, catching up faster when it falls behind what has arrived */
-const TYPE_CPS = 36
-const SPEECH_CLOSE_MS = 220
 /** how long the startled eye lasts after it's clicked */
 const STARTLE_MS = 1100
 /** extra screen px around the shape that still counts as clicking it */
@@ -55,8 +48,6 @@ const HIT_SLOP = 4
 const DRAG_PX = 5
 /** the pointer this close to its eye (screen px) gets stared at */
 const STARE_PX = 170
-/** a conjured creature's finished reply puts itself away (locally) after this long, unless it's pinned */
-const REPLY_HIDE_MS = 7000
 /** below this zoom the creatures' name tags and attention badges hide; once hidden, they come back at FAR_ZOOM */
 const FAR_ZOOM = 0.1
 const FAR_SLACK = 0.002
@@ -83,21 +74,6 @@ const RUSH_MAX_MS = 1000
 const RUSH_HOP = 12
 const RUSH_GLEE_MS = 900
 const WIGGLE_MS = 750
-/**
- * wandering about while it sits idle (here only: where it is doesn't change): how long between
- * wanders, how far from where it sits it goes (screen px), its gap to an item it goes to look at
- * (screen px), and how long it stays
- */
-const WANDER_GAP_MIN_MS = 6000
-const WANDER_GAP_MAX_MS = 15000
-const WANDER_PX = 200
-const WANDER_ITEM_GAP = 24
-const WANDER_STAY_MS = 2600
-/** a glide while wandering takes this much longer than a glide */
-const WANDER_SLOW = 1.3
-/** the little wide-eyed peek on arriving to look at an item */
-const PEEK_MS = 700
-
 type Mode = 'here' | 'pop' | 'vanish'
 
 /** A glide: a cubic curve in page space, setting off the way it pointed and coming in to the goal. */
@@ -108,18 +84,8 @@ interface Trip {
 	to: Vec
 	at: number
 	dur: number
-	/** a glide, a rush to a new item (crouching RUSH_WAIT_MS before `at`), or a slower wander */
-	kind: 'glide' | 'rush' | 'wander'
-}
-
-/** Somewhere it wanders off to while it sits idle, and what it looks at there. */
-interface Wander {
-	kind: 'item' | 'turn' | 'drift'
-	/** where it sat when it set off (a new spot ends the wander) */
-	home: Vec
-	to: Vec
-	look: Vec | null
-	until: number
+	/** a glide, or a rush to a new item (crouching RUSH_WAIT_MS before `at`) */
+	kind: 'glide' | 'rush'
 }
 
 /**
@@ -181,10 +147,6 @@ export interface Worm {
 	squash: number
 	wakeAt: number
 	recoilAt: number
-	/** looking round now and then while it sits about: which way it turns */
-	fidgetAt: number
-	fidgetTurn: number
-	nextFidget: number
 	/** thinking hard (busy, not talking), and its fits of frustration */
 	fretting: boolean
 	fit: number
@@ -205,16 +167,8 @@ export interface Worm {
 	chat: string | null
 	chatAt: number
 	nameText: string
-	/** speech bubble from the agent's say tool, while it's showing */
-	bubble: HTMLDivElement | null
-	bubbleText: HTMLDivElement | null
-	/** what has arrived so far, by character, and whether it's complete */
-	speech: string[]
-	speechDone: boolean
-	/** characters typed out locally (fractional) and how many are on screen */
-	speechShown: number
-	speechDrawn: number
-	/** 0..1 how much it's talking, eased */
+	/** its reply is streaming in (it shows in its prompt box), and 0..1 how much it's talking, eased */
+	streaming: boolean
 	talk: number
 	/** a conjured creature (an OpenCode session people can prompt): clickable on edit links */
 	conjured: boolean
@@ -227,24 +181,14 @@ export interface Worm {
 	startledAt: number
 	/** its prompt box is open */
 	listening: boolean
-	bubbleScroll: HTMLDivElement | null
-	/** a reply dismissed with × (locally), hidden until it says something else */
-	dismissed: string | null
-	/** the full chat text behind the bubble, and whether it's finished */
-	speechText: string | null
-	/** the bubble stays up until × (the pointer went over it, or it was reopened) */
-	speechPinned: boolean
-	/** when the reply finished (typed out, nothing more coming), 0 while it isn't */
-	speechDoneAt: number
+	/** the finished reply this viewer has seen (in its prompt box, or there already when it arrived); undefined until it's first synced */
+	replySeen: string | null | undefined
+	/** the dot on its name tag for a finished reply not seen yet */
+	unread: boolean
 	/** the rush (ConjuredAgent.rush's time) it has gone on; one pending, to set off on with its next glide; and when it last got there */
 	rushSeen: number
 	rushNext: boolean
 	rushArriveAt: number
-	/** wandering about, idle (local only), and when it next may */
-	wander: Wander | null
-	nextWander: number
-	/** when it last peeked at something it wandered over to */
-	peekAt: number
 	/** its busy subagents, as babies drifting about near it */
 	colony: Colony
 	sessionId: string | null
@@ -393,7 +337,6 @@ export class AgentWorms {
 					if (rush) {
 						worm.rushSeen = rush.at
 						worm.rushNext = !worm.listening
-						worm.wander = null
 					}
 					worm.goal = pinned ?? target.point
 					worm.focus = target.box
@@ -500,7 +443,7 @@ export class AgentWorms {
 	/** Pointer events over the canvas itself (not over a bubble, a prompt box or other UI). */
 	private overCanvas(e: PointerEvent) {
 		const target = e.target as Element | null
-		return !!target && !!this.container?.contains(target) && !target.closest('.agent-worm-speech, .agent-worm-attention, .offscreen-marker, .conjure-prompt, .note')
+		return !!target && !!this.container?.contains(target) && !target.closest('.agent-worm-attention, .offscreen-marker, .pt, .note')
 	}
 
 	/** Client coordinates to this layer's screen space (the editor's). */
@@ -681,9 +624,6 @@ export class AgentWorms {
 			squash: 0,
 			wakeAt: -1e9,
 			recoilAt: -1e9,
-			fidgetAt: -1e9,
-			fidgetTurn: 0,
-			nextFidget: now + 6000 + Math.random() * 8000,
 			fretting: false,
 			fit: -1e9,
 			nextFit: 0,
@@ -700,12 +640,7 @@ export class AgentWorms {
 			chat: null,
 			chatAt: 0,
 			nameText: '',
-			bubble: null,
-			bubbleText: null,
-			speech: [],
-			speechDone: false,
-			speechShown: 0,
-			speechDrawn: 0,
+			streaming: false,
 			talk: 0,
 			conjured,
 			asleep: false,
@@ -713,17 +648,11 @@ export class AgentWorms {
 			think: 0,
 			startledAt: -1e9,
 			listening: false,
-			bubbleScroll: null,
-			dismissed: null,
-			speechText: null,
-			speechPinned: false,
-			speechDoneAt: 0,
+			replySeen: undefined,
+			unread: false,
 			rushSeen: 0,
 			rushNext: false,
 			rushArriveAt: -1e9,
-			wander: null,
-			nextWander: now + WANDER_GAP_MIN_MS + Math.random() * (WANDER_GAP_MAX_MS - WANDER_GAP_MIN_MS),
-			peekAt: -1e9,
 			colony: new Colony(),
 			calls: 0,
 			badge: null,
@@ -853,9 +782,7 @@ export class AgentWorms {
 			worm.name.textContent = worm.nameText
 		}
 		const speaking = !!peer.speaking && !!peer.chat
-		let speech = speaking ? peer.chat! : null
-		let speechSent = !!peer.chatSent
-		let replayed = false
+		worm.streaming = speaking && !peer.chatSent
 		if (worm.conjured) {
 			// Calling for attention wakes it up (for the look of it: nobody runs it any more than before).
 			const asleep = !!peer.user.asleep && !worm.calls
@@ -867,25 +794,15 @@ export class AgentWorms {
 			worm.thinking = !!peer.thinking
 			worm.startledAt = this.conjure?.startled.get(worm.id) ?? worm.startledAt
 			worm.listening = this.conjure?.prompting.peek()?.clientId === worm.id
-			// A reply reopened from the prompt box ("Show last reply"), until the worm moves on.
-			const sessionId = peer.user.sessionId
-			const replay = sessionId ? this.conjure?.replays.get(sessionId) : undefined
-			if (replay && (peer.chat ?? null) !== replay.baseChat) this.conjure!.replays.delete(sessionId!)
-			else if (replay) {
-				speech = replay.text
-				speechSent = true
-				replayed = true
-				worm.dismissed = null
+			// Its replies show in its prompt box, not on the canvas: a finished one this viewer hasn't
+			// seen there gets a dot on its name tag until the box is opened.
+			const reply = speaking && peer.chatSent && !worm.thinking ? peer.chat : null
+			if (worm.listening || worm.replySeen === undefined) worm.replySeen = reply
+			const unread = !!reply && reply !== worm.replySeen
+			if (worm.unread !== unread) {
+				worm.unread = unread
+				worm.label.classList.toggle('unread', unread)
 			}
-			// A dismissed (or auto-hidden) reply stays hidden until the worm says something else.
-			if (worm.dismissed !== null && speech !== worm.dismissed) worm.dismissed = null
-		}
-		const hidden = worm.dismissed !== null
-		this.syncSpeech(worm, hidden ? null : speech, speechSent)
-		if (replayed) worm.speechPinned = true
-		if (worm.conjured) {
-			// Working while it's saying something: a little "•••" in the bubble.
-			worm.el.classList.toggle('working', worm.thinking && !!worm.bubble)
 		}
 		const chat = (!speaking && peer.chat) || null
 		if (worm.chat !== chat) {
@@ -946,128 +863,6 @@ export class AgentWorms {
 		this.conjure?.startled.set(worm.id, now)
 	}
 
-	/** Opens, extends, replaces or closes the speech bubble. */
-	private syncSpeech(worm: Worm, text: string | null, sent: boolean) {
-		if (text === null) {
-			if (worm.bubble) {
-				const bubble = worm.bubble
-				bubble.classList.add('closing')
-				setTimeout(() => bubble.remove(), this.reducedMotion.matches ? 0 : SPEECH_CLOSE_MS)
-				worm.bubble = worm.bubbleText = worm.bubbleScroll = null
-				worm.speech = []
-				worm.speechText = null
-				worm.speechPinned = false
-				worm.speechDoneAt = 0
-			}
-			return
-		}
-		worm.speechText = text
-		const chars = Array.from(text)
-		if (!worm.bubble) {
-			worm.bubble = document.createElement('div')
-			worm.bubble.className = 'agent-worm-speech'
-			worm.bubbleScroll = document.createElement('div')
-			worm.bubbleScroll.className = 'agent-worm-speech-scroll'
-			worm.bubbleText = document.createElement('div')
-			worm.bubbleText.className = 'agent-worm-speech-text'
-			worm.bubbleScroll.appendChild(worm.bubbleText)
-			worm.bubble.appendChild(worm.bubbleScroll)
-			if (worm.conjured) {
-				const working = document.createElement('div')
-				working.className = 'agent-worm-speech-working'
-				working.title = 'Still working'
-				working.innerHTML = '<i></i><i></i><i></i>'
-				worm.bubble.appendChild(working)
-				this.makeDismissable(worm, worm.bubble)
-			}
-			// Links in it are for clicking, not for starting a selection on the canvas underneath.
-			else worm.bubble.addEventListener('pointerdown', (e) => (e.target as Element).closest?.('a') && e.stopPropagation())
-			worm.el.appendChild(worm.bubble)
-			worm.speech = []
-			// Arriving at a message that's already finished: show it whole.
-			worm.speechShown = sent ? chars.length : 0
-			worm.speechDrawn = -1
-			worm.speechPinned = false
-			worm.speechDoneAt = 0
-		} else if (chars.length < worm.speech.length || worm.speech.some((c, i) => chars[i] !== c)) {
-			// A new message replaced the one showing: type it from the start. (A long reply that only
-			// keeps its end drops characters off the front as it grows: keep showing it whole.)
-			const kept = chars[0] === '…' && worm.speech[0] === '…'
-			worm.speechShown = kept ? chars.length : 0
-			worm.speechDrawn = -1
-			if (!kept) {
-				worm.speechPinned = false
-				worm.speechDoneAt = 0
-			}
-		}
-		worm.speech = chars
-		worm.speechDone = sent
-		worm.bubble.classList.toggle('done', sent)
-	}
-
-	/** Conjured worms' replies can be long: they scroll, and × puts them away. */
-	private makeDismissable(worm: Worm, bubble: HTMLDivElement) {
-		const close = document.createElement('button')
-		close.className = 'agent-worm-speech-close'
-		close.title = 'Dismiss'
-		close.textContent = '×'
-		close.addEventListener('click', () => {
-			const text = worm.speechText
-			if (text === null) return
-			worm.dismissed = text
-			this.syncSpeech(worm, null, true)
-			const sessionId = this.conjure?.peer(worm.id)?.user.sessionId
-			if (sessionId) {
-				this.conjure?.replays.delete(sessionId)
-				this.conjure?.dismiss(sessionId)
-			}
-		})
-		bubble.appendChild(close)
-		// Once the pointer has been over it, it stays until ×.
-		bubble.addEventListener('pointerenter', () => {
-			if (worm.bubble === bubble) worm.speechPinned = true
-		})
-		// Scrolling and clicking the bubble shouldn't pan or select on the canvas underneath.
-		for (const type of ['pointerdown', 'wheel', 'dblclick'] as const) bubble.addEventListener(type, (e) => e.stopPropagation())
-	}
-
-	/** Types the speech out locally, smoothing over the server's bursts. */
-	private typeSpeech(worm: Worm, elapsed: number) {
-		const total = worm.speech.length
-		if (this.reducedMotion.matches) worm.speechShown = total
-		else {
-			const behind = total - worm.speechShown
-			worm.speechShown = Math.min(total, worm.speechShown + (Math.max(TYPE_CPS, behind * 4) * elapsed) / 1000)
-		}
-		const shown = Math.floor(worm.speechShown)
-		if (shown !== worm.speechDrawn && worm.bubbleText) {
-			const scroll = worm.bubbleScroll
-			// Follow the text as it types, unless someone scrolled up to read.
-			const atEnd = !scroll || scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 24
-			worm.speechDrawn = shown
-			renderSpeech(worm.bubbleText, worm.speech.slice(0, shown).join(''))
-			if (scroll && atEnd) scroll.scrollTop = scroll.scrollHeight
-		}
-		// Caught up with a working session that's off doing something else (tools, more steps): it
-		// isn't talking, it's thinking (see 'working'), until the next text or the end of the turn.
-		const typing = shown < total || (!worm.speechDone && !worm.thinking)
-		worm.bubble?.classList.toggle('typing', typing)
-		return typing
-	}
-
-	/** A finished reply nobody pinned goes away after a while, here only; a new one shows again. */
-	private autoHide(worm: Worm, talking: boolean, now: number) {
-		if (talking || !worm.speechDone || worm.thinking || worm.speechPinned) {
-			worm.speechDoneAt = 0
-			return
-		}
-		if (!worm.speechDoneAt) worm.speechDoneAt = now
-		else if (now - worm.speechDoneAt > REPLY_HIDE_MS && worm.speechText !== null) {
-			worm.dismissed = worm.speechText
-			this.syncSpeech(worm, null, true)
-		}
-	}
-
 	// ---------- moving ----------
 
 	/** Its centre on screen where it sits (before knocks, bobbing and dangling). */
@@ -1082,9 +877,7 @@ export class AgentWorms {
 		const dt = Math.min(0.05, elapsed / 1000)
 		const ease = (ms: number) => (still ? 1 : 1 - Math.exp(-elapsed / ms))
 
-		const talking = worm.bubble ? this.typeSpeech(worm, elapsed) : false
-		if (worm.conjured && worm.bubble) this.autoHide(worm, talking, now)
-		worm.talk += ((talking ? 1 : 0) - worm.talk) * ease(120)
+		worm.talk += ((worm.streaming ? 1 : 0) - worm.talk) * ease(120)
 		// Busy until its session is idle, whether or not it's saying something meanwhile.
 		worm.think += ((worm.thinking ? 1 : 0) - worm.think) * ease(200)
 
@@ -1097,10 +890,8 @@ export class AgentWorms {
 		worm.rest = this.restHeading(worm, this.centreOf(worm))
 		const carried = this.carry.holds(worm)
 		const held = carried || this.slaps.holds(worm, now)
-		this.roam(worm, now, z, held)
 		if (!held) {
 			this.locomote(worm, now, dt, z)
-			this.maybeFidget(worm, now)
 			this.fret(worm, now)
 		} else {
 			worm.vel = { x: 0, y: 0 }
@@ -1119,7 +910,7 @@ export class AgentWorms {
 
 	/** Heads for its goal (or a highlight step's spot): gliding along a curve, sliding over a little, or blinking over when it's far. */
 	private locomote(worm: Worm, now: number, dt: number, z: number) {
-		const goal = worm.visit ?? worm.wander?.to ?? worm.goal
+		const goal = worm.visit ?? worm.goal
 		if (worm.mode !== 'here' || worm.leaving || !goal) return
 		if (this.reducedMotion.matches) {
 			worm.root = { ...goal }
@@ -1136,7 +927,7 @@ export class AgentWorms {
 			worm.rushNext = false
 			const d = Math.hypot(goal.x - worm.root.x, goal.y - worm.root.y) * z
 			if (d > GLIDE_MAX || (!this.onScreen(worm.root, 80) && !this.onScreen(goal, 80))) return this.vanish(worm, now, goal)
-			if (d > NUDGE_PX) this.plan(worm, goal, now, z, rush ? 'rush' : worm.wander && !worm.visit ? 'wander' : 'glide')
+			if (d > NUDGE_PX) this.plan(worm, goal, now, z, rush ? 'rush' : 'glide')
 			else {
 				worm.trip = null
 				if (rush) worm.rushArriveAt = now
@@ -1149,11 +940,6 @@ export class AgentWorms {
 			if (u >= 1) {
 				worm.trip = null
 				if (trip.kind === 'rush') worm.rushArriveAt = now
-				// come to look at something: a quick blink and a peek
-				if (trip.kind === 'wander' && worm.wander?.kind === 'item') {
-					worm.peekAt = now
-					worm.nextBlink = Math.min(worm.nextBlink, now + 120)
-				}
 			} else if (u < 0) {
 				// crouching to set off: drawing back a little
 				const l = Math.hypot(trip.to.x - trip.from.x, trip.to.y - trip.from.y) || 1
@@ -1200,7 +986,7 @@ export class AgentWorms {
 			dur:
 				kind === 'rush'
 					? Math.min(RUSH_MAX_MS, Math.max(RUSH_MIN_MS, RUSH_MS + d * RUSH_PER_PX))
-					: Math.min(GLIDE_MAX_MS, Math.max(GLIDE_MIN_MS, GLIDE_MS + d * GLIDE_PER_PX)) * (kind === 'wander' ? WANDER_SLOW : 1),
+					: Math.min(GLIDE_MAX_MS, Math.max(GLIDE_MIN_MS, GLIDE_MS + d * GLIDE_PER_PX)),
 			kind,
 		}
 	}
@@ -1280,11 +1066,9 @@ export class AgentWorms {
 		else if (worm.asleep) base = rest + 0.28 * Math.sign(turn(rest, Math.PI / 2) || 1)
 		else if (calling) base = rest + 0.36 * Math.sin(t * 7.5)
 		else if (worm.fretting) base = rest + 0.07 * wobble(t * 0.5 + 3)
-		else if (worm.talk > 0.05) base = rest + 0.08 * Math.sin(worm.speechShown * 0.7) * worm.talk
-		else if (!worm.pointAt && !worm.wander?.look) {
+		else if (worm.talk > 0.05) base = rest + 0.08 * Math.sin(t * 20) * worm.talk
+		else if (!worm.pointAt) {
 			base = rest + 0.07 * wobble(t * 0.25)
-			const fidget = (now - worm.fidgetAt) / FIDGET_MS
-			if (fidget >= 0 && fidget < 1) base += worm.fidgetTurn * Math.sin(Math.PI * fidget)
 			// a slight turn toward someone's pointer nearby
 			const c = worm.shape?.centre
 			const p = this.pointer
@@ -1328,8 +1112,7 @@ export class AgentWorms {
 	 */
 	private restHeading(worm: Worm, centre: Vec): number {
 		const aim = (p: Vec) => Math.atan2(p.y - centre.y, p.x - centre.x)
-		const look = worm.pointAt ?? worm.wander?.look
-		if (look) return aim(this.editor.pageToScreen(look))
+		if (worm.pointAt) return aim(this.editor.pageToScreen(worm.pointAt))
 		const frame = worm.sessionId ? this.editor.getSelectionBounds(`frame:${worm.sessionId}`) : undefined
 		const z = this.editor.camera.peek().z
 		for (const box of [worm.focus, frame]) {
@@ -1347,7 +1130,7 @@ export class AgentWorms {
 	private fret(worm: Worm, now: number) {
 		const busy = worm.think > 0.5 && worm.talk < 0.3 && worm.mode === 'here' && !worm.trip && !worm.asleep
 		worm.fretting = busy
-		if (!busy || this.reducedMotion.matches || worm.bubble) {
+		if (!busy || this.reducedMotion.matches) {
 			worm.nextFit = 0
 			return
 		}
@@ -1356,100 +1139,6 @@ export class AgentWorms {
 			worm.fit = now
 			worm.nextFit = now + FIT_GAP_MS * (0.7 + Math.random() * 0.8)
 		}
-	}
-
-	private maybeFidget(worm: Worm, now: number) {
-		const idle = worm.mode === 'here' && !worm.trip && !worm.asleep && !worm.calls && !worm.listening && !worm.pointAt && worm.think < 0.1 && worm.talk < 0.05
-		if (!idle || this.reducedMotion.matches) {
-			worm.nextFidget = Math.max(worm.nextFidget, now + 3000)
-			return
-		}
-		if (now < worm.nextFidget) return
-		worm.fidgetAt = now
-		worm.fidgetTurn = (Math.random() < 0.5 ? -1 : 1) * (0.35 + Math.random() * 0.3)
-		worm.nextFidget = now + FIDGET_EVERY_MS * (0.7 + Math.random())
-		worm.nextGlance = now
-	}
-
-	/**
-	 * Sitting about idle and awake, now and then it wanders: over to look at one of its frame's items
-	 * (just outside its nearest edge, pointing at it), turning to look at one, or drifting to another
-	 * spot nearby; then back. Only here (each viewer's differ; where it is doesn't change), and never
-	 * while a prompt box or walkthrough is open, it's held, talking, thinking or calling.
-	 */
-	private roam(worm: Worm, now: number, z: number, held: boolean) {
-		const home = worm.goal
-		const sid = worm.sessionId
-		const free =
-			!held &&
-			!this.reducedMotion.matches &&
-			!!home &&
-			!!sid &&
-			worm.mode === 'here' &&
-			!worm.leaving &&
-			!worm.asleep &&
-			!worm.calls &&
-			!worm.listening &&
-			!worm.visit &&
-			!worm.bubble &&
-			!worm.rushNext &&
-			worm.think < 0.1 &&
-			worm.talk < 0.05 &&
-			this.press?.worm !== worm &&
-			!this.conjure?.prompting.peek() &&
-			!this.attention?.walk.peek() &&
-			now - worm.rushArriveAt > 3000 &&
-			this.onScreen(home, 0)
-		const w = worm.wander
-		if (w && (!free || Math.hypot(home!.x - w.home.x, home!.y - w.home.y) * z > 2 || now > w.until)) {
-			worm.wander = null
-			worm.nextWander = now + WANDER_GAP_MIN_MS + Math.random() * (WANDER_GAP_MAX_MS - WANDER_GAP_MIN_MS)
-		}
-		if (!free) {
-			worm.nextWander = Math.max(worm.nextWander, now + 3000)
-			return
-		}
-		if (worm.wander || worm.trip || now < worm.nextWander) return
-		worm.wander = this.pickWander(home!, sid!, now, z)
-		if (!worm.wander) worm.nextWander = now + 3000
-	}
-
-	private pickWander(home: Vec, sid: string, now: number, z: number): Wander | null {
-		const layout = this.editor.layout.get()
-		const section = layout.sections.find((s) => s.id === sid)
-		if (!section) return null
-		const centre = { x: home.x, y: home.y - LIFT / z }
-		const range = WANDER_PX / z
-		const near = (p: Vec) => Math.hypot(p.x - home.x, p.y - home.y) <= range
-		const frame = section.box
-		const pad = 120 / z
-		const byFrame = (p: Vec) => p.x > frame.x - pad && p.x < frame.x + frame.w + pad && p.y > frame.y - pad && p.y < frame.y + frame.h + pad
-		const spots = section.itemIds
-			.map((id) => layout.items.get(id))
-			.filter((b): b is Box => !!b)
-			.map((box) => ({ box, ...edgeSpot(centre, box) }))
-			.filter((s) => near(s.at))
-		const stay = WANDER_STAY_MS * (0.8 + Math.random() * 0.8)
-		const r = Math.random()
-		if (spots.length && r < 0.75) {
-			const s = spots[Math.floor(Math.random() * spots.length)]
-			if (r < 0.5) {
-				const to = standOff(s.at, s.out, z, WANDER_ITEM_GAP)
-				if (near(to) && byFrame(to) && Math.hypot(to.x - home.x, to.y - home.y) * z > 20) return { kind: 'item', home: { ...home }, to, look: s.at, until: now + GLIDE_MAX_MS * WANDER_SLOW + stay }
-			}
-			return { kind: 'turn', home: { ...home }, to: { ...home }, look: { x: s.box.x + s.box.w / 2, y: s.box.y + s.box.h / 2 }, until: now + stay * 0.7 }
-		}
-		const boxes = section.itemIds.map((id) => layout.items.get(id)).filter((b): b is Box => !!b)
-		for (let i = 0; i < 6; i++) {
-			const a = Math.random() * Math.PI * 2
-			const d = (50 + Math.random() * 90) / z
-			const to = { x: home.x + Math.cos(a) * d, y: home.y + Math.sin(a) * d }
-			const c = { x: to.x, y: to.y - LIFT / z }
-			const m = 24 / z
-			if (!byFrame(to) || boxes.some((b) => c.x > b.x - m && c.x < b.x + b.w + m && c.y > b.y - m && c.y < b.y + b.h + m)) continue
-			return { kind: 'drift', home: { ...home }, to, look: null, until: now + GLIDE_MAX_MS * WANDER_SLOW + stay * 1.5 }
-		}
-		return null
 	}
 
 	/** Clicked: it hops back from its tip. */
@@ -1509,9 +1198,8 @@ export class AgentWorms {
 				worm.dart = { x: (Math.random() - 0.5) * 0.9, y: (Math.random() - 0.5) * 0.5 }
 				worm.nextDart = now + 220 + Math.random() * 600
 			}
-			const calm = worm.bubble ? 0.4 : 1
-			look = { x: 0.5 * wobble(t * 0.7 + 5) + worm.dart.x * calm, y: -0.55 + 0.25 * wobble(t * 0.6 + 21) + worm.dart.y * 0.4 * calm }
-			const squint = Math.max(0, wobble(t * 0.35 + 3)) * calm
+			look = { x: 0.5 * wobble(t * 0.7 + 5) + worm.dart.x, y: -0.55 + 0.25 * wobble(t * 0.6 + 21) + worm.dart.y * 0.4 }
+			const squint = Math.max(0, wobble(t * 0.35 + 3))
 			lid = 0.08 + 0.4 * squint
 			lower = 0.4 * squint
 			const fit = (now - worm.fit) / FIT_MS
@@ -1527,10 +1215,8 @@ export class AgentWorms {
 			look = { x: ahead.x * 0.5 + 0.25 * Math.sin(t * 3.1), y: -0.35 + 0.2 * Math.sin(t * 4.7) }
 		} else if (worm.listening) {
 			look = { x: -0.1, y: 0.95 }
-		} else if (worm.pointAt || worm.wander?.look) {
-			look = toward(this.editor.pageToScreen((worm.pointAt ?? worm.wander?.look)!))
-			const peek = (now - worm.peekAt) / PEEK_MS
-			if (peek >= 0 && peek < 1) wide = 0.55 * Math.sin(Math.PI * peek)
+		} else if (worm.pointAt) {
+			look = toward(this.editor.pageToScreen(worm.pointAt))
 		} else if (stare) {
 			look = toward(stare)
 		} else {
@@ -1684,10 +1370,9 @@ export class AgentWorms {
 			else c.y += 1.6 * Math.sin(t * 2.3)
 			// thinking: a fine fast tremble
 			if (worm.fretting) {
-				const k = worm.bubble ? 0.4 : 1
-				c.x += 0.5 * k * Math.sin(now * 0.11)
-				c.y += 0.4 * k * Math.sin(now * 0.093 + 1)
-				heading += 0.03 * k * Math.sin(now * 0.077)
+				c.x += 0.5 * Math.sin(now * 0.11)
+				c.y += 0.4 * Math.sin(now * 0.093 + 1)
+				heading += 0.03 * Math.sin(now * 0.077)
 			}
 			const wake = (now - worm.wakeAt) / WAKE_MS
 			if (wake >= 0 && wake < 1) scale *= 1 + 0.14 * Math.sin(Math.PI * wake)
@@ -1750,18 +1435,6 @@ export class AgentWorms {
 		el.style.setProperty('--mx', `${worm.middleAt.x.toFixed(1)}px`)
 		el.style.setProperty('--my', `${worm.middleAt.y.toFixed(1)}px`)
 	}
-}
-
-/** Speech as Markdown, with the typing caret after its last character (shown while typing, see CSS). */
-function renderSpeech(el: HTMLElement, text: string) {
-	el.innerHTML = markdownToHtml(text)
-	const caret = document.createElement('span')
-	caret.className = 'agent-worm-caret'
-	const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
-	let last: Node | null = null
-	for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.textContent!.trim()) last = n
-	if (last) last.parentNode!.insertBefore(caret, last.nextSibling)
-	else el.appendChild(caret)
 }
 
 /** 1 right after a creature is startled, easing to 0 over STARTLE_MS. */

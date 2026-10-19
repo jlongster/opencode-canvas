@@ -14,8 +14,8 @@
  *
  * Busy/idle comes from OpenCode's event stream (reconciled with session.active() on connect and
  * every RECONCILE_MS), whoever started the work: a prompt from the canvas, the TUI, anything. While
- * the session works the worm thinks and the assistant's text streams into its speech bubble; the
- * final reply stays up until the next turn or until someone dismisses it.
+ * the session works the worm thinks and the assistant's text streams into its chat (shown in its
+ * prompt box); the final reply stays there until the next turn.
  *
  * Its subagents (child sessions, e.g. from the task tool, and their children) are tracked from the
  * same stream: which are busy is published as `subagents`, and viewers draw a tiny worm for each.
@@ -39,7 +39,6 @@ const STREAM_PUBLISH_MS = 80
 const IDLE_SETTLE_MS = 600
 /** busy/idle is checked against session.active() this often, in case the stream missed something */
 const RECONCILE_MS = 30_000
-const CHANNEL = 'opencode-canvas-worms'
 /** at most this many busy subagents are published (the oldest ones) */
 const SUBAGENTS_MAX = 8
 const SUBAGENT_TITLE_MAX = 80
@@ -83,7 +82,6 @@ export async function lastAssistantText(serverKey: string, sessionId: string, sc
 export class WormHost {
 	private running = new Map<string, { stop: AbortController; runtime: WormRuntime | null }>()
 	private disposers: (() => void)[] = []
-	private channel: BroadcastChannel | null = typeof BroadcastChannel === 'function' ? new BroadcastChannel(CHANNEL) : null
 
 	constructor(
 		private canvasId: string,
@@ -95,23 +93,10 @@ export class WormHost {
 				this.sync(this.records.get())
 			}),
 		)
-		if (this.channel) {
-			this.channel.onmessage = (e: MessageEvent) => {
-				const msg = e.data as { type?: string; canvasId?: string; sessionId?: string }
-				if (msg?.type === 'dismiss' && msg.canvasId === this.canvasId && msg.sessionId) this.running.get(msg.sessionId)?.runtime?.dismiss()
-			}
-		}
-	}
-
-	/** Clears the worm's reply for everyone, from whichever of this browser's tabs runs it. */
-	dismiss(sessionId: string) {
-		this.running.get(sessionId)?.runtime?.dismiss()
-		this.channel?.postMessage({ type: 'dismiss', canvasId: this.canvasId, sessionId })
 	}
 
 	destroy() {
 		for (const d of this.disposers.splice(0)) d()
-		this.channel?.close()
 		for (const sessionId of [...this.running.keys()]) this.stop(sessionId)
 	}
 
@@ -212,13 +197,6 @@ class WormRuntime {
 		const moved = record.x !== this.record.x || record.y !== this.record.y || record.title !== this.record.title || record.color !== this.record.color
 		this.record = record
 		if (moved) this.publish()
-	}
-
-	dismiss() {
-		if (this.busy) return
-		this.chat = null
-		this.chatSent = true
-		this.publish()
 	}
 
 	destroy() {

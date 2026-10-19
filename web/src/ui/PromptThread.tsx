@@ -106,7 +106,6 @@ function PromptThread({ conjure, target, meta }: { conjure: Conjure; target: Pro
 	}, [conjure, sessionId])
 	const turn = useValue(() => conjure.turns.get()[sessionId] ?? null, [conjure, sessionId])
 	const stopping = useValue(() => !!conjure.stopping.get()[sessionId], [conjure, sessionId])
-	const muted = useValue(() => conjure.isMuted(sessionId), [conjure, sessionId])
 
 	const [exchange, setExchange] = useState<LastExchange | null>(() => exchanges.get(sessionId) ?? null)
 	const [loading, setLoading] = useState(false)
@@ -338,18 +337,6 @@ function PromptThread({ conjure, target, meta }: { conjure: Conjure; target: Pro
 		}
 	}
 
-	const showOnCanvas = async () => {
-		setMenu(null)
-		setError(null)
-		try {
-			const text = reply || (await conjure.lastReply(sessionId))
-			if (text) conjure.showReply(sessionId, text)
-			else setError('No reply yet')
-		} catch (e) {
-			setError((e as Error).message)
-		}
-	}
-
 	const banish = async () => {
 		setMenu(null)
 		try {
@@ -474,18 +461,6 @@ function PromptThread({ conjure, target, meta }: { conjure: Conjure; target: Pro
 							}}
 						>
 							{expanded ? 'Show less of the reply' : 'Show full reply'}
-						</button>
-						<button role="menuitem" disabled={!reply && !owner} onClick={showOnCanvas}>
-							Show reply on the canvas
-						</button>
-						<button
-							role="menuitem"
-							onClick={() => {
-								conjure.setMuted(sessionId, !muted)
-								setMenu(null)
-							}}
-						>
-							{muted ? 'Unmute' : 'Mute'} <span className="pt-dim">{muted ? 'show its bubbles' : 'hide its bubbles here'}</span>
 						</button>
 						<button
 							role="menuitem"

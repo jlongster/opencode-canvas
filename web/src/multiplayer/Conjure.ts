@@ -5,7 +5,7 @@ import { ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { atom, computed, react, type Atom } from '../state/signals'
 import { banishConjured, conjure as conjureSession, moveConjured } from '../sync/client'
 import type { Peer, Presence } from './Presence'
-import { lastAssistantText, runsHere, WormHost, wormName } from './WormHost'
+import { runsHere, WormHost, wormName } from './WormHost'
 
 export interface PromptTarget {
 	clientId: number
@@ -46,7 +46,6 @@ export interface TurnInfo {
 const PROMPT_MAX = 20_000
 const EXCHANGE_SCAN = 40
 const EXCHANGE_PROMPTS_MAX = 3
-const MUTED_KEY = 'canvas.conjure.muted'
 const FIND_SESSION_MS = 8_000
 const INTERRUPT_MS = 10_000
 /** a worm still thinking this long after its session was interrupted can be stopped again */
@@ -71,11 +70,6 @@ export class Conjure {
 	readonly picking = atom<{ screen: Vec; page: Vec } | null>('conjurePicking', null)
 	/** when each worm was last startled (clicked or focused), by awareness client id */
 	readonly startled = new Map<number, number>()
-	/**
-	 * Replies reopened here with "Show last reply", by session id: shown pinned in the bubble until
-	 * the worm's own chat changes from what it was then (baseChat).
-	 */
-	readonly replays = new Map<string, { text: string; baseChat: string | null }>()
 	/** worms with no live presence (nobody runs them), as made-up peers to draw asleep */
 	readonly sleepers = computed<Peer[]>('conjureSleepers', () => {
 		const awake = new Set(this.presence.peers.get().filter((p) => p.user.conjured && p.user.sessionId).map((p) => p.user.sessionId))
@@ -96,8 +90,6 @@ export class Conjure {
 	readonly stopping = atom<Record<string, number>>('conjureStopping', {})
 	/** when each thinking worm's turn started, by session id, from its presence (gone when it stops thinking) */
 	readonly turns = atom<Record<string, TurnInfo>>('conjureTurns', {})
-	/** worms muted here (their bubbles kept off the canvas), by session id; this browser only */
-	readonly muted = atom<string[]>('conjureMuted', loadMuted())
 	private host: WormHost | null
 	private unwatchStopping: () => void
 	private unwatchTurns: () => void
@@ -138,19 +130,6 @@ export class Conjure {
 		}
 		const keys = Object.keys(next)
 		if (keys.length !== Object.keys(prev).length || keys.some((id) => next[id] !== prev[id])) this.turns.set(next)
-	}
-
-	isMuted(sessionId: string) {
-		return this.muted.get().includes(sessionId)
-	}
-
-	setMuted(sessionId: string, muted: boolean) {
-		const next = this.muted.peek().filter((id) => id !== sessionId)
-		if (muted) next.push(sessionId)
-		this.muted.set(next)
-		try {
-			localStorage.setItem(MUTED_KEY, JSON.stringify(next))
-		} catch {}
 	}
 
 	/**
@@ -362,18 +341,6 @@ export class Conjure {
 	}
 
 	/**
-	 * The worm's most recent reply: what it last said in the room, or, for our own worm, its
-	 * session's last assistant message from OpenCode (there even after a reload or dismissing it).
-	 */
-	async lastReply(sessionId: string): Promise<string> {
-		const said = this.saying(sessionId)
-		if (said) return said
-		const r = this.record(sessionId)
-		if (!r || !this.ours(sessionId)) return ''
-		return lastAssistantText(r.serverKey, sessionId)
-	}
-
-	/**
 	 * Our own worm's last exchange, from its session's messages in OpenCode: the latest prompts
 	 * (with the canvas's "Name (on the canvas …):" prefix taken off again) and the newest thing it
 	 * said after them. Null when it isn't ours to read.
@@ -405,27 +372,10 @@ export class Conjure {
 		return { prompts, reply }
 	}
 
-	/** What the worm is saying in the room right now (its reply, finished or not), or null. */
-	saying(sessionId: string): string | null {
-		const peer = this.presence.peers.get().find((p) => p.user.conjured && p.user.sessionId === sessionId)
-		return (peer?.speaking && peer.chat) || null
-	}
-
-	/** Reopens a reply in the worm's bubble, pinned (here only). */
-	showReply(sessionId: string, text: string) {
-		const peer = this.presence.peers.peek().find((p) => p.user.conjured && p.user.sessionId === sessionId)
-		this.replays.set(sessionId, { text, baseChat: peer?.chat ?? null })
-	}
-
 	async banish(sessionId: string) {
 		if (!this.canEdit) return
 		if (this.prompting.peek()?.sessionId === sessionId) this.close()
 		await banishConjured(this.canvasId, sessionId)
-	}
-
-	/** Clears the worm's reply for everyone when we run it (others just hide it locally). */
-	dismiss(sessionId: string) {
-		this.host?.dismiss(sessionId)
 	}
 
 	/** Our own worm, with its OpenCode paired here. */
@@ -486,15 +436,6 @@ function threadPrompt(m: RawMessage): ThreadPrompt {
 		.filter(Boolean)
 	if (images.length && /^\(sent (an image|\d+ images)\)$/.test(text)) text = ''
 	return { id: m.id ?? '', text, images, at: m.time?.created ?? 0 }
-}
-
-function loadMuted(): string[] {
-	try {
-		const ids = JSON.parse(localStorage.getItem(MUTED_KEY) ?? '[]')
-		return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : []
-	} catch {
-		return []
-	}
 }
 
 /** A stable made-up awareness id for a sleeping worm (negative, so it never clashes with real ones). */

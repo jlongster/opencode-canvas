@@ -20,3 +20,20 @@
 .agent-worm-labels.far .agent-worm .agent-worm-call-ring {
 	filter: opacity(0);
 }
+
+/* Hovering one shows its tag and badge again, above the others. */
+.agent-worm-labels.far .agent-worm.peek {
+	z-index: 1;
+}
+
+.agent-worm-labels.far .agent-worm.peek .agent-worm-label,
+.agent-worm-labels.far .agent-worm.peek .agent-worm-attention {
+	opacity: 1;
+	visibility: visible;
+	pointer-events: inherit;
+	transition: opacity 100ms, visibility 0s;
+}
+
+.agent-worm-labels.far .agent-worm.peek .agent-worm-call-ring {
+	filter: none;
+}

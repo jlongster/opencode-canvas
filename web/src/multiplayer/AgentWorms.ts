@@ -68,6 +68,10 @@ const FULL_BUBBLE_ZOOM = 0.6
 /** below this zoom the creatures' name tags and attention badges hide; once hidden, they come back at FAR_ZOOM */
 const FAR_ZOOM = 0.1
 const FAR_SLACK = 0.002
+/** zoomed right out, hovering within this (screen px) of a creature's pointer shows its name tag */
+const PEEK_SLOP = 10
+/** and it stays this long (ms) after the mouse leaves */
+const PEEK_LINGER_MS = 200
 /** records created longer ago than this were there already: they're just there rather than popping up */
 const FRESH_MS = 15000
 /** at rest it points at its frame (or what it's working on) when that's within this many screen px */
@@ -263,6 +267,11 @@ export class AgentWorms {
 	private disposers: (() => void)[] = []
 	/** the pointer over the canvas (screen space), for staring at and dots' tooltips */
 	private pointer: Vec | null = null
+	/** what the mouse was last over, so a peeked creature's tag or badge keeps it peeked */
+	private pointerOver: Element | null = null
+	/** zoomed right out: the creature whose tag shows while hovered, and when the mouse left it */
+	private peeked: Worm | null = null
+	private peekLeftAt = 0
 	private tip: HTMLDivElement
 	private tipFor: Dot | null = null
 	/** when this page started showing creatures (wall clock), to tell sessions conjured since from ones already here */
@@ -296,9 +305,10 @@ export class AgentWorms {
 		;(window as any).creatures = this
 		const track = (e: PointerEvent) => {
 			this.pointer = e.pointerType !== 'touch' && this.overCanvas(e) ? this.local(e) : null
+			this.pointerOver = e.target as Element | null
 		}
 		const untrack = (e: PointerEvent) => {
-			if (!e.relatedTarget) this.pointer = null
+			if (!e.relatedTarget) this.pointer = this.pointerOver = null
 		}
 		window.addEventListener('pointermove', track, { capture: true, passive: true })
 		document.addEventListener('pointerout', untrack)
@@ -379,6 +389,7 @@ export class AgentWorms {
 			}
 			this.draw(worm, now, elapsed)
 		}
+		this.peek(now)
 		this.slaps.frame(ctx, now, this.worms.values())
 		this.showTip()
 		this.offscreen.frame(now, elapsed, this.worms.values())
@@ -392,6 +403,32 @@ export class AgentWorms {
 		this.canvas.remove()
 		this.labels.remove()
 		this.worms.clear()
+	}
+
+	/** Zoomed right out, the creature under the mouse shows its name tag (and badge) until a moment after it leaves. */
+	private peek(now: number) {
+		let over: Worm | null = null
+		if (this.labels.classList.contains('far')) {
+			const prev = this.peeked
+			if (prev && !prev.gone && this.pointerOver && prev.el.contains(this.pointerOver)) over = prev
+			const p = this.pointer
+			if (!over && p) {
+				for (const worm of [...this.worms.values()].reverse()) {
+					if (worm.leaving || !worm.shape || worm.mode === 'vanish') continue
+					if (hits(worm.shape, p, PEEK_SLOP)) {
+						over = worm
+						break
+					}
+				}
+			}
+		}
+		const prev = this.peeked
+		if (over) this.peekLeftAt = now
+		else if (prev && !prev.gone && this.labels.classList.contains('far') && now - this.peekLeftAt < PEEK_LINGER_MS) over = prev
+		if (over === prev) return
+		prev?.el.classList.remove('peek')
+		over?.el.classList.add('peek')
+		this.peeked = over
 	}
 
 	// ---------- clicking creatures (nobody here moves them: dragging one pans the canvas) ----------

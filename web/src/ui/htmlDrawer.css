@@ -1,0 +1,250 @@
+/* "Open" on the hovered HTML item (HtmlOpenButton in render/Renderer.ts) */
+.item-action.html-open {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: none;
+	width: auto;
+	gap: 5px;
+	align-items: center;
+	padding: 0 9px 0 7px;
+	font: inherit;
+	font-size: 12px;
+	font-weight: 500;
+	will-change: transform;
+}
+
+/* The side drawer (ui/HtmlDrawer.tsx), over everything else */
+.html-drawer {
+	position: fixed;
+	inset: 0;
+	z-index: 50;
+}
+
+.html-drawer-scrim {
+	position: absolute;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.42);
+	animation: html-drawer-fade 200ms ease-out both;
+}
+
+.html-drawer-panel {
+	position: absolute;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	width: min(1100px, 70vw);
+	min-width: min(360px, 100vw);
+	display: flex;
+	flex-direction: column;
+	background: #111113;
+	border-left: 1px solid rgba(255, 255, 255, 0.1);
+	box-shadow: -18px 0 48px rgba(0, 0, 0, 0.45);
+	outline: none;
+	animation: html-drawer-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.html-drawer.closing .html-drawer-scrim {
+	animation: html-drawer-fade 180ms ease-in reverse both;
+}
+
+.html-drawer.closing .html-drawer-panel {
+	animation: html-drawer-out 180ms ease-in both;
+}
+
+@keyframes html-drawer-fade {
+	from {
+		opacity: 0;
+	}
+}
+
+@keyframes html-drawer-in {
+	from {
+		transform: translateX(100%);
+	}
+}
+
+@keyframes html-drawer-out {
+	to {
+		transform: translateX(100%);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.html-drawer-scrim,
+	.html-drawer-panel {
+		animation: none !important;
+	}
+}
+
+@media (max-width: 640px) {
+	.html-drawer-panel {
+		width: 100vw !important;
+	}
+	.html-drawer-resize {
+		display: none;
+	}
+}
+
+.html-drawer-resize {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: -4px;
+	width: 8px;
+	z-index: 1;
+	cursor: ew-resize;
+	touch-action: none;
+}
+
+.html-drawer-resize::after {
+	content: '';
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: 3px;
+	width: 2px;
+	background: transparent;
+	transition: background 120ms;
+}
+
+.html-drawer-resize:hover::after,
+.html-drawer.resizing .html-drawer-resize::after {
+	background: rgba(87, 143, 255, 0.8);
+}
+
+/* The page doesn't swallow the pointer while the drawer is resized over it. */
+.html-drawer.resizing iframe {
+	pointer-events: none;
+}
+
+.html-drawer.resizing {
+	cursor: ew-resize;
+	user-select: none;
+}
+
+.html-drawer-head {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	min-height: 52px;
+	padding: calc(8px + var(--safe-top, 0px)) calc(10px + var(--safe-right, 0px)) 8px 16px;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+	background: #18181b;
+	color: #f4f4f5;
+}
+
+.html-drawer-titles {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.html-drawer-title {
+	overflow: hidden;
+	font-size: 14px;
+	font-weight: 600;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.html-drawer-session {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	overflow: hidden;
+	color: #a1a1aa;
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+.html-drawer-session > span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.html-drawer-session .untitled {
+	opacity: 0.7;
+}
+
+.html-drawer-dot {
+	flex: none;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+}
+
+.html-drawer-group {
+	color: #71717a;
+}
+
+.html-drawer-steps,
+.html-drawer-actions {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.html-drawer-steps span {
+	min-width: 44px;
+	color: #a1a1aa;
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	text-align: center;
+}
+
+.html-drawer-head button,
+.html-drawer-head a {
+	width: 32px;
+	height: 32px;
+	display: grid;
+	place-items: center;
+	padding: 0;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	color: #d4d4d8;
+	cursor: pointer;
+	transition: background 120ms, color 120ms;
+}
+
+.html-drawer-head button:hover,
+.html-drawer-head a:hover {
+	background: rgba(255, 255, 255, 0.08);
+	color: white;
+}
+
+.html-drawer-head button:focus-visible,
+.html-drawer-head a:focus-visible {
+	outline: 2px solid rgba(87, 143, 255, 0.9);
+	outline-offset: 1px;
+}
+
+.html-drawer-head button.copied {
+	color: #4ade80;
+}
+
+.html-drawer-actions .html-drawer-close {
+	margin-left: 4px;
+}
+
+.html-drawer-body {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+}
+
+.html-drawer-body iframe {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	border: 0;
+	display: block;
+	color-scheme: normal;
+}

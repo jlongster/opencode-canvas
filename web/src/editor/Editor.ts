@@ -153,6 +153,8 @@ export class Editor {
 	readonly frameDrag = atom<FrameDrag | null>('frameDrag', null)
 	/** A deep link that pointed into a hidden frame (see DeepLink), until dismissed. */
 	readonly hiddenLink = atom<{ key: string; sessionId: string } | null>('hiddenLink', null)
+	/** The HTML item open in the side drawer (see ui/HtmlDrawer.tsx); the canvas takes no input meanwhile. */
+	readonly htmlDrawer = atom<string | null>('htmlDrawer', null)
 
 	// --- derived ---
 	/** Every session (hidden ones too) left to right, as arranged; while a frame is dragged, as it would drop. */
@@ -698,6 +700,20 @@ export class Editor {
 		this.setCamera({ x: w / 2 / z - (box.x + box.w / 2), y: pad / z - box.y, z }, { animate: opts.animate ?? true })
 	}
 
+	/** Open an HTML item in the side drawer. Returns false if there's no such HTML item. */
+	openHtmlDrawer(id: string): boolean {
+		if (this.items.peek()[id]?.kind !== 'html') return false
+		transact(() => {
+			this.setHovered(null)
+			this.htmlDrawer.set(id)
+		})
+		return true
+	}
+
+	closeHtmlDrawer() {
+		this.htmlDrawer.set(null)
+	}
+
 	/**
 	 * Select one thing by its selection key and zoom to it: items like a double-click, session
 	 * frames and notes to their whole box. Returns false (and changes nothing) if it doesn't exist.
@@ -1067,7 +1083,7 @@ export class Editor {
 	}
 
 	private handleKeyDown = (e: KeyboardEvent) => {
-		if (isEditable(e.target)) return
+		if (isEditable(e.target) || this.htmlDrawer.peek()) return
 		this.updateModifiers(e)
 		const mod = e.metaKey || e.ctrlKey
 

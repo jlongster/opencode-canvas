@@ -150,9 +150,36 @@ function linkReporter(nonce: string, parentOrigin: string, maxLinks: number, max
 /** The item's HTML with the link reporter (and a <base> so relative URLs resolve as before) at the top of <head>. */
 export function withLinkReporter(html: string, baseHref: string, nonce: string): string {
 	const args = [nonce, location.origin, MAX_LINKS, MAX_RECTS].map((a) => JSON.stringify(a).replace(/</g, '\\u003c')).join(',')
-	const base = /<base\b/i.test(html) ? '' : `<base href="${baseHref.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">`
-	const inject = `${base}<script>(${linkReporter.toString()})(${args})</script>`
-	// After the doctype (anything before it would put the document in quirks mode).
+	return injectHead(html, `${baseTag(html, baseHref)}<script>(${linkReporter.toString()})(${args})</script>`)
+}
+
+/** Runs inside a drawer document: in-page "#…" links scroll there instead of opening the page in a new tab. */
+function fragmentLinks() {
+	document.currentScript?.remove()
+	document.addEventListener('click', (e) => {
+		const a = (e.target as Element | null)?.closest?.('a[href^="#"]')
+		if (!a || e.defaultPrevented || a.hasAttribute('target')) return
+		e.preventDefault()
+		const id = decodeURIComponent(a.getAttribute('href')!.slice(1))
+		const el = id ? (document.getElementById(id) ?? document.getElementsByName(id)[0]) : document.documentElement
+		el?.scrollIntoView()
+	})
+}
+
+/**
+ * The item's HTML for the side drawer, where it takes input: relative URLs resolve as before, and
+ * links and forms without a target open in a new tab (most sites refuse to be framed).
+ */
+export function forDrawer(html: string, baseHref: string): string {
+	return injectHead(html, `${baseTag(html, baseHref)}<base target="_blank"><script>(${fragmentLinks.toString()})()</script>`)
+}
+
+function baseTag(html: string, href: string) {
+	return /<base\b[^>]*\bhref\s*=/i.test(html) ? '' : `<base href="${href.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">`
+}
+
+/** After the doctype (anything before it would put the document in quirks mode). */
+function injectHead(html: string, inject: string) {
 	const doctype = /^\s*(?:<!--[\s\S]*?-->\s*)*<!doctype[^>]*>/i.exec(html)
 	return doctype ? doctype[0] + inject + html.slice(doctype[0].length) : inject + html
 }

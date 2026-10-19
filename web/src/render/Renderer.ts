@@ -91,6 +91,7 @@ export class Renderer {
 	private titles: ItemTitles
 	private html: HtmlItems
 	private linkHover: LinkHover
+	private openButton: HtmlOpenButton
 
 	private displayedItems = new Map<string, Displayed>()
 	private displayedSections = new Map<string, Displayed>()
@@ -217,7 +218,9 @@ export class Renderer {
 		)
 		this.titles = new ItemTitles(overlay)
 		this.videoControls = new VideoControls(overlay, this.videos, editor, !!options.readOnly)
-		this.actions = new ItemActions(overlay, options.readOnly ? null : this.videoControls)
+		const openDrawer = (id: string) => editor.openHtmlDrawer(id)
+		this.actions = new ItemActions(overlay, options.readOnly ? null : this.videoControls, openDrawer)
+		this.openButton = new HtmlOpenButton(overlay, openDrawer)
 
 		const ro = new ResizeObserver(([entry]) => {
 			const size = entry.devicePixelContentBoxSize?.[0]
@@ -501,6 +504,9 @@ export class Renderer {
 		this.videoControls.update(items, this.displayedItems, viewBounds)
 		const showDownload = hovered && editor.isShiftDown.get()
 		this.actions.update(showDownload ? items[hovered] : undefined, showDownload ? this.displayedItems.get(hovered) : undefined, editor)
+		// Without shift, a hovered HTML item gets just the button that opens it in the drawer.
+		const showOpen = hovered && !showDownload && !editor.inputs.isPointing && items[hovered]?.kind === 'html'
+		this.openButton.update(showOpen ? hovered : null, showOpen ? this.displayedItems.get(hovered) : undefined, editor)
 
 		this.frameTimes.push(performance.now() - t0)
 		if (this.frameTimes.length > 120) this.frameTimes.shift()
@@ -624,6 +630,7 @@ export class Renderer {
 		this.videos.destroy()
 		this.labels.destroy()
 		this.actions.destroy()
+		this.openButton.destroy()
 		this.videoControls.destroy()
 		this.titles.destroy()
 		this.html.destroy()
@@ -871,7 +878,50 @@ const LINK_ICON =
 	'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5"/></svg>'
 const CHECK_ICON =
 	'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>'
+export const OPEN_DRAWER_ICON =
+	'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M14 4v16"/><path d="m9 10-2 2 2 2"/></svg>'
 const COPIED_MS = 1400
+
+/**
+ * "Open" at the top-right corner of the hovered HTML item (at a constant size on screen), which
+ * opens it in the side drawer where it takes input. Shift shows ItemActions there instead.
+ */
+class HtmlOpenButton {
+	private el: HTMLButtonElement
+	private itemId: string | null = null
+
+	constructor(parent: HTMLElement, onOpen: (id: string) => void) {
+		this.el = document.createElement('button')
+		this.el.className = 'item-action html-open'
+		this.el.title = 'Open in a side panel, to use the page'
+		this.el.innerHTML = `${OPEN_DRAWER_ICON}<span>Open</span>`
+		this.el.style.display = 'none'
+		this.el.addEventListener('pointerdown', (e) => e.stopPropagation())
+		this.el.addEventListener('dblclick', (e) => e.stopPropagation())
+		this.el.addEventListener('click', (e) => {
+			e.stopPropagation()
+			if (this.itemId) onOpen(this.itemId)
+		})
+		parent.appendChild(this.el)
+	}
+
+	update(id: string | null, box: Displayed | undefined, editor: Editor) {
+		const z = editor.camera.peek().z
+		if (!id || !box || box.w * z < 120 || box.h * z < 64) {
+			if (this.itemId !== null) this.el.style.display = 'none'
+			this.itemId = null
+			return
+		}
+		this.itemId = id
+		const p = editor.pageToScreen({ x: box.x + box.w, y: box.y })
+		this.el.style.display = 'flex'
+		this.el.style.transform = `translate(calc(${p.x - 8}px - 100%), ${p.y + 8}px)`
+	}
+
+	destroy() {
+		this.el.remove()
+	}
+}
 
 /**
  * Buttons over the top-right corner of the hovered item, shown while shift is held: copy a link to
@@ -883,6 +933,7 @@ class ItemActions {
 	private link: HTMLButtonElement
 	private download: HTMLAnchorElement
 	private extract: HTMLButtonElement
+	private open: HTMLButtonElement
 	private itemId: string | null = null
 	private copiedTimer = 0
 
@@ -890,6 +941,7 @@ class ItemActions {
 		parent: HTMLElement,
 		/** null on view links */
 		private frames: Pick<VideoControls, 'canExtract' | 'extract'> | null,
+		onOpen: (id: string) => void,
 	) {
 		this.el = document.createElement('div')
 		this.el.className = 'item-actions'
@@ -908,7 +960,12 @@ class ItemActions {
 		this.extract.title = 'Extract this frame as an image you can annotate'
 		this.extract.innerHTML = EXTRACT_ICON
 		this.extract.addEventListener('click', () => this.itemId && this.frames?.extract(this.itemId))
-		this.el.append(this.extract, this.link, this.download)
+		this.open = document.createElement('button')
+		this.open.className = 'item-action item-open'
+		this.open.title = 'Open in a side panel, to use the page'
+		this.open.innerHTML = OPEN_DRAWER_ICON
+		this.open.addEventListener('click', () => this.itemId && onOpen(this.itemId))
+		this.el.append(this.extract, this.open, this.link, this.download)
 		// Keep the click from reaching the canvas (which would select or start a brush).
 		this.el.addEventListener('pointerdown', (e) => e.stopPropagation())
 		this.el.addEventListener('dblclick', (e) => e.stopPropagation())
@@ -929,6 +986,7 @@ class ItemActions {
 			this.showCopied(false)
 		}
 		this.extract.style.display = this.frames?.canExtract(item) ? '' : 'none'
+		this.open.style.display = item.kind === 'html' ? '' : 'none'
 		const p = editor.pageToScreen({ x: box.x + box.w, y: box.y })
 		this.el.style.display = 'flex'
 		this.el.style.transform = `translate(calc(${p.x - 8}px - 100%), ${p.y + 8}px)`
@@ -960,7 +1018,7 @@ class ItemActions {
 }
 
 /** Puts text on the clipboard, falling back to execCommand where the Clipboard API isn't available. */
-async function copyText(text: string) {
+export async function copyText(text: string) {
 	if (navigator.clipboard?.writeText) {
 		try {
 			return await navigator.clipboard.writeText(text)

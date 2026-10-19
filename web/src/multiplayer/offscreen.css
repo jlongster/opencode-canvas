@@ -1,0 +1,222 @@
+/* Markers at the edges of the view for creatures out of it (see Offscreen.ts). */
+.offscreen-markers {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	overflow: hidden;
+}
+
+.offscreen-marker {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 0;
+	height: 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	font: 500 11.5px/1 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+	color: #f4f4f5;
+	cursor: pointer;
+	pointer-events: none;
+	will-change: transform;
+	--marker-color: #22d3ee;
+}
+
+.offscreen-marker:focus {
+	outline: none;
+}
+
+.offscreen-body {
+	position: absolute;
+	left: 0;
+	top: 0;
+	opacity: 0;
+	scale: 0.6;
+	transition:
+		opacity 180ms ease-out,
+		scale 180ms ease-out;
+}
+
+.offscreen-marker.in {
+	pointer-events: auto;
+}
+
+.offscreen-marker.in .offscreen-body {
+	opacity: 1;
+	scale: 1;
+}
+
+.offscreen-arrow {
+	position: absolute;
+	left: -13px;
+	top: -13px;
+	width: 26px;
+	height: 26px;
+	display: block;
+	filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
+	transition: scale 120ms;
+}
+
+.offscreen-arrow svg {
+	display: block;
+	overflow: visible;
+}
+
+.offscreen-arrow path {
+	fill: var(--marker-color);
+	stroke: rgba(0, 0, 0, 0.55);
+	stroke-width: 1.4;
+	stroke-linejoin: round;
+	paint-order: stroke;
+}
+
+.offscreen-eye {
+	fill: #fff;
+}
+
+.offscreen-pupil {
+	fill: #18181b;
+}
+
+.offscreen-marker:hover .offscreen-arrow,
+.offscreen-marker:focus-visible .offscreen-arrow {
+	scale: 1.15;
+}
+
+.offscreen-marker:focus-visible .offscreen-arrow path {
+	stroke: #fff;
+}
+
+/* asleep: dim, eye shut */
+.offscreen-marker.asleep .offscreen-body {
+	opacity: 0.5;
+}
+
+.offscreen-marker.asleep:hover .offscreen-body {
+	opacity: 0.85;
+}
+
+.offscreen-marker.asleep .offscreen-pupil {
+	display: none;
+}
+
+.offscreen-marker.asleep .offscreen-eye {
+	fill: rgba(0, 0, 0, 0.45);
+	r: 1.6;
+}
+
+/* calling for attention: a soft ring going out from the arrow */
+.offscreen-marker.calling .offscreen-arrow::after {
+	content: '';
+	position: absolute;
+	inset: 1px;
+	border-radius: 50%;
+	border: 2px solid var(--marker-color);
+	opacity: 0;
+	animation: offscreen-call 1.8s ease-out infinite;
+	pointer-events: none;
+}
+
+@keyframes offscreen-call {
+	0% {
+		opacity: 0.7;
+		transform: scale(0.8);
+	}
+	100% {
+		opacity: 0;
+		transform: scale(1.9);
+	}
+}
+
+/* several in one spot */
+.offscreen-count {
+	position: absolute;
+	left: 5px;
+	top: -17px;
+	min-width: 15px;
+	height: 15px;
+	padding: 0 4px;
+	box-sizing: border-box;
+	border-radius: 8px;
+	background: #f4f4f5;
+	color: #18181b;
+	font: 700 10px/15px ui-sans-serif, system-ui, sans-serif;
+	text-align: center;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.offscreen-count[hidden],
+.offscreen-pill[hidden] {
+	display: none;
+}
+
+.offscreen-pill {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: 24px;
+	width: max-content;
+	max-width: 220px;
+	padding: 0 9px 0 8px;
+	box-sizing: border-box;
+	border-radius: 12px;
+	background: rgba(24, 24, 27, 0.92);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+	white-space: nowrap;
+	backdrop-filter: blur(6px);
+}
+
+.offscreen-pill::before {
+	content: '';
+	flex: none;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--marker-color);
+}
+
+.offscreen-status {
+	flex: none;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+}
+
+.offscreen-marker.calling .offscreen-status {
+	color: #fde68a;
+}
+
+.offscreen-title {
+	min-width: 0;
+	max-width: 110px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: #a1a1aa;
+}
+
+/* hovered: the whole title */
+.offscreen-marker.open .offscreen-pill {
+	max-width: min(440px, 70vw);
+}
+
+.offscreen-marker.open .offscreen-title {
+	max-width: none;
+	color: #d4d4d8;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.offscreen-body,
+	.offscreen-arrow {
+		transition: none;
+	}
+
+	.offscreen-marker.calling .offscreen-arrow::after {
+		animation: none;
+		opacity: 0.5;
+		transform: scale(1.3);
+	}
+}

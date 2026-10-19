@@ -47,10 +47,16 @@ function titleField(value: unknown): string | undefined {
 	return value.trim().replace(/\s+/g, ' ').slice(0, TITLE_MAX)
 }
 
-/** Old records (from when the canvas server ran worms itself) carry fields we no longer keep. */
-function clean(r: ConjuredAgent & { directory?: unknown; serverId?: unknown }): ConjuredAgent | null {
+const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+
+/**
+ * Old records (from when the canvas server ran worms itself) carry fields we no longer keep. Ones
+ * saved without a usable position come back at 0,0 with `stray` set, to be placed (see placeStrays).
+ */
+function clean(r: ConjuredAgent & { directory?: unknown; serverId?: unknown }): (ConjuredAgent & { stray: boolean }) | null {
 	if (!r || typeof r.canvasId !== 'string' || typeof r.sessionId !== 'string') return null
 	return {
+		stray: !finite(r.x) || !finite(r.y) || (r.x === 0 && r.y === 0),
 		canvasId: r.canvasId,
 		sessionId: r.sessionId,
 		serverKey: typeof r.serverKey === 'string' ? r.serverKey : '',
@@ -65,9 +71,14 @@ function clean(r: ConjuredAgent & { directory?: unknown; serverId?: unknown }): 
 
 export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 	const records = new Map<string, ConjuredAgent>()
+	/** loaded records without a usable position; at 0,0 until placeStrays runs */
+	const strays: ConjuredAgent[] = []
 	for (const r of stored) {
-		const record = clean(r)
-		if (record && deps.canvasExists(record.canvasId)) records.set(key(record.canvasId, record.sessionId), record)
+		const cleaned = clean(r)
+		if (!cleaned || !deps.canvasExists(cleaned.canvasId)) continue
+		const { stray, ...record } = cleaned
+		records.set(key(record.canvasId, record.sessionId), record)
+		if (stray) strays.push(record)
 	}
 
 	function get(canvasId: string, sessionId: string): ConjuredAgent {
@@ -137,6 +148,25 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 			if (!deps.canvasExists(canvasId)) throw new ConjureError(404, `no canvas ${canvasId}`)
 			const at = opts.at()
 			return put({ canvasId, sessionId, serverKey: '', title: title ?? '', color: sessionColor(sessionId), x: Math.round(at.x), y: Math.round(at.y), createdAt: Date.now(), ownerId: '' })
+		},
+
+		/**
+		 * Places the records loaded without a position (or at exactly 0,0, where a server that didn't
+		 * keep positions left them), one by one so each spot clears the ones placed before it, and
+		 * saves. `at` returns null to leave one where it is (a 0,0 that really is on a frame).
+		 */
+		placeStrays(at: (r: ConjuredAgent) => { x: number; y: number } | null) {
+			const moved: ConjuredAgent[] = []
+			for (const r of strays) records.delete(key(r.canvasId, r.sessionId))
+			for (const r of strays.splice(0)) {
+				const spot = at(r)
+				const placed = spot ? { ...r, x: Math.round(spot.x), y: Math.round(spot.y) } : r
+				records.set(key(r.canvasId, r.sessionId), placed)
+				if (spot) moved.push(placed)
+			}
+			if (!moved.length) return
+			deps.save()
+			for (const r of moved) deps.broadcast({ type: 'conjured', agent: r })
 		},
 
 		/** Moves the worm (it was dragged) and/or renames it (its session's title changed). */

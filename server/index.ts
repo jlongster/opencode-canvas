@@ -820,6 +820,16 @@ async function purgeTrash(opts: { canvasId?: string } = {}) {
 }
 
 await purgeTrash()
+
+// Creatures saved without a position (by a server that didn't keep them) go beside their frame's
+// title, unless 0,0 is somewhere on a frame (its very corner doesn't count).
+conjured.placeStrays((r) => {
+	const sessions = Object.fromEntries(canvasSessions(r.canvasId).map((s) => [s.id, s]))
+	const items = Object.fromEntries([...db.items.values()].filter((i) => i.canvasId === r.canvasId).map((i) => [i.id, i]))
+	const layout = computeLayout(sessions, items, db.canvases.get(r.canvasId)?.sessionOrder)
+	const onFrame = layout.sections.some(({ box }) => r.x > box.x && r.x < box.x + box.w && r.y > box.y && r.y < box.y + box.h)
+	return onFrame ? null : creatureSpot(r.canvasId, r.sessionId)
+})
 setInterval(() => purgeTrash().catch((e) => console.error('trash sweep failed:', e)), TRASH_SWEEP_MS)
 
 function idList(value: unknown, name: string): string[] {

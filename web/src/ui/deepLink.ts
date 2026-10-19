@@ -13,7 +13,7 @@ const HASH_KINDS = { item: 'item', session: 'frame', note: 'note' } as const
  * "#group=<session id>/<group name>" points at (a group key for groups; see selection.ts).
  */
 export function parseHash(hash: string): string | null {
-	const m = /^#(item|session|note|group)=(.*)$/.exec(hash)
+	const m = /^#(item|session|note|group)=(.*)$/.exec(hash.replace(DRAWER_SUFFIX, ''))
 	if (!m) return null
 	try {
 		if (m[1] === 'group') {
@@ -32,6 +32,20 @@ export function parseHash(hash: string): string | null {
 	}
 }
 
+/** Added to an item's hash while it's open in the side drawer (see HtmlDrawer). */
+const DRAWER_SUFFIX = /&drawer=1$/
+
+/** The item a hash like "#item=abc&drawer=1" opens in the side drawer. */
+export function parseDrawerHash(hash: string): string | null {
+	if (!DRAWER_SUFFIX.test(hash)) return null
+	const key = parseHash(hash)
+	return key && parseSelectionId(key).kind === 'item' ? key : null
+}
+
+export function hashForDrawer(itemId: string) {
+	return `#item=${encodeURIComponent(itemId)}&drawer=1`
+}
+
 /** The hash for a linked group (see Editor.focusGroup) or a selection of one thing; anything else gets none. */
 export function hashForSelection(ids: string[], group?: GroupLayout | null): string {
 	if (group) return `#group=${encodeURIComponent(group.sessionId)}/${encodeURIComponent(group.name ?? '')}`
@@ -46,7 +60,7 @@ function writeHash(hash: string) {
 }
 
 /**
- * Keeps the URL hash pointing at the single selected thing, and focuses whatever a hash points
+ * Keeps the URL hash pointing at the item open in the side drawer, or else the single selected thing, and focuses whatever a hash points
  * at: once on load (call `focusInitial` when the canvas data is in and the viewport has a size)
  * and whenever the hash is changed by hand. Until the load-time focus is settled the hash is
  * left alone, so the empty selection at startup doesn't wipe it.
@@ -60,13 +74,15 @@ export class DeepLink {
 	constructor(private editor: Editor) {
 		this.disposers.push(
 			react(() => {
-				const ids = editor.selectedIds.get()
-				const group = editor.linkedGroup.get()
-				if (this.ready) writeHash(hashForSelection(ids, group))
+				const hash = this.currentHash()
+				if (this.ready) writeHash(hash)
 			}),
 		)
 		const onHashChange = () => {
 			if (!this.ready) return
+			const drawer = parseDrawerHash(location.hash)
+			if (drawer && editor.openHtmlDrawer(drawer)) return
+			editor.closeHtmlDrawer()
 			const key = parseHash(location.hash)
 			if (key) this.focus(key, () => this.settle())
 		}
@@ -76,6 +92,9 @@ export class DeepLink {
 
 	/** The opening view: the linked thing if there is one, otherwise `goToInitialView`. */
 	focusInitial() {
+		// Opening the drawer from a link also shows its item behind it, for when it's closed.
+		const drawer = parseDrawerHash(location.hash)
+		if (drawer && this.editor.items.peek()[drawer]?.kind === 'html') this.editor.openHtmlDrawer(drawer)
 		const key = parseHash(location.hash)
 		if (!key) {
 			this.editor.goToInitialView()
@@ -134,7 +153,13 @@ export class DeepLink {
 	/** From here on the hash follows the selection (clearing a link to something missing). */
 	private settle() {
 		this.ready = true
-		writeHash(hashForSelection(this.editor.selectedIds.peek(), this.editor.linkedGroup.get()))
+		writeHash(this.currentHash())
+	}
+
+	/** The open drawer's item, else the selection; closing the drawer goes back to the selection's hash. */
+	private currentHash() {
+		const drawer = this.editor.htmlDrawer.get()
+		return drawer ? hashForDrawer(drawer) : hashForSelection(this.editor.selectedIds.get(), this.editor.linkedGroup.get())
 	}
 
 	destroy() {

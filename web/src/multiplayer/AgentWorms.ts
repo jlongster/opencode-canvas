@@ -4,6 +4,7 @@ import type { Box, Vec } from '../editor/geometry'
 import type { Attention } from './Attention'
 import type { Conjure } from './Conjure'
 import { Fights } from './Fight'
+import { Offscreen } from './Offscreen'
 import { Slaps } from './Slap'
 import './farAway.css'
 import type { Peer, SubagentInfo } from './Presence'
@@ -328,6 +329,8 @@ export class AgentWorms {
 	private fights: Fights
 	/** the slap tool's blows (see Slap) */
 	private slaps: Slaps
+	/** markers at the edges of the view for creatures out of it */
+	private offscreen: Offscreen
 
 	constructor(
 		parent: HTMLElement,
@@ -348,6 +351,7 @@ export class AgentWorms {
 		this.tip.hidden = true
 		this.fights = new Fights(editor, conjure, attention, this.reducedMotion)
 		this.slaps = new Slaps(editor, conjure, this.fights, this.reducedMotion)
+		this.offscreen = new Offscreen(parent, editor, conjure, this.reducedMotion, (worm) => this.startle(worm))
 		this.labels.appendChild(this.tip)
 		// for poking at from the console, like window.editor
 		;(window as any).creatures = this
@@ -424,6 +428,7 @@ export class AgentWorms {
 		if (this.worms.size === 0) {
 			if (this.drewLastFrame) ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
 			this.drewLastFrame = false
+			this.offscreen.frame(now, [])
 			return
 		}
 		ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -444,12 +449,14 @@ export class AgentWorms {
 		this.fights.frame(ctx, now, this.worms.values())
 		this.slaps.frame(ctx, now, this.worms.values())
 		this.showTip()
+		this.offscreen.frame(now, this.worms.values())
 	}
 
 	destroy() {
 		for (const d of this.disposers.splice(0)) d()
 		this.fights.destroy()
 		this.slaps.destroy()
+		this.offscreen.destroy()
 		this.container?.classList.remove('conjure-hover', 'conjure-dragging')
 		this.canvas.remove()
 		this.labels.remove()
@@ -475,7 +482,7 @@ export class AgentWorms {
 	/** Pointer events over the canvas itself (not over a bubble, a prompt box or other UI). */
 	private overCanvas(e: PointerEvent) {
 		const target = e.target as Element | null
-		return !!target && !!this.container?.contains(target) && !target.closest('.agent-worm-speech, .agent-worm-attention, .conjure-prompt, .note')
+		return !!target && !!this.container?.contains(target) && !target.closest('.agent-worm-speech, .agent-worm-attention, .offscreen-marker, .conjure-prompt, .note')
 	}
 
 	/** Client coordinates to this layer's screen space (the editor's). */

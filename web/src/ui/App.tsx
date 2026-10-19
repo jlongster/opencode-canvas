@@ -20,6 +20,7 @@ import { ConjureButton, ConjurePicker, ConjurePrompt } from './Conjure'
 import { CursorChat } from './CursorChat'
 import { DeepLink } from './deepLink'
 import { FramesStatus, HiddenLinkToast } from './FramesPanel'
+import { HtmlDrawer } from './HtmlDrawer'
 import { NotFound } from './NotFound'
 import { SeedPicker } from './SeedPicker'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
@@ -264,6 +265,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					<span>{rendererError ?? error}</span>
 				</div>
 			)}
+			<HtmlDrawer editor={editor} />
 		</div>
 	)
 }

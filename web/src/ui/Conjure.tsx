@@ -8,7 +8,7 @@ import { conjure as conjureSession } from '../sync/client'
 import { PairForm, ServerList, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
 import { useValue } from './useValue'
 
-/** The toolbar's Conjure button (edit links): pick an OpenCode session to bring onto the canvas as a looper. */
+/** The toolbar's Conjure button (edit links): pick an OpenCode session to bring onto the canvas as an eye pointer. */
 export function ConjureButton({
 	editor,
 	conjure,
@@ -196,7 +196,7 @@ function ConjurePanel({ editor, conjure, canvasId, at, onClose }: { editor: Edit
 				<PairForm autoFocus onPaired={() => reload()} />
 			) : (
 				<>
-					<p className="conjure-hint">Brings an OpenCode session onto the canvas as a looper. Click it to talk to it; it sleeps while this browser isn't on the canvas.</p>
+					<p className="conjure-hint">Brings an OpenCode session onto the canvas as an eye pointer. Click it to talk to it; it sleeps while this browser isn't on the canvas.</p>
 					<input className="conjure-search" autoFocus placeholder="Filter sessions" value={query} onChange={(e) => setQuery(e.target.value)} />
 					<div className="conjure-list">
 						<SessionGroups
@@ -435,7 +435,7 @@ export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Co
 					{name.join('|')}
 					{asleep === '1' ? ' (asleep)' : ''}
 				</span>
-				<button className="conjure-banish" title="Send this looper away for everyone (the session itself stays)" disabled={busy} onClick={banish}>
+				<button className="conjure-banish" title="Send this agent away for everyone (the session itself stays)" disabled={busy} onClick={banish}>
 					Banish
 				</button>
 				<button title="Close (Esc)" onClick={() => conjure.close()}>

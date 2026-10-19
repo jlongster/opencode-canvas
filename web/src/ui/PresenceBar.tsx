@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { NATIVE, POINTER_EYE, pointerD } from '../multiplayer/Pointer'
 import { COLORS, initials, type Presence } from '../multiplayer/Presence'
 import { NARROW_QUERY, useMediaQuery } from './useMediaQuery'
 import { useValue } from './useValue'
@@ -39,7 +40,7 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 						}
 						onClick={() => presence.toggleFollow(p.id)}
 					>
-						{p.agent ? <LooperGlyph /> : initials(p.name)}
+						{p.agent ? <PointerGlyph /> : initials(p.name)}
 					</button>
 				))}
 				{hidden > 0 && <div className="avatar more">+{hidden}</div>}
@@ -58,15 +59,20 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 	)
 }
 
-/** Creatures are loopers (see Looper.ts): an arched inchworm with one eye, in the session's colour. */
-function LooperGlyph() {
+/** Creatures are eye pointers (see Pointer.ts), in the session's colour. */
+const GLYPH = { d: pointerD(15.5), eye: { x: POINTER_EYE.x * 15.5, y: POINTER_EYE.y * 15.5, r: POINTER_EYE.r * 15.5 * 1.25 } }
+
+function PointerGlyph() {
+	const { eye } = GLYPH
+	const pr = eye.r * 0.58
 	return (
-		<svg className="agent-glyph" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
-			<path className="agent-glyph-body" d="M5.6 13.6 C5.1 7.2 7.4 4.6 10.4 4.6 C13.5 4.6 15.3 7.2 15.3 15" />
-			<circle className="agent-glyph-head" cx="5.6" cy="14.3" r="2.9" />
-			<circle className="agent-glyph-eye" cx="5.7" cy="14.4" r="2" />
-			<circle className="agent-glyph-pupil" cx="6.1" cy="14.7" r="1" />
-			<path className="agent-glyph-lid" d="M3.7 13.8 A2 2 0 0 1 7.7 13.8 Z" />
+		<svg className="agent-glyph" width="20" height="20" viewBox="-10 -10 20 20" aria-hidden="true">
+			<path className="agent-glyph-body" d={GLYPH.d} />
+			<circle className="agent-glyph-eye" cx={eye.x} cy={eye.y} r={eye.r} />
+			<g className="agent-glyph-pupil">
+				<circle cx={eye.x + Math.cos(NATIVE) * eye.r * 0.3} cy={eye.y + Math.sin(NATIVE) * eye.r * 0.3} r={pr} />
+				<circle className="agent-glyph-glint" cx={eye.x + Math.cos(NATIVE) * eye.r * 0.3 + pr * 0.36} cy={eye.y + Math.sin(NATIVE) * eye.r * 0.3 - pr * 0.4} r={pr * 0.32} />
+			</g>
 		</svg>
 	)
 }

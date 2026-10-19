@@ -3,218 +3,191 @@ import { markdownToHtml } from '../ui/markdown'
 import type { Box, Vec } from '../editor/geometry'
 import type { Attention } from './Attention'
 import type { Conjure } from './Conjure'
-import { Fights } from './Fight'
+import { Fights, type Pose } from './Fight'
 import { Offscreen } from './Offscreen'
 import { Slaps } from './Slap'
 import './farAway.css'
 import type { Peer, SubagentInfo } from './Presence'
-import {
-	Body,
-	HEAD_R,
-	LENGTH,
-	POINTS,
-	TAIL_R,
-	archPose,
-	curlPose,
-	drawLooper,
-	drawTiny,
-	flatPose,
-	idlePose,
-	mixColor,
-	palette,
-	place,
-	radius,
-	standPose,
-	wobble,
-	writhePose,
-	type EyeState,
-	type Writhe,
-	type Palette,
-} from './Looper'
+import { LIFT, NATIVE, SIZE, TIP_REACH, drawPointer, hits, mixColor, openEye, palette, place, turn, wobble, type EyeState, type Palette, type Shape } from './Pointer'
 
 /** Where it sits, relative to the top-right corner of what the agent is working on. */
 const PERCH: Vec = { x: 30, y: -10 }
-/** Trips longer than this (screen px), or entirely off-screen, burrow and pop up there instead of inching. */
-const CRAWL_MAX = 340
-/** Goal moves smaller than this (screen px) are followed by sliding over rather than walking. */
+/** Trips longer than this (screen px), or entirely off-screen, blink out and pop up there instead of gliding. */
+const GLIDE_MAX = 1600
+/** Goal moves smaller than this (screen px) are followed by sliding over rather than a glide. */
 const NUDGE_PX = 10
-/** most a stride covers, screen px: from feet a body length apart to an Ω */
-const STRIDE = 30
-/** a stride's duration (gathering the tail up, then reaching the head forward), long trips quicker */
-const STRIDE_MS = 900
-const STRIDE_MIN_MS = 540
-/** a goal further behind than this turns it around first */
-const TURN_PX = 14
-const TURN_MS = 760
-/** coming up out of the canvas, then a stretch; diving back in */
-const EMERGE_MS = 620
-const STRETCH_MS = 900
-const DIVE_MS = 520
+/** a glide's duration: a base plus so much per screen px, within bounds */
+const GLIDE_MS = 450
+const GLIDE_PER_PX = 0.95
+const GLIDE_MIN_MS = 520
+const GLIDE_MAX_MS = 1700
+/** following its path: a spring (rad/s) and its damping ratio, a little overshoot on arrival */
+const FOLLOW_W = 17
+const FOLLOW_Z = 0.72
+/** turning to where it points: an angular spring */
+const TURN_W = 12
+const TURN_Z = 0.74
+/** springing back to where it sits after a knock */
+const SETTLE_W = 11
+/** popping up, and blinking out */
+const POP_MS = 420
+const VANISH_MS = 300
 /** waking up: a stretch */
-const WAKE_MS = 1100
-/** the quick recoil when it's clicked */
+const WAKE_MS = 900
+/** the quick hop back when it's clicked */
 const RECOIL_MS = 340
-/** thinking: how long a fit lasts (a clench, or its head pressed down), and the gap between fits */
-const FIT_MS = { clench: 1700, press: 1500 }
-const FIT_GAP_MS = 4200
-/** fidgeting while it sits about, and how often */
-const FIDGET_MS = 1500
+/** thinking hard: a fit of frustration now and then */
+const FIT_MS = 1500
+const FIT_GAP_MS = 5200
+/** looking round while it sits about, and how often */
+const FIDGET_MS = 1300
 const FIDGET_EVERY_MS = 9000
-/** after landing, how long it takes to right itself before it settles where it is */
-const SETTLE_MS = 800
-/** how far it drops when let go, below where its lowest part hangs, screen px */
-const DROP_PX = 16
 const CHAT_MS = 5000
-const POP_MS = 380
 /** local typewriter speed for speech, catching up faster when it falls behind what has arrived */
 const TYPE_CPS = 36
 const SPEECH_CLOSE_MS = 220
 /** how long the startled eye lasts after it's clicked */
 const STARTLE_MS = 1100
-/** extra screen px around the body that still counts as clicking it */
+/** extra screen px around the shape that still counts as clicking it */
 const HIT_SLOP = 4
 /** a press that moves further than this (screen px) drags it instead of clicking */
 const DRAG_PX = 5
 /** a dropped creature stays where it was put this long at most while waiting for its new position to come back */
 const PIN_MS = 5000
-/** the pointer this close to its head (screen px) gets stared at */
+/** the pointer this close to its eye (screen px) gets stared at */
 const STARE_PX = 170
 /** a conjured creature's finished reply puts itself away (locally) after this long, unless it's pinned */
 const REPLY_HIDE_MS = 7000
-/** subagents' tiny loopers: size (of the creature), points, and how far either side of it they roam */
-const TINY_SIZE = 0.42
-const TINY_POINTS = 8
-const TINY_RANGE = 66
-/** their lanes, in front of it and behind (screen px below its ground), by slot */
-const TINY_LANES = [14, -12, 26, -22, 36]
-/** a tiny looper's stride (px), how long one takes, and turning round at the end of its lane */
-const TINY_STRIDE = 10
-const TINY_STRIDE_MS = 560
-const TINY_TURN_MS = 380
-/** a tiny looper's feet apart, lying long */
-const TINY_FOOT = LENGTH * TINY_SIZE * 0.85
-/** wriggling away when its subagent finishes */
-const TINY_LEAVE_MS = 520
-/** how close the pointer has to be to a tiny looper's head for its tooltip, screen px */
-const TINY_HOVER_PX = 11
+/** subagents' dots: radius, their orbit round it (screen px), how fast it turns (rad/s), popping in and leaving */
+const DOT_R = 2.6
+const ORBIT = { x: 27, y: 17 }
+const ORBIT_SPEED = 0.55
+const DOT_POP_MS = 380
+const DOT_LEAVE_MS = 460
+/** how close the pointer has to be to a dot for its tooltip, screen px */
+const DOT_HOVER_PX = 9
 /** zoom at and above which speech bubbles are full size; below it they shrink with the canvas */
 const FULL_BUBBLE_ZOOM = 0.6
 /** below this zoom the creatures' name tags and attention badges hide; once hidden, they come back at FAR_ZOOM */
 const FAR_ZOOM = 0.1
 const FAR_SLACK = 0.002
-/** records created longer ago than this were there already: they pop up rather than wake curled */
+/** records created longer ago than this were there already: they're just there rather than popping up */
 const FRESH_MS = 15000
+/** at rest it points at its frame (or what it's working on) when that's within this many screen px */
+const POINT_AT_PX = 420
+/** a highlight step: it goes this far (screen px) outside the target's edge to point in at it */
+const VISIT_PX = 36
 
-type Mode = 'here' | 'emerge' | 'dive' | 'carried' | 'falling'
+type Mode = 'here' | 'pop' | 'vanish' | 'carried'
 
-/**
- * Inching toward the goal. Feet are x positions in the creature's frame: the tail's and the
- * head's. Each stride first gathers the tail up behind the head (arching the body into an Ω),
- * then reaches the head forward. A goal behind it turns it around: it rears up and flops over.
- */
-interface Walk {
-	phase: 'turn' | 'gather' | 'reach'
+/** A glide: a cubic curve in page space, setting off the way it pointed and coming in to the goal. */
+interface Trip {
+	from: Vec
+	c1: Vec
+	c2: Vec
+	to: Vec
 	at: number
 	dur: number
-	tail: number
-	head: number
-	/** the moving foot's x when the phase started */
-	from: number
-	stride: number
-	/** the ground's page y over this stride (vertical travel glides) */
-	y0: number
-	y1: number
-	ms: number
-	/** turning: where it rears up, and whether it has flipped over yet */
-	pivot: number
-	flipped: boolean
 }
 
-/** A subagent's tiny looper, inching back and forth in its lane by its parent. Feet are x from the parent's middle. */
-interface Tiny {
+/** Dangling from where it was picked up: a pendulum about the grab point. */
+interface Swing {
+	/** the grab point from its centre, in its own unturned frame (screen px) */
+	local: Vec
+	len: number
+	/** the angle from the grab point to its centre, and how fast that turns */
+	a: number
+	v: number
+	/** the grab point on screen last frame, its velocity and acceleration */
+	prev: Vec | null
+	vel: Vec
+	acc: Vec
+}
+
+/** A subagent's dot, orbiting its parent. */
+interface Dot {
 	id: string
 	tip: string
 	seed: number
-	/** its place among the parent's tiny loopers, which spreads them around */
+	/** its place among the parent's dots, which spaces them round the orbit */
 	slot: number
+	/** where it is round the orbit, radians */
+	a: number
 	scale: number
 	popStart: number
 	leaving: boolean
 	leaveStart: number
-	tail: number
-	head: number
-	/** which way it's going */
-	dir: number
-	phase: 'gather' | 'reach' | 'turn'
-	at: number
-	from: number
-	/** its head on screen as last drawn, for hovering */
-	screen: Vec
 	/** 1, fading to 0 as it leaves */
 	fade: number
+	/** on screen as last placed, and whether it's in front of its parent */
+	screen: Vec
+	depth: number
 }
 
 export interface Worm {
 	id: number
 	color: string
 	palette: Palette
-	tinyColor: string
-	/** strain marks by its head while it thinks hard */
-	stressColor: string
-	/** the ground under its middle, page space: where it is. The body is in screen px around it. */
+	dotColor: string
+	/** the point on the page where it is (its centre is LIFT screen px above) */
 	root: Vec
+	/** how fast root moves, page units/s */
+	vel: Vec
 	goal: Vec | null
-	/** the box the agent is working on, for the eye to glance at */
+	/** the goal it last set off for */
+	dest: Vec | null
+	trip: Trip | null
+	/** a highlight step's spot it has gone to (page), while its walkthrough shows it, and the point there it points at */
+	visit: Vec | null
+	pointAt: Vec | null
+	/** the box the agent is working on, for pointing at and glancing at */
 	focus: Box | null
-	body: Body
-	/** which way the head points: 1 right, -1 left */
-	facing: number
-	walk: Walk | null
+	/** which way its tip points (radians, screen), and how fast that turns */
+	heading: number
+	spin: number
+	/** where it points this frame when nothing else is going on */
+	rest: number
+	/** knocked out of place (screen px), and how fast */
+	off: Vec
+	offV: Vec
 	mode: Mode
 	modeAt: number
-	/** diving: the body when it started (to slurp it down the hole), and where it pops up, if anywhere */
-	dive: { from: Vec[]; to: Vec | null } | null
-	/** emerging and diving: the hole's x in its frame */
-	hole: number
-	/** dived away for good */
+	/** blinking out: where it pops up next (null: gone for good) */
+	warpTo: Vec | null
 	gone: boolean
 	leaving: boolean
 	seed: number
 	eye: EyeState
 	nextBlink: number
 	blinkStart: number
+	/** blinking twice in a row this time */
+	doubleBlink: boolean
 	glance: Vec
 	nextGlance: number
-	/** panicking (carried): where the eye darts, and when it darts again */
 	dart: Vec
 	nextDart: number
-	/** 0..1 squashed from a landing, easing back */
+	/** 0..1 a squash from being let go, easing back */
 	squash: number
-	stretchAt: number
 	wakeAt: number
 	recoilAt: number
-	/** sitting about, now and then: a peek round with its head up high, or a scrunch on the spot */
-	fidget: 'peek' | 'scrunch'
+	/** looking round now and then while it sits about: which way it turns */
 	fidgetAt: number
+	fidgetTurn: number
 	nextFidget: number
-	/** thinking hard: a fit of frustration (clenching up, or head pressed down) and when the next comes */
-	fit: { kind: 'clench' | 'press'; at: number } | null
+	/** thinking hard (busy, not talking), and its fits of frustration */
+	fretting: boolean
+	fit: number
 	nextFit: number
-	/** how it writhes this frame, while thinking (null when it isn't) */
-	writhe: (Writhe & { calm: boolean }) | null
-	/** when it last landed from a fall, while it rights itself (0 after) */
-	landedAt: number
 	/** the startle (from conjure.startled) the body last reacted to */
 	startleSeen: number
-	/** carried: which point is held, and how far from the pointer (screen px) */
-	grab: { i: number; off: Vec } | null
-	/** where the held point is being carried to (page space), while someone here carries it */
+	swing: Swing | null
+	/** where its grab point is being carried to (page space), while someone here carries it */
 	carried: Vec | null
 	/** where it was dropped, held until its presence catches up */
 	pinned: { at: Vec; until: number } | null
-	/** the points on screen as last drawn */
-	drawn: Vec[]
-	/** where the labels hang (screen), and the head and body's middle from there, eased */
+	/** as last drawn */
+	shape: Shape | null
+	/** where the labels hang (screen, from root), and its top and middle from there, eased */
 	anchor: Vec | null
 	headAt: Vec
 	middleAt: Vec
@@ -238,7 +211,7 @@ export interface Worm {
 	talk: number
 	/** a conjured creature (an OpenCode session people can prompt): clickable on edit links */
 	conjured: boolean
-	/** nobody runs it right now (no owner tab open): drawn dimmed, curled up asleep */
+	/** nobody runs it right now (no owner tab open): drawn dimmed, eye shut, asleep */
 	asleep: boolean
 	/** its session is working on a prompt, and 0..1 eased */
 	thinking: boolean
@@ -260,15 +233,13 @@ export interface Worm {
 	speechDoneAt: number
 	/** the speech bubbles' and thought cloud's scale for the zoom, last set on el as --bubble-scale */
 	bubbleScale: number
-	/** screen-space discs covering the body as last drawn, for clicks */
-	hit: { x: number; y: number; r: number }[]
-	/** tiny loopers for its busy subagents, by session id, and when they last moved */
-	tinies: Map<string, Tiny>
-	tiniesAt?: number
+	/** dots for its busy subagents, by session id, and how far round their orbit has turned */
+	dots: Map<string, Dot>
+	orbit: number
 	sessionId: string | null
 	/** when its record was created, to tell a new one of the same session from the last */
 	conjuredAt: number
-	/** how many attention actions its session has queued: while any are, it calls (badge, ring, waving), awake */
+	/** how many attention actions its session has queued: while any are, it calls (badge, ring, wiggling), awake */
 	calls: number
 	/** the count badge, while it calls */
 	badge: HTMLButtonElement | null
@@ -279,30 +250,20 @@ interface Press {
 	pointerId: number
 	worm: Worm
 	start: Vec
-	/** the point nearest the pointer, and its offset from it (screen px) */
-	grab: { i: number; off: Vec }
 	dragging: boolean
 }
 
-/** What a state asks of the body: a pose, how hard to hold it, and per-point weights. */
-interface Posture {
-	shape: Vec[]
-	k: number
-	weights?: number[]
-	/** no pose at all: limp (carried, falling) */
-	limp?: boolean
-	stretch?: number
-}
-
 /**
- * Sessions' creatures (real OpenCode sessions, see Conjure): loopers, one-eyed inchworms (see
- * Looper.ts) that sit where they were put and inch about when moved. Their busy subagents are tiny
- * loopers inching round them. Bodies are drawn on one 2D canvas in screen space; the name label,
- * bubbles and badges are DOM, like human cursor labels.
+ * Sessions' creatures (real OpenCode sessions, see Conjure): eye pointers (see Pointer.ts) that sit
+ * where they were put and glide about when moved, the tip always facing the way they go, then turn
+ * to point at what they're pointing at. Their busy subagents are little dots orbiting them. They're
+ * drawn on one 2D canvas in screen space; the name label, bubbles and badges are DOM, like human
+ * cursor labels.
  *
  * A creature whose session queued something for attention (see Attention) calls for it where it
- * sits, even asleep: standing up and waving its head about, with a count badge and a soft pulsing
- * ring. Clicking it (or the badge) opens its walkthrough.
+ * sits, even asleep: wide-eyed, wiggling and bobbing, with a count badge and a soft pulsing ring.
+ * Clicking it (or the badge) opens its walkthrough, and for each highlight step it glides over to
+ * point at the target.
  */
 export class AgentWorms {
 	private canvas: HTMLCanvasElement
@@ -319,10 +280,10 @@ export class AgentWorms {
 	private swallowed = new Set<number>()
 	private press: Press | null = null
 	private disposers: (() => void)[] = []
-	/** the pointer over the canvas (screen space), for staring at and tiny loopers' tooltips */
+	/** the pointer over the canvas (screen space), for staring at and dots' tooltips */
 	private pointer: Vec | null = null
 	private tip: HTMLDivElement
-	private tipFor: Tiny | null = null
+	private tipFor: Dot | null = null
 	/** when this page started showing creatures (wall clock), to tell sessions conjured since from ones already here */
 	private bornAt = Date.now()
 	/** creatures dropped by each other, fighting (see Fight) */
@@ -400,7 +361,7 @@ export class AgentWorms {
 			this.syncCalls(worm)
 			const placed = peer.user.sessionId ? this.conjure?.placing.get(peer.user.sessionId) : undefined
 			if (placed) {
-				// Summoned here (C): inch over now rather than waiting for the record to come back.
+				// Summoned here (C): glide over now rather than waiting for the record to come back.
 				this.conjure!.placing.delete(peer.user.sessionId!)
 				worm.pinned = { at: placed, until: now + PIN_MS }
 			}
@@ -411,8 +372,9 @@ export class AgentWorms {
 			} else {
 				worm.focus = null
 			}
+			this.syncVisit(worm)
 			this.syncLabel(worm, peer, now)
-			if (worm.conjured) this.syncTinies(worm, peer.user.asleep ? [] : (peer.subagents ?? []), now)
+			if (worm.conjured) this.syncDots(worm, peer.user.asleep ? [] : (peer.subagents ?? []), now)
 		}
 		for (const worm of this.worms.values()) {
 			if (!seen.has(worm.id) && !worm.leaving) this.leave(worm, now)
@@ -468,13 +430,13 @@ export class AgentWorms {
 	/** The topmost creature under a point in client coordinates. */
 	private hitTest(clientX: number, clientY: number): Worm | null {
 		const rect = this.canvas.getBoundingClientRect()
-		const x = clientX - rect.left
-		const y = clientY - rect.top
+		const p = { x: clientX - rect.left, y: clientY - rect.top }
 		const worms = [...this.worms.values()].reverse()
+		const now = performance.now()
 		for (const worm of worms) {
-			if (!worm.conjured || worm.leaving || worm.mode === 'dive' || (worm.mode === 'emerge' && performance.now() - worm.modeAt < EMERGE_MS * 0.6)) continue
+			if (!worm.conjured || worm.leaving || !worm.shape || worm.mode === 'vanish' || (worm.mode === 'pop' && now - worm.modeAt < POP_MS * 0.5)) continue
 			if (!this.conjure?.canPrompt && !worm.calls) continue
-			if (worm.hit.some((d) => Math.hypot(d.x - x, d.y - y) <= d.r + HIT_SLOP)) return worm
+			if (hits(worm.shape, p, HIT_SLOP)) return worm
 		}
 		return null
 	}
@@ -502,18 +464,7 @@ export class AgentWorms {
 		this.swallowed.add(e.pointerId)
 		const at = this.local(e)
 		if (this.slaps.active) return this.slaps.hit(worm, at)
-		// It's picked up by the bit of it under the pointer.
-		let i = 0
-		let best = Infinity
-		worm.drawn.forEach((p, j) => {
-			const d = Math.hypot(p.x - at.x, p.y - at.y)
-			if (d < best) {
-				best = d
-				i = j
-			}
-		})
-		const p = worm.drawn[i] ?? at
-		this.press = { pointerId: e.pointerId, worm, start: at, grab: { i, off: { x: p.x - at.x, y: p.y - at.y } }, dragging: false }
+		this.press = { pointerId: e.pointerId, worm, start: at, dragging: false }
 		try {
 			;(e.target as Element).setPointerCapture?.(e.pointerId)
 		} catch {}
@@ -544,12 +495,13 @@ export class AgentWorms {
 			return
 		}
 		const sessionId = peer?.user.sessionId
-		// A cancelled drag (or a creature that left meanwhile) lands and inches back where it was.
+		// A cancelled drag (or a creature that left meanwhile) glides back where it was.
 		const ok = !!sessionId && e.type === 'pointerup' && worm.mode === 'carried'
 		this.letGo(worm)
 		if (!ok) return
 		const drop = { x: Math.round(worm.root.x), y: Math.round(worm.root.y) }
 		worm.goal = drop
+		worm.dest = drop
 		worm.pinned = { at: drop, until: performance.now() + PIN_MS }
 		this.fights.dropped(worm, this.worms.values())
 		this.conjure!.move(sessionId!, drop).catch((err) => {
@@ -570,9 +522,9 @@ export class AgentWorms {
 				if (this.conjure?.prompting.peek()?.clientId === press.worm.id) this.conjure.close()
 				this.container?.classList.remove('conjure-hover')
 				this.container?.classList.add('conjure-dragging')
-				this.pickUp(press.worm, press.grab)
+				this.pickUp(press.worm, press.start)
 			}
-			press.worm.carried = this.editor.screenToPage({ x: at.x + press.grab.off.x, y: at.y + press.grab.off.y })
+			press.worm.carried = this.editor.screenToPage(at)
 			return
 		}
 		if (this.swallowed.has(e.pointerId)) return e.stopPropagation()
@@ -581,54 +533,33 @@ export class AgentWorms {
 		this.container?.classList.toggle('conjure-hover', !!over && !this.slaps.active)
 	}
 
-	private pickUp(worm: Worm, grab: { i: number; off: Vec }) {
-		if (worm.mode === 'emerge' || worm.mode === 'dive') this.settle(worm)
+	/** Picked up by the point under the pointer (screen `at`): it hangs from there. */
+	private pickUp(worm: Worm, at: Vec) {
+		if (worm.mode === 'pop' || worm.mode === 'vanish') this.settle(worm)
+		const centre = worm.shape?.centre ?? this.centreOf(worm)
+		const rho = worm.heading - NATIVE
+		const d = { x: at.x - centre.x, y: at.y - centre.y }
+		const local = rotate(d, -rho)
 		worm.mode = 'carried'
 		worm.modeAt = performance.now()
-		worm.walk = null
-		worm.grab = { ...grab }
+		worm.trip = null
+		worm.vel = { x: 0, y: 0 }
+		worm.off = { x: 0, y: 0 }
+		worm.offV = { x: 0, y: 0 }
+		worm.carried = this.editor.screenToPage(at)
+		worm.swing = { local, len: Math.hypot(local.x, local.y), a: Math.atan2(-d.y, -d.x), v: 0, prev: null, vel: { x: 0, y: 0 }, acc: { x: 0, y: 0 } }
 		worm.nextDart = 0
 	}
 
-	/** Lets go of a carried creature: it falls a little way to new ground there. */
+	/** Lets go of a carried creature: it stays there, turning back the way it points. */
 	private letGo(worm: Worm) {
 		worm.carried = null
-		worm.grab = null
+		worm.swing = null
 		if (worm.mode !== 'carried') return
-		const body = worm.body
-		body.hold(null)
-		body.wriggle = 0
-		let bottom = -Infinity
-		body.p.forEach((p, i) => (bottom = Math.max(bottom, p.y + radius(i / (POINTS - 1)))))
-		const ground = bottom + DROP_PX
-		const z = this.editor.camera.peek().z
-		worm.root = { x: worm.root.x, y: worm.root.y + ground / z }
-		body.shift(0, -ground)
-		worm.mode = 'falling'
-		worm.modeAt = performance.now()
-		if (this.reducedMotion.matches) this.land(worm)
-	}
-
-	private land(worm: Worm) {
-		const body = worm.body
-		const speed = body.impact
 		worm.mode = 'here'
 		worm.modeAt = performance.now()
-		if (!this.reducedMotion.matches) worm.squash = Math.min(1, Math.max(worm.squash, (speed - 120) / 900))
-		const dx = body.p[0].x - body.p[POINTS - 1].x
-		if (Math.abs(dx) > 8) worm.facing = Math.sign(dx)
-		worm.landedAt = performance.now()
-	}
-
-	/** Dropped here, it stays where it came to rest rather than inching back to where it was let go. */
-	private stayPut(worm: Worm) {
-		const pinned = worm.pinned
-		const z = this.editor.camera.peek().z
-		const at = { x: Math.round(worm.root.x), y: Math.round(worm.root.y) }
-		if (!pinned || !worm.sessionId || Math.hypot(at.x - pinned.at.x, at.y - pinned.at.y) * z <= 3) return
-		worm.pinned = { at, until: performance.now() + PIN_MS }
-		worm.goal = at
-		this.conjure?.move(worm.sessionId, at).catch((err) => console.error('moving the creature failed', err))
+		worm.dest = { ...worm.root }
+		if (!this.reducedMotion.matches) worm.squash = 0.6
 	}
 
 	// ---------- state ----------
@@ -659,52 +590,57 @@ export class AgentWorms {
 		el.classList.toggle('conjured', conjured)
 		this.labels.appendChild(el)
 		const seed = Math.random() * 1000
-		const facing = Math.random() < 0.5 ? -1 : 1
+		const eye = openEye()
+		eye.lid = peer.user.asleep ? 1 : 0
 		const worm: Worm = {
 			id: peer.clientId,
 			color: '',
 			palette: palette('#22d3ee'),
-			tinyColor: mixColor('#22d3ee', 255, 0.3),
-			stressColor: mixColor('#22d3ee', 255, 0.45),
+			dotColor: mixColor('#22d3ee', 255, 0.35),
 			root: { ...at },
+			vel: { x: 0, y: 0 },
 			goal: { ...at },
+			dest: { ...at },
+			trip: null,
+			visit: null,
+			pointAt: null,
 			focus: null,
-			body: new Body(place(peer.user.asleep ? curlPose(0) : idlePose(0), facing, 0)),
-			facing,
-			walk: null,
+			heading: NATIVE,
+			spin: 0,
+			rest: NATIVE,
+			off: { x: 0, y: 0 },
+			offV: { x: 0, y: 0 },
 			mode: 'here',
 			modeAt: now,
-			dive: null,
-			hole: 0,
+			warpTo: null,
 			gone: false,
 			leaving: false,
 			seed,
-			eye: { look: { x: 0.4 * facing, y: 0 }, lid: peer.user.asleep ? 1 : 0.3, wide: 0 },
+			eye,
 			nextBlink: now + 1500 + Math.random() * 3000,
 			blinkStart: -1e9,
-			glance: { x: 0.6 * facing, y: 0.1 },
+			doubleBlink: false,
+			glance: { x: -0.4, y: -0.5 },
 			nextGlance: now + 1000,
-			dart: { x: 0, y: 1 },
+			dart: { x: 0, y: 0 },
 			nextDart: 0,
 			squash: 0,
-			stretchAt: -1e9,
 			wakeAt: -1e9,
 			recoilAt: -1e9,
-			fidget: 'peek',
 			fidgetAt: -1e9,
-			fit: null,
-			nextFit: 0,
-			writhe: null,
+			fidgetTurn: 0,
 			nextFidget: now + 6000 + Math.random() * 8000,
+			fretting: false,
+			fit: -1e9,
+			nextFit: 0,
 			startleSeen: -1e9,
-			landedAt: 0,
-			grab: null,
+			swing: null,
 			carried: null,
 			pinned: null,
-			drawn: [],
+			shape: null,
 			anchor: null,
-			headAt: { x: 0, y: -12 },
-			middleAt: { x: 0, y: -10 },
+			headAt: { x: 0, y: -SIZE },
+			middleAt: { x: 0, y: -LIFT },
 			el,
 			label,
 			name,
@@ -732,8 +668,8 @@ export class AgentWorms {
 			speechPinned: false,
 			speechDoneAt: 0,
 			bubbleScale: 1,
-			hit: [],
-			tinies: new Map(),
+			dots: new Map(),
+			orbit: Math.random() * Math.PI * 2,
 			calls: 0,
 			badge: null,
 			sessionId: peer.user.sessionId ?? null,
@@ -744,8 +680,8 @@ export class AgentWorms {
 
 	/**
 	 * A creature's arrival: the same session just woke up or nodded off (a new presence, so a new
-	 * creature), carrying on where the old one was; otherwise it pops up out of the canvas (unless
-	 * it was already here asleep when the page opened: then it's just there, curled up).
+	 * creature), carrying on where the old one was; otherwise it pops up (unless it was already here
+	 * asleep when the page opened: then it's just there, eye shut).
 	 */
 	private arrive(worm: Worm, peer: Peer, now: number) {
 		const rec = worm.sessionId ? this.conjure?.record(worm.sessionId) : undefined
@@ -755,17 +691,13 @@ export class AgentWorms {
 			? [...this.worms.values()].find((w) => w.sessionId === worm.sessionId && w !== worm && w.conjuredAt === worm.conjuredAt)
 			: undefined
 		if (prev) {
-			// Leaving, it was diving away: back up as it was.
-			if (prev.leaving && prev.mode === 'dive' && prev.dive) {
-				prev.body.set(prev.dive.from)
-				prev.mode = 'here'
-				prev.dive = null
-			}
-			for (const key of ['root', 'body', 'facing', 'walk', 'mode', 'modeAt', 'dive', 'hole', 'seed', 'eye', 'glance', 'squash', 'stretchAt', 'wakeAt', 'recoilAt', 'grab', 'carried', 'anchor', 'headAt', 'middleAt', 'drawn', 'tinies', 'tiniesAt'] as const) {
+			// Leaving, it was blinking out: back as it was.
+			if (prev.leaving && prev.mode === 'vanish' && !prev.warpTo) prev.mode = 'here'
+			for (const key of ['root', 'vel', 'dest', 'trip', 'heading', 'spin', 'off', 'offV', 'mode', 'modeAt', 'warpTo', 'seed', 'eye', 'glance', 'squash', 'wakeAt', 'recoilAt', 'swing', 'carried', 'anchor', 'headAt', 'middleAt', 'shape', 'dots', 'orbit'] as const) {
 				;(worm as unknown as Record<string, unknown>)[key] = prev[key]
 			}
 			worm.startleSeen = prev.startleSeen
-			if (prev.asleep && !peer.user.asleep && worm.mode !== 'emerge') worm.wakeAt = now
+			if (prev.asleep && !peer.user.asleep && worm.mode !== 'pop') worm.wakeAt = now
 			prev.el.remove()
 			this.worms.delete(prev.id)
 			if (this.press?.worm === prev) this.press.worm = worm
@@ -774,36 +706,28 @@ export class AgentWorms {
 		if (this.reducedMotion.matches) return
 		const age = rec ? Date.now() - rec.createdAt : Infinity
 		if (peer.user.asleep && (age > FRESH_MS || (rec && rec.createdAt < this.bornAt - 2000))) return
-		this.emerge(worm, now)
+		this.pop(worm, now)
 	}
 
-	/** Pops up out of the canvas at its goal. */
-	private emerge(worm: Worm, now: number) {
-		worm.mode = 'emerge'
+	/** Pops up where it is. */
+	private pop(worm: Worm, now: number) {
+		worm.mode = 'pop'
 		worm.modeAt = now
-		worm.walk = null
-		worm.dive = null
-		const z = this.editor.camera.peek().z
-		worm.hole = worm.goal ? (worm.goal.x - worm.root.x) * z : 0
-		worm.body.set(this.risen(worm, 0))
+		worm.warpTo = null
 	}
 
-	/** Dives into the canvas, to pop up at `to` (or gone, leaving). */
-	private dive(worm: Worm, now: number, to: Vec | null) {
-		if (worm.mode === 'emerge') this.settle(worm)
-		worm.mode = 'dive'
+	/** Blinks out, to pop up at `to` (or gone, leaving). */
+	private vanish(worm: Worm, now: number, to: Vec | null) {
+		worm.mode = 'vanish'
 		worm.modeAt = now
-		worm.walk = null
-		worm.dive = { from: worm.body.p.map((p) => ({ ...p })), to }
-		worm.hole = worm.body.p[0].x
+		worm.trip = null
+		worm.warpTo = to
 	}
 
-	/** Ends an emerge or dive where it is. */
+	/** Ends a pop or a vanish where it is. */
 	private settle(worm: Worm) {
-		if (worm.mode === 'dive' && worm.dive) worm.body.set(worm.dive.from)
-		if (worm.mode === 'emerge') worm.body.set(this.risen(worm, 1))
 		worm.mode = 'here'
-		worm.dive = null
+		worm.warpTo = null
 	}
 
 	private leave(worm: Worm, now: number) {
@@ -815,25 +739,48 @@ export class AgentWorms {
 		}
 		this.letGo(worm)
 		if (this.reducedMotion.matches) worm.gone = true
-		else this.dive(worm, now, null)
+		else this.vanish(worm, now, null)
 	}
 
 	private revive(worm: Worm, now: number) {
 		worm.leaving = false
 		worm.gone = false
 		worm.el.classList.remove('leaving')
-		if (worm.mode === 'dive' && !worm.dive?.to) {
-			this.settle(worm)
-			this.emerge(worm, now)
+		if (worm.mode === 'vanish' && !worm.warpTo) this.pop(worm, now)
+	}
+
+	/**
+	 * Its walkthrough showing a highlight step: it goes to just outside the target's edge nearest
+	 * where it sits, to point in at it. (Here only: where it is doesn't change.)
+	 */
+	private syncVisit(worm: Worm) {
+		const a = this.attention
+		const sid = worm.sessionId
+		let box: Box | undefined
+		if (a && sid && a.isOpen(sid)) {
+			const walk = a.walk.peek()
+			const step = walk?.steps[walk.index]
+			if (step?.kind === 'highlight' && step.target) box = a.targetBox(step.target)
 		}
+		if (!box) {
+			worm.visit = null
+			worm.pointAt = null
+			return
+		}
+		const z = this.editor.camera.peek().z
+		const home = worm.goal ?? worm.root
+		const from = { x: home.x, y: home.y - LIFT / z }
+		const { at, out } = edgeNear(from, box)
+		const reach = (VISIT_PX + TIP_REACH * SIZE) / z
+		worm.pointAt = at
+		worm.visit = { x: at.x + out.x * reach, y: at.y + out.y * reach + LIFT / z }
 	}
 
 	private syncLabel(worm: Worm, peer: Peer, now: number) {
 		if (worm.color !== peer.user.color) {
 			worm.color = peer.user.color
 			worm.palette = palette(worm.color)
-			worm.tinyColor = mixColor(worm.color, 255, 0.3)
-			worm.stressColor = mixColor(worm.color, 255, 0.45)
+			worm.dotColor = mixColor(worm.color, 255, 0.35)
 			worm.label.style.background = worm.color
 			worm.el.style.setProperty('--agent-color', worm.color)
 		}
@@ -1060,9 +1007,16 @@ export class AgentWorms {
 
 	// ---------- moving ----------
 
+	/** Its centre on screen where it sits (before knocks, bobbing and dangling). */
+	private centreOf(worm: Worm): Vec {
+		const g = this.editor.pageToScreen(worm.root)
+		return { x: g.x, y: g.y - LIFT }
+	}
+
 	private step(worm: Worm, now: number, elapsed: number) {
 		const still = this.reducedMotion.matches
 		const z = this.editor.camera.peek().z
+		const dt = Math.min(0.05, elapsed / 1000)
 		const ease = (ms: number) => (still ? 1 : 1 - Math.exp(-elapsed / ms))
 
 		const talking = worm.bubble ? this.typeSpeech(worm, elapsed) : false
@@ -1071,474 +1025,424 @@ export class AgentWorms {
 		// Busy until its session is idle, whether or not it's saying something meanwhile.
 		worm.think += ((worm.thinking ? 1 : 0) - worm.think) * ease(200)
 
-		// Clicked (here or elsewhere, see Conjure.startled): a quick recoil.
+		// Clicked (here or elsewhere, see Conjure.startled): a quick hop back.
 		if (worm.startledAt !== worm.startleSeen) {
 			worm.startleSeen = worm.startledAt
 			if (now - worm.startledAt < 300 && worm.mode === 'here' && !still) this.recoil(worm, now)
 		}
 
-		if (!this.fights.holds(worm, now) && !this.slaps.holds(worm, now)) {
-			this.locomote(worm, now, elapsed, z)
+		worm.rest = this.restHeading(worm, this.centreOf(worm))
+		const held = this.fights.holds(worm, now) || this.slaps.holds(worm, now)
+		if (!held) {
+			this.locomote(worm, now, dt, z)
 			this.maybeFidget(worm, now)
-			this.agonise(worm, now)
+			this.fret(worm, now)
+		} else {
+			worm.vel = { x: 0, y: 0 }
 		}
-		const body = worm.body
-		if (worm.mode === 'emerge' || worm.mode === 'dive') this.kinematic(worm, now)
-		else {
-			const pose = this.posture(worm, now, z)
-			if (still) {
-				if (worm.mode === 'carried' && worm.carried && worm.grab) {
-					// Held still: the resting pose, hung from the pointer.
-					const at = this.toLocal(worm, worm.carried)
-					const g = pose.shape[worm.grab.i]
-					body.set(pose.shape.map((p) => ({ x: p.x - g.x + at.x, y: p.y - g.y + at.y })))
-				} else body.set(pose.shape)
-			} else {
-				body.target = pose.shape
-				body.k = pose.k
-				body.weights = pose.weights ?? null
-				body.pose += ((pose.limp ? 0 : 1) - body.pose) * ease(pose.limp ? 50 : 240)
-				body.stretch += ((pose.stretch ?? 1) - body.stretch) * ease(160)
-				body.ground = worm.mode !== 'carried'
-				body.wriggle = worm.mode === 'carried' ? 480 : 0
-				body.impact = 0
-				body.run(elapsed)
-				if (worm.mode === 'falling' && body.touching) this.land(worm)
-				else if (worm.mode === 'here' && body.impact > 500) worm.squash = Math.max(worm.squash, Math.min(0.6, (body.impact - 500) / 1200))
-			}
-		}
-		this.recentre(worm, z)
+		if (worm.mode === 'pop' || worm.mode === 'vanish') this.popping(worm, now)
 		this.fights.step(worm, now, elapsed, z)
 		this.slaps.step(worm, now)
-		worm.squash *= 1 - ease(110)
+		const pose = this.fights.pose(worm, now, z) ?? this.slaps.pose(worm, now, z)
+		if (worm.mode === 'carried') this.dangle(worm, dt)
+		else {
+			this.knock(worm, pose, dt)
+			this.steer(worm, pose, now, dt, z)
+		}
+		worm.squash *= 1 - ease(140)
 		this.eyes(worm, now, elapsed)
 	}
 
-	/**
-	 * Keeps the creature's frame on its body: root (page) follows the body's middle, and the body,
-	 * its feet and hole shift back the other way, so nothing moves on screen.
-	 */
-	private recentre(worm: Worm, z: number) {
-		if (worm.mode === 'emerge' || worm.mode === 'dive') return
-		const p = worm.body.p
-		const mx = p.reduce((a, v) => a + v.x, 0) / p.length
-		const my = worm.mode === 'carried' ? p.reduce((a, v) => a + v.y, 0) / p.length : 0
-		if (Math.abs(mx) < 1e-4 && Math.abs(my) < 1e-4) return
-		worm.root = { x: worm.root.x + mx / z, y: worm.root.y + my / z }
-		worm.body.shift(-mx, -my)
-		const w = worm.walk
-		if (w) {
-			w.tail -= mx
-			w.head -= mx
-			w.from -= mx
-			w.pivot -= mx
-		}
-	}
-
-	/** A page point in the creature's frame (screen px from its root). */
-	private toLocal(worm: Worm, at: Vec): Vec {
-		const z = this.editor.camera.peek().z
-		return { x: (at.x - worm.root.x) * z, y: (at.y - worm.root.y) * z }
-	}
-
-	/** Heads for the goal: walking, sliding over a little, or burrowing when it's far. Carried, it's held. */
-	private locomote(worm: Worm, now: number, elapsed: number, z: number) {
-		const still = this.reducedMotion.matches
-		const body = worm.body
-		if (worm.mode === 'carried') {
-			if (worm.carried && worm.grab) body.hold(worm.grab.i, this.toLocal(worm, worm.carried))
-			return
-		}
-		body.hold(null)
-		const goal = worm.goal
+	/** Heads for its goal (or a highlight step's spot): gliding along a curve, sliding over a little, or blinking over when it's far. */
+	private locomote(worm: Worm, now: number, dt: number, z: number) {
+		const goal = worm.visit ?? worm.goal
 		if (worm.mode !== 'here' || worm.leaving || !goal) return
-		if (still) {
+		if (this.reducedMotion.matches) {
 			worm.root = { ...goal }
-			worm.walk = null
+			worm.dest = { ...goal }
+			worm.trip = null
+			worm.vel = { x: 0, y: 0 }
 			return
 		}
-		if (worm.landedAt) {
-			// Righting itself after a fall: wait till it has, then stay there (see stayPut).
-			if (now - worm.landedAt < SETTLE_MS) return
-			worm.landedAt = 0
-			this.stayPut(worm)
+		const dest = worm.dest
+		if (!dest || Math.hypot(goal.x - dest.x, goal.y - dest.y) * z > 1.5) {
+			// Somewhere new.
+			worm.dest = { ...goal }
+			const d = Math.hypot(goal.x - worm.root.x, goal.y - worm.root.y) * z
+			if (d > GLIDE_MAX || (!this.onScreen(worm.root, 80) && !this.onScreen(goal, 80))) return this.vanish(worm, now, goal)
+			if (d > NUDGE_PX) this.plan(worm, goal, now, z)
+			else worm.trip = null
 		}
-		if (worm.walk) return this.advance(worm, now, z)
-		const dx = (goal.x - worm.root.x) * z
-		const dy = (goal.y - worm.root.y) * z
-		const dist = Math.hypot(dx, dy)
-		if (dist <= NUDGE_PX) {
-			// Close enough: it slides over (see posture), and the ground glides under it.
-			worm.root.y += (goal.y - worm.root.y) * (1 - Math.exp(-elapsed / 120))
-			return
+		let aim = goal
+		const trip = worm.trip
+		if (trip) {
+			const u = (now - trip.at) / trip.dur
+			if (u >= 1) worm.trip = null
+			else aim = bezier(trip, easeInOutSine(u))
 		}
-		if (dist > CRAWL_MAX || (!this.onScreen(worm.root, 80) && !this.onScreen(goal, 80))) return this.dive(worm, now, goal)
-		const p = body.p
-		const walk: Walk = { phase: 'gather', at: now, dur: 0, tail: p[POINTS - 1].x, head: p[0].x, from: 0, stride: 0, y0: 0, y1: 0, ms: STRIDE_MS, pivot: 0, flipped: false }
-		if (this.stride(worm, walk, now, z, true)) worm.walk = walk
-	}
-
-	/** Plans the next stride (or turn) toward the goal; false when it's there. */
-	private stride(worm: Worm, walk: Walk, now: number, z: number, first = false): boolean {
-		const goal = worm.goal!
-		const f = worm.facing
-		const gx = (goal.x - worm.root.x) * z
-		const dy = (goal.y - worm.root.y) * z
-		const ahead = f * (gx - (walk.tail + walk.head) / 2)
-		if (ahead < -TURN_PX) {
-			walk.phase = 'turn'
-			walk.at = now
-			walk.dur = TURN_MS
-			walk.pivot = (walk.tail + walk.head) / 2
-			walk.flipped = false
-			return true
+		// root follows its path on a spring, page space
+		const w = FOLLOW_W
+		for (let left = dt; left > 1e-6; left -= 1 / 120) {
+			const h = Math.min(left, 1 / 120)
+			worm.vel.x += (w * w * (aim.x - worm.root.x) - 2 * FOLLOW_Z * w * worm.vel.x) * h
+			worm.vel.y += (w * w * (aim.y - worm.root.y) - 2 * FOLLOW_Z * w * worm.vel.y) * h
+			worm.root.x += worm.vel.x * h
+			worm.root.y += worm.vel.y * h
 		}
-		const fwd = Math.max(0, ahead)
-		if (fwd < 4 && Math.abs(dy) < 4) return false
-		const n = Math.max(1, Math.ceil(Math.max(fwd, Math.abs(dy)) / STRIDE))
-		walk.stride = (f * fwd) / n
-		walk.y0 = worm.root.y
-		walk.y1 = worm.root.y + (goal.y - worm.root.y) / n
-		walk.ms = Math.max(STRIDE_MIN_MS, STRIDE_MS - Math.hypot(fwd, dy) * 1.3)
-		walk.at = now
-		walk.dur = walk.ms / 2
-		// Standing or curled up, it starts by reaching out; lying long, by gathering up its tail.
-		const reach = first && Math.abs(walk.head - walk.tail) < LENGTH * 0.55
-		walk.phase = reach ? 'reach' : 'gather'
-		walk.from = reach ? walk.head : walk.tail
-		return true
-	}
-
-	private advance(worm: Worm, now: number, z: number) {
-		const walk = worm.walk!
-		const p = worm.body.p
-		const e = Math.min(1, (now - walk.at) / walk.dur)
-		if (walk.phase === 'turn') {
-			if (!walk.flipped && e > 0.42) {
-				worm.facing = -worm.facing
-				walk.flipped = true
-				walk.tail = p[POINTS - 1].x
-			}
-			if (e < 1) return
-			walk.tail = p[POINTS - 1].x
-			walk.head = p[0].x
-			if (!this.stride(worm, walk, now, z, true)) worm.walk = null
-			return
-		}
-		const s = easeInOutSine(e)
-		if (walk.phase === 'gather') walk.tail = walk.from + walk.stride * s
-		else walk.head = walk.from + walk.stride * s
-		// Up or down the screen, the ground glides with the stride.
-		const progress = walk.phase === 'gather' ? e * 0.5 : 0.5 + e * 0.5
-		worm.root.y = walk.y0 + (walk.y1 - walk.y0) * easeInOutSine(progress)
-		if (e < 1) return
-		if (walk.phase === 'gather') {
-			walk.phase = 'reach'
-			walk.at = now
-			walk.dur = walk.ms / 2
-			walk.from = walk.head
-			return
-		}
-		if (!this.stride(worm, walk, now, z)) worm.walk = null
 	}
 
 	/**
-	 * Thinking (busy, not talking): how it writhes. Worked up in waves, with calmer breaths between,
-	 * and now and then a fit: it clenches up tight and trembles, then strains up tall; or it bows
-	 * over with its head pressed down. Saying something meanwhile (the bubble is up), it keeps it
-	 * down to a mild squirm so the text stays easy to read.
+	 * A glide to `goal`: it sets off the way it's pointing (or already going) and comes in to the
+	 * goal on a smooth curve, so where it came from shapes the path.
 	 */
-	private agonise(worm: Worm, now: number) {
+	private plan(worm: Worm, goal: Vec, now: number, z: number) {
+		const from = { ...worm.root }
+		const dx = goal.x - from.x
+		const dy = goal.y - from.y
+		const d = Math.hypot(dx, dy) * z
+		const dir = { x: dx / (Math.hypot(dx, dy) || 1), y: dy / (Math.hypot(dx, dy) || 1) }
+		const speed = Math.hypot(worm.vel.x, worm.vel.y) * z
+		const h = speed > 60 ? Math.atan2(worm.vel.y, worm.vel.x) : worm.heading
+		const hv = { x: Math.cos(h), y: Math.sin(h) }
+		const along = hv.x * dir.x + hv.y * dir.y
+		const lead = Math.min(150, d * (0.16 + 0.2 * (1 + along))) / z
+		const back = (d * 0.3) / z
+		worm.trip = {
+			from,
+			c1: { x: from.x + hv.x * lead, y: from.y + hv.y * lead },
+			c2: { x: goal.x - dir.x * back, y: goal.y - dir.y * back },
+			to: { ...goal },
+			at: now,
+			dur: Math.min(GLIDE_MAX_MS, Math.max(GLIDE_MIN_MS, GLIDE_MS + d * GLIDE_PER_PX)),
+		}
+	}
+
+	/** Popping up and blinking out (then popping up again where it was going). */
+	private popping(worm: Worm, now: number) {
 		const still = this.reducedMotion.matches
-		const busy = worm.think > 0.5 && worm.talk < 0.3 && worm.mode === 'here' && !worm.walk && !worm.asleep
-		if (!busy) {
-			worm.writhe = null
-			worm.fit = null
+		const u = (now - worm.modeAt) / (worm.mode === 'pop' ? POP_MS : VANISH_MS)
+		if (worm.mode === 'pop') {
+			if (still || u >= 1) this.settle(worm)
+			return
+		}
+		if (!still && u < 1) return
+		const to = worm.warpTo
+		if (to && !worm.leaving) {
+			const at = worm.visit ?? worm.goal ?? to
+			// facing the way it went
+			worm.heading = Math.atan2(at.y - worm.root.y, at.x - worm.root.x)
+			worm.spin = 0
+			worm.root = { ...at }
+			worm.dest = { ...at }
+			worm.vel = { x: 0, y: 0 }
+			this.pop(worm, now)
+		} else worm.gone = true
+	}
+
+	/** Knocked out of place (fights, slaps, recoils): sprung back, or thrown and left to fly. */
+	private knock(worm: Worm, pose: Pose | null, dt: number) {
+		const to = pose?.off ?? { x: 0, y: 0 }
+		if (this.reducedMotion.matches) {
+			worm.off = { ...to }
+			worm.offV = { x: 0, y: 0 }
+			return
+		}
+		const w = pose?.k ?? SETTLE_W
+		for (let left = dt; left > 1e-6; left -= 1 / 120) {
+			const h = Math.min(left, 1 / 120)
+			if (pose?.free) {
+				const drag = Math.exp(-3 * h)
+				worm.offV.x *= drag
+				worm.offV.y *= drag
+			} else {
+				worm.offV.x += (w * w * (to.x - worm.off.x) - 2 * 0.8 * w * worm.offV.x) * h
+				worm.offV.y += (w * w * (to.y - worm.off.y) - 2 * 0.8 * w * worm.offV.y) * h
+			}
+			worm.off.x += worm.offV.x * h
+			worm.off.y += worm.offV.y * h
+		}
+	}
+
+	/** Turns it toward where it should point, on an angular spring (or lets it spin, thrown). */
+	private steer(worm: Worm, pose: Pose | null, now: number, dt: number, z: number) {
+		const want = pose ? pose.heading : this.heading(worm, now, z)
+		if (this.reducedMotion.matches) {
+			worm.heading = want ?? worm.rest
+			worm.spin = 0
+			return
+		}
+		const w = pose?.turn ?? (worm.trip ? TURN_W * 1.25 : TURN_W)
+		for (let left = dt; left > 1e-6; left -= 1 / 120) {
+			const h = Math.min(left, 1 / 120)
+			const acc = want === null ? -1.6 * worm.spin : w * w * turn(worm.heading, want) - 2 * TURN_Z * w * worm.spin
+			worm.spin += acc * h
+			worm.heading += worm.spin * h
+		}
+		worm.heading = turn(0, worm.heading)
+	}
+
+	/** Where it wants to point, from what it's doing: the way it's going while it moves. */
+	private heading(worm: Worm, now: number, z: number): number {
+		const t = now / 1000 + worm.seed
+		const rest = worm.rest
+		if (this.reducedMotion.matches) return rest
+		let base = rest
+		const calling = worm.calls > 0 && !worm.el.classList.contains('attending')
+		if (worm.mode === 'vanish') base = rest + 2.2 * ((now - worm.modeAt) / VANISH_MS)
+		else if (worm.asleep) base = rest + 0.28 * Math.sign(turn(rest, Math.PI / 2) || 1)
+		else if (calling) base = rest + 0.36 * Math.sin(t * 7.5)
+		else if (worm.fretting) base = rest + 0.07 * wobble(t * 0.5 + 3)
+		else if (worm.talk > 0.05) base = rest + 0.08 * Math.sin(worm.speechShown * 0.7) * worm.talk
+		else if (!worm.pointAt) {
+			base = rest + 0.07 * wobble(t * 0.25)
+			const fidget = (now - worm.fidgetAt) / FIDGET_MS
+			if (fidget >= 0 && fidget < 1) base += worm.fidgetTurn * Math.sin(Math.PI * fidget)
+			// a slight turn toward someone's pointer nearby
+			const c = worm.shape?.centre
+			const p = this.pointer
+			if (c && p && !this.press && !worm.listening && Math.hypot(p.x - c.x, p.y - c.y) < STARE_PX) {
+				base += Math.max(-0.2, Math.min(0.2, turn(rest, Math.atan2(p.y - c.y, p.x - c.x)) * 0.25))
+			}
+		}
+		const recoil = (now - worm.recoilAt) / RECOIL_MS
+		if (recoil >= 0 && recoil < 1) base -= 0.35 * Math.sin(Math.PI * recoil)
+		// moving: the tip facing where it's going, then turning to point where it should as it arrives
+		let travel = 0
+		let way = base
+		const trip = worm.trip
+		if (trip) {
+			const u = Math.min(1, Math.max(0, (now - trip.at) / trip.dur))
+			const tan = bezierTangent(trip, easeInOutSine(u))
+			if (Math.hypot(tan.x, tan.y) > 1e-9) {
+				way = Math.atan2(tan.y, tan.x)
+				travel = 1 - smoothstep((u - 0.8) / 0.2)
+			}
+		} else {
+			const vx = worm.vel.x * z + worm.offV.x
+			const vy = worm.vel.y * z + worm.offV.y
+			const speed = Math.hypot(vx, vy)
+			if (speed > 140) {
+				way = Math.atan2(vy, vx)
+				travel = smoothstep((speed - 140) / 260)
+			}
+		}
+		// (blended as turns from where it points now, so a way half round from where it'll rest never flips)
+		const h = worm.heading
+		return travel ? h + turn(h, way) * travel + turn(h, base) * (1 - travel) : base
+	}
+
+	/**
+	 * Where it points at rest: at a highlight step's target, else at what it's working on or its
+	 * frame when one is close by (and it isn't on it), else up and to the left, like a pointer.
+	 */
+	private restHeading(worm: Worm, centre: Vec): number {
+		const aim = (p: Vec) => Math.atan2(p.y - centre.y, p.x - centre.x)
+		if (worm.pointAt) return aim(this.editor.pageToScreen(worm.pointAt))
+		const frame = worm.sessionId ? this.editor.getSelectionBounds(`frame:${worm.sessionId}`) : undefined
+		const z = this.editor.camera.peek().z
+		for (const box of [worm.focus, frame]) {
+			if (!box) continue
+			const s = this.editor.pageToScreen(box)
+			const near = { x: Math.min(Math.max(centre.x, s.x), s.x + box.w * z), y: Math.min(Math.max(centre.y, s.y), s.y + box.h * z) }
+			const d = Math.hypot(near.x - centre.x, near.y - centre.y)
+			if (d > 14 && d < POINT_AT_PX) return aim(near)
+			if (d <= 14) break
+		}
+		return NATIVE
+	}
+
+	/** Dangling from where it's held: a pendulum about the grab point, swung by the carrying. */
+	private dangle(worm: Worm, dt: number) {
+		const sw = worm.swing
+		if (!worm.carried || !sw) return
+		const G = this.editor.pageToScreen(worm.carried)
+		const still = this.reducedMotion.matches
+		if (sw.prev && dt > 0) {
+			const v = { x: (G.x - sw.prev.x) / dt, y: (G.y - sw.prev.y) / dt }
+			const a = { x: (v.x - sw.vel.x) / dt, y: (v.y - sw.vel.y) / dt }
+			const lim = 9000
+			sw.acc = { x: sw.acc.x * 0.5 + Math.max(-lim, Math.min(lim, a.x)) * 0.5, y: sw.acc.y * 0.5 + Math.max(-lim, Math.min(lim, a.y)) * 0.5 }
+			sw.vel = v
+		}
+		sw.prev = G
+		if (!still) {
+			// a compound pendulum (its radius of gyration about its centre ~9px), gravity less the hand's acceleration
+			const L = sw.len
+			const k = L / (81 + L * L)
+			for (let left = dt; left > 1e-6; left -= 1 / 120) {
+				const h = Math.min(left, 1 / 120)
+				const gx = -sw.acc.x
+				const gy = 2600 - sw.acc.y
+				const torque = Math.cos(sw.a) * gy - Math.sin(sw.a) * gx
+				sw.v += (k * torque - 2.4 * sw.v) * h
+				sw.a += sw.v * h
+			}
+			worm.heading = turn(0, sw.a - Math.atan2(-sw.local.y, -sw.local.x) + NATIVE)
+			worm.spin = sw.v
+		}
+		const rho = worm.heading - NATIVE
+		const l = rotate(sw.local, rho)
+		const centre = { x: G.x - l.x, y: G.y - l.y }
+		worm.root = this.editor.screenToPage({ x: centre.x, y: centre.y + LIFT })
+		worm.off = { x: 0, y: 0 }
+		worm.offV = { x: 0, y: 0 }
+	}
+
+	/** Thinking (busy, not talking): fretting, and now and then a fit of frustration. */
+	private fret(worm: Worm, now: number) {
+		const busy = worm.think > 0.5 && worm.talk < 0.3 && worm.mode === 'here' && !worm.trip && !worm.asleep
+		worm.fretting = busy
+		if (!busy || this.reducedMotion.matches || worm.bubble) {
 			worm.nextFit = 0
 			return
 		}
-		const calm = !!worm.bubble
-		if (still) {
-			// a single scrunched-up pose
-			worm.writhe = { t: 0, intensity: 0.7, clench: 0.25, strain: 0, press: 0.15, calm }
-			return
+		if (!worm.nextFit) worm.nextFit = now + 2500 + Math.random() * 2500
+		if (now > worm.nextFit) {
+			worm.fit = now
+			worm.nextFit = now + FIT_GAP_MS * (0.7 + Math.random() * 0.8)
 		}
-		const t = now / 1000 + worm.seed
-		// waves of frustration, and calmer breaths
-		const intensity = Math.min(1, Math.max(0.12, 0.6 + 0.5 * wobble(t * 0.17 + 11)))
-		if (!worm.nextFit) worm.nextFit = now + 1500 + Math.random() * 2000
-		if (!calm && !worm.fit && now > worm.nextFit) {
-			worm.fit = { kind: Math.random() < 0.55 ? 'clench' : 'press', at: now }
-			worm.nextFit = now + FIT_GAP_MS * (0.6 + Math.random()) * (1.4 - intensity * 0.6)
-		}
-		let clench = 0
-		let strain = 0
-		let press = 0
-		const fit = worm.fit
-		if (fit) {
-			const u = (now - fit.at) / FIT_MS[fit.kind]
-			if (u >= 1 || calm) worm.fit = null
-			else if (fit.kind === 'clench') {
-				// bunching up tight, trembling; then straining up tall
-				clench = u < 0.55 ? smoothstep(u / 0.2) : 1 - smoothstep((u - 0.55) / 0.15)
-				strain = u < 0.55 ? 0 : Math.sin(Math.PI * Math.min(1, (u - 0.55) / 0.45))
-			} else press = Math.sin(Math.PI * u) ** 0.6
-		}
-		const k = calm ? 0.3 : 1
-		worm.writhe = { t, intensity: intensity * k, clench: clench * k, strain: strain * k, press: press * k, calm }
 	}
 
 	private maybeFidget(worm: Worm, now: number) {
-		const idle = worm.mode === 'here' && !worm.walk && !worm.asleep && !worm.calls && !worm.listening && worm.think < 0.1 && worm.talk < 0.05
+		const idle = worm.mode === 'here' && !worm.trip && !worm.asleep && !worm.calls && !worm.listening && !worm.pointAt && worm.think < 0.1 && worm.talk < 0.05
 		if (!idle || this.reducedMotion.matches) {
 			worm.nextFidget = Math.max(worm.nextFidget, now + 3000)
 			return
 		}
 		if (now < worm.nextFidget) return
-		worm.fidget = Math.random() < 0.55 ? 'peek' : 'scrunch'
 		worm.fidgetAt = now
+		worm.fidgetTurn = (Math.random() < 0.5 ? -1 : 1) * (0.35 + Math.random() * 0.3)
 		worm.nextFidget = now + FIDGET_EVERY_MS * (0.7 + Math.random())
-		// peeking round, it looks about
-		if (worm.fidget === 'peek') worm.nextGlance = now
+		worm.nextGlance = now
 	}
 
-	/** Clicked: it flinches back and up. */
+	/** Clicked: it hops back from its tip. */
 	private recoil(worm: Worm, now: number) {
 		worm.recoilAt = now
-		const f = worm.facing
-		for (let i = 0; i < 7; i++) {
-			const k = 1 - i / 7
-			worm.body.push(i, -f * 120 * k, -330 * k)
-		}
-	}
-
-	/** The pose for what it's doing. */
-	private posture(worm: Worm, now: number, z: number): Posture {
-		const still = this.reducedMotion.matches
-		const t = still ? 0 : now / 1000 + worm.seed
-		const f = worm.facing
-		const gx = worm.goal && worm.mode === 'here' && !worm.walk ? (worm.goal.x - worm.root.x) * z : 0
-		if (worm.mode === 'carried' || (worm.mode === 'falling' && !still)) return { shape: place(idlePose(t), f, 0), k: 0, limp: true }
-		const fighting = this.fights.posture(worm, now, z) ?? this.slaps.posture(worm, now, z)
-		if (fighting) return fighting
-		const walk = worm.walk
-		if (walk && !still) {
-			if (walk.phase === 'turn') {
-				const e = (now - walk.at) / walk.dur
-				// It rears up, then flops over the other way.
-				if (!walk.flipped) return { shape: place(standPose(0, 0.2 + 0.6 * e), f, walk.pivot), k: 260, weights: footWeights(4) }
-				return { shape: place(flatPose({ x: 0, y: -TAIL_R }), f, walk.tail), k: 170, weights: footWeights(3) }
-			}
-			const e = Math.min(1, (now - walk.at) / walk.dur)
-			const gather = walk.phase === 'gather'
-			const lift = Math.sin(Math.PI * e)
-			const a = { x: walk.tail, y: -TAIL_R - (gather ? 4 * lift : 0) }
-			const b = { x: walk.head, y: -HEAD_R - (gather ? 0 : 7 * lift) }
-			const w = Array.from({ length: POINTS }, (_, i) => {
-				if (i < 2) return gather ? 5 : 2
-				if (i > POINTS - 3) return gather ? 2 : 5
-				return 1
-			})
-			return { shape: archPose(a, b), k: 300, weights: w }
-		}
-		const wake = (now - worm.wakeAt) / WAKE_MS
-		const stretch = (now - worm.stretchAt) / STRETCH_MS
-		if (!still && ((wake >= 0 && wake < 1) || (stretch >= 0 && stretch < 1))) {
-			// Up on its tail, stretching tall, head tipped back, then down to rest.
-			const u = wake >= 0 && wake < 1 ? wake : stretch
-			const tall = Math.sin(Math.PI * Math.min(1, u * 1.15))
-			if (u < 0.8) return { shape: place(standPose(0.12 * Math.sin(u * 9), -0.35 * tall, LENGTH), f, gx), k: 230, weights: footWeights(4), stretch: 1 + 0.12 * tall }
-		}
-		if (!still && now - worm.recoilAt < RECOIL_MS) {
-			return { shape: archPose({ x: gx - f * LENGTH * 0.2, y: -TAIL_R }, { x: gx + f * LENGTH * 0.18, y: -HEAD_R - 4 }), k: 420, stretch: 0.92 }
-		}
-		if (worm.asleep) return { shape: place(curlPose(Math.sin(t * 1.25)), f, gx), k: 150 }
-		const calling = worm.calls > 0 && !worm.el.classList.contains('attending')
-		if (calling) {
-			// Up and waving its head side to side: over here!
-			const wave = Math.sin(t * 4.4)
-			return { shape: place(standPose(0.55 * wave, 0.15 - 0.35 * wave), f, gx), k: 260, weights: footWeights(4) }
-		}
-		if (worm.writhe) {
-			// Thinking: up on its tail, writhing in frustration (see agonise).
-			const w = worm.writhe
-			return { shape: place(writhePose(w), f, gx), k: w.calm ? 200 : 300, weights: footWeights(4), stretch: 1 + 0.1 * w.strain - 0.06 * w.clench }
-		}
-		if (worm.talk > 0.05) {
-			// Head up, bobbing along with the text as it types.
-			const beat = worm.speechShown * 0.7
-			const nod = still ? 0 : Math.sin(beat) * worm.talk
-			return { shape: place(idlePose(t, worm.talk * (0.9 + 0.35 * nod), 0.5 * nod), f, gx), k: 260 }
-		}
-		const fidget = (now - worm.fidgetAt) / FIDGET_MS
-		if (!still && !worm.listening && fidget >= 0 && fidget < 1) {
-			const u = Math.sin(Math.PI * fidget)
-			if (worm.fidget === 'scrunch' && fidget < 0.5) {
-				// bunching up into a hump, as if to set off, then thinking better of it
-				const foot = LENGTH * (0.86 - 0.36 * Math.sin(Math.PI * fidget * 2))
-				return { shape: archPose({ x: gx - (f * foot) / 2, y: -TAIL_R }, { x: gx + (f * foot) / 2, y: -HEAD_R }), k: 230 }
-			}
-			if (worm.fidget === 'peek') return { shape: place(idlePose(t, 1.3 * u, -0.25 * u), f, gx), k: 200 }
-		}
-		return { shape: place(idlePose(t, worm.listening ? 0.4 : 0), f, gx), k: 170 }
-	}
-
-	/** Emerging (rising straight up out of its hole) and diving (slurped down it). */
-	private kinematic(worm: Worm, now: number) {
-		const still = this.reducedMotion.matches
-		const e = (now - worm.modeAt) / (worm.mode === 'emerge' ? EMERGE_MS : DIVE_MS)
-		const body = worm.body
-		if (worm.mode === 'emerge') {
-			if (still || e >= 1) {
-				body.set(this.risen(worm, 1))
-				worm.mode = 'here'
-				worm.modeAt = now
-				if (!still) worm.stretchAt = now
-				return
-			}
-			body.set(this.risen(worm, e))
-			return
-		}
-		const dive = worm.dive!
-		if (still || e >= 1) {
-			if (dive.to && !worm.leaving) {
-				// Under the canvas and up again over there, facing the way it went.
-				const to = worm.goal ?? dive.to
-				if (Math.abs(to.x - worm.root.x) > 1e-6) worm.facing = Math.sign(to.x - worm.root.x)
-				worm.root = { ...to }
-				worm.dive = null
-				this.emerge(worm, now)
-			} else worm.gone = true
-			return
-		}
-		// Down the hole head first, the rest following along its own body.
-		const from = dive.from
-		const deep = LENGTH + 12
-		const path: Vec[] = [{ x: worm.hole, y: deep }, { x: worm.hole, y: -HEAD_R }, ...from]
-		const cum = [0]
-		for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y))
-		const travel = cum[cum.length - 1] - cum[1] + HEAD_R + TAIL_R * 2 + 2
-		const pull = travel * e * e
-		body.set(from.map((_, i) => along(path, cum, cum[i + 2] - pull)))
-	}
-
-	/** Rising out of the hole, u 0..1: straight up, head first, with a little overshoot and wobble. */
-	private risen(worm: Worm, u: number): Vec[] {
-		const rise = u >= 1 ? 1 : easeOutBack(u)
-		const depth = (1 - rise) * (LENGTH + 10)
-		return Array.from({ length: POINTS }, (_, i) => {
-			const k = 1 - i / (POINTS - 1)
-			return {
-				x: worm.hole + 2.2 * Math.sin(u * 14 + i * 0.6) * (1 - u) * k,
-				y: -TAIL_R - (POINTS - 1 - i) * (LENGTH / (POINTS - 1)) + depth,
-			}
-		})
+		worm.offV.x -= Math.cos(worm.heading) * 150
+		worm.offV.y -= Math.sin(worm.heading) * 150 + 60
 	}
 
 	/** Where the eye looks, how open it is, and its blinks. */
 	private eyes(worm: Worm, now: number, elapsed: number) {
 		const still = this.reducedMotion.matches
 		const eye = worm.eye
-		const f = worm.facing
 		const t = now / 1000 + worm.seed
 		const startle = still ? 0 : startleAmount(worm, now)
-		const head = worm.drawn[0] ?? this.editor.pageToScreen(worm.root)
+		const at = worm.shape?.eye ?? this.centreOf(worm)
 		const toward = (p: Vec): Vec => {
-			const dx = p.x - head.x
-			const dy = p.y - head.y
+			const dx = p.x - at.x
+			const dy = p.y - at.y
 			const l = Math.hypot(dx, dy) || 1
 			return { x: dx / l, y: dy / l }
 		}
-		const stare = this.pointer && !this.press && Math.hypot(this.pointer.x - head.x, this.pointer.y - head.y) < STARE_PX ? this.pointer : null
+		const stare = this.pointer && !this.press && Math.hypot(this.pointer.x - at.x, this.pointer.y - at.y) < STARE_PX ? this.pointer : null
 		const calling = worm.calls > 0 && !worm.el.classList.contains('attending')
-		let look: Vec
-		let lid = 0.3
+		const ahead = { x: Math.cos(worm.heading) * 0.75, y: Math.sin(worm.heading) * 0.75 }
+		let look: Vec = ahead
+		let lid = 0
 		let wide = 0
 		let slant = 0
 		let squeeze = 0
+		let lower = 0
+		let dizzy = 0
 		const fighting = this.fights.eye(worm, now) ?? this.slaps.eye(worm, now)
-		if (fighting) ({ look, lid, wide, slant, squeeze } = fighting)
+		if (fighting) ({ look, lid, wide, slant, squeeze, lower, dizzy } = fighting)
 		else if (worm.mode === 'carried') {
-			// Panicking: darting about, mostly down at the drop.
+			// squinting, peering down at where it'll be dropped, eyes darting
 			if (now > worm.nextDart) {
-				const a = Math.PI / 2 + (Math.random() - 0.5) * 2.6
-				worm.dart = { x: Math.cos(a), y: Math.sin(a) }
-				worm.nextDart = now + 110 + Math.random() * 170
+				worm.dart = { x: (Math.random() - 0.5) * 0.9, y: 0.7 + Math.random() * 0.3 }
+				worm.nextDart = now + 160 + Math.random() * 260
 			}
 			look = worm.dart
-			lid = 0
-			wide = 1
-		} else if (worm.mode === 'falling') {
-			look = { x: 0, y: 1 }
-			lid = 0
-			wide = 1
+			lid = 0.4
+			lower = 0.35
+			slant = 0.25
 		} else if (startle > 0) {
 			look = { x: 0, y: 0 }
-			lid = 0
 			wide = startle
-		} else if (worm.mode === 'emerge' || worm.mode === 'dive') {
-			look = { x: 0.3 * f, y: -0.7 }
-			lid = 0.15
+		} else if (worm.mode === 'pop' || worm.mode === 'vanish') {
+			look = ahead
+			wide = 0.4
 		} else if (worm.asleep) {
 			look = { x: 0, y: 0.4 }
 			lid = 1
-		} else if (worm.walk) {
-			look = { x: 0.85 * f, y: 0.35 }
-			lid = 0.25
+		} else if (worm.trip) {
+			look = { x: ahead.x * 1.2, y: ahead.y * 1.2 }
 		} else if (calling) {
-			look = stare ? toward(stare) : { x: 0.3 * Math.sin(t * 2.2), y: 0.2 }
-			lid = 0
-			wide = 0.7
-		} else if (worm.writhe) {
-			// Scrunched up and furrowed, rolling upward with strain and darting about; screwed shut in a fit.
-			const w = worm.writhe
+			look = stare ? toward(stare) : { x: 0.5 * Math.sin(t * 2.2), y: -0.15 }
+			wide = 0.85
+		} else if (worm.fretting) {
+			// looking up and about, thinking, darting; squinting now and then; screwed up in a fit
 			if (now > worm.nextDart) {
-				worm.dart = { x: (Math.random() - 0.5) * 0.7, y: (Math.random() - 0.5) * 0.5 }
-				worm.nextDart = now + 180 + Math.random() * 520
+				worm.dart = { x: (Math.random() - 0.5) * 0.9, y: (Math.random() - 0.5) * 0.5 }
+				worm.nextDart = now + 220 + Math.random() * 600
 			}
-			const k = w.calm ? 0.3 : 1
-			// (kept below the half-shut lid, so it stays in sight)
-			look = { x: 0.7 * wobble(t * 0.8 + 5) + worm.dart.x * k, y: 0.15 + 0.4 * wobble(t * 0.6 + 21) + worm.dart.y * k * 0.5 }
-			const shut = Math.max(w.clench * (1 - w.strain), w.press)
-			lid = (w.calm ? 0.3 : 0.42 + 0.12 * w.intensity) + (1 - 0.42) * Math.min(1, shut * 1.6)
-			slant = w.calm ? 0.25 : 0.45
-			squeeze = shut > 0.4 ? 1 : 0
-			wide = 0
+			const calm = worm.bubble ? 0.4 : 1
+			look = { x: 0.5 * wobble(t * 0.7 + 5) + worm.dart.x * calm, y: -0.55 + 0.25 * wobble(t * 0.6 + 21) + worm.dart.y * 0.4 * calm }
+			const squint = Math.max(0, wobble(t * 0.35 + 3)) * calm
+			lid = 0.08 + 0.4 * squint
+			lower = 0.4 * squint
+			const fit = (now - worm.fit) / FIT_MS
+			if (!still && fit >= 0 && fit < 1) {
+				const shut = Math.pow(Math.sin(Math.PI * fit), 0.5)
+				lid = Math.max(lid, 0.3 + 0.7 * shut)
+				squeeze = shut > 0.75 ? 1 : 0
+				// the lid flicking from one angle to the other
+				slant = 0.38 * (Math.sin(now * 0.03) > 0 ? 1 : -1) * Math.min(1, shut * 1.4)
+				lower = Math.max(lower, 0.3 * shut)
+			}
 		} else if (worm.talk > 0.05) {
-			look = { x: 0.55 * f + 0.3 * Math.sin(t * 3.1), y: -0.45 + 0.25 * Math.sin(t * 4.7) }
-			lid = 0.15 + 0.55 * Math.pow(Math.max(0, Math.sin(t * 2.3)), 10)
+			look = { x: ahead.x * 0.5 + 0.25 * Math.sin(t * 3.1), y: -0.35 + 0.2 * Math.sin(t * 4.7) }
 		} else if (worm.listening) {
-			look = { x: -0.2, y: 0.95 }
-			lid = 0.1
+			look = { x: -0.1, y: 0.95 }
+		} else if (worm.pointAt) {
+			look = toward(this.editor.pageToScreen(worm.pointAt))
 		} else if (stare) {
 			look = toward(stare)
-			lid = 0.12
 		} else {
 			if (now > worm.nextGlance) {
 				const box = worm.focus
-				if (box && Math.random() < 0.6) {
-					const c = this.editor.pageToScreen({ x: box.x + box.w / 2, y: box.y + box.h / 2 })
-					worm.glance = toward(c)
+				const r = Math.random()
+				if (box && r < 0.5) {
+					worm.glance = toward(this.editor.pageToScreen({ x: box.x + box.w / 2, y: box.y + box.h / 2 }))
+				} else if (r < 0.75) {
+					worm.glance = { ...ahead }
 				} else {
-					const a = (f > 0 ? 0 : Math.PI) + (Math.random() - 0.5) * 2.4
-					worm.glance = { x: Math.cos(a) * 0.9, y: Math.sin(a) * 0.6 }
+					const a = worm.heading + (Math.random() - 0.5) * 3
+					worm.glance = { x: Math.cos(a) * 0.85, y: Math.sin(a) * 0.7 }
 				}
-				worm.nextGlance = now + 900 + Math.random() * 2600
+				worm.nextGlance = now + 800 + Math.random() * 2600
 			}
 			look = worm.glance
 		}
-		if (!still && worm.mode !== 'carried' && !worm.asleep && now > worm.nextBlink) {
+		// blinks (even with reduced motion: they're the one thing it keeps); calling, in twos
+		if (worm.mode !== 'carried' && !worm.asleep && now > worm.nextBlink) {
 			worm.blinkStart = now
-			worm.nextBlink = now + (calling ? 1600 : 2000 + Math.random() * 3600)
+			worm.doubleBlink = calling || Math.random() < 0.2
+			worm.nextBlink = now + (calling ? 1700 : 2200 + Math.random() * 3600)
 		}
-		const blink = (now - worm.blinkStart) / 170
-		if (!still && blink >= 0 && blink < 1) lid = Math.max(lid, Math.sin(Math.PI * blink))
-		const k = still ? 1 : 1 - Math.exp(-elapsed / (worm.mode === 'carried' ? 28 : 60))
+		const blink = (now - worm.blinkStart) / 150
+		const again = (now - worm.blinkStart - 240) / 150
+		let blinking = false
+		if (blink >= 0 && blink < 1) {
+			lid = Math.max(lid, Math.sin(Math.PI * blink))
+			blinking = true
+		} else if (worm.doubleBlink && again >= 0 && again < 1) {
+			lid = Math.max(lid, Math.sin(Math.PI * again))
+			blinking = true
+		}
+		const wake = (now - worm.wakeAt) / WAKE_MS
+		if (!still && wake >= 0 && wake < 1) lid = Math.max(lid, 1 - smoothstep(wake / 0.6))
+		// saccades: the pupil snaps over, rather than drifting
+		const k = still ? 1 : 1 - Math.exp(-elapsed / 32)
 		eye.look = { x: eye.look.x + (look.x - eye.look.x) * k, y: eye.look.y + (look.y - eye.look.y) * k }
-		eye.lid += (lid - eye.lid) * (still ? 1 : blink >= 0 && blink < 1 ? 1 : 1 - Math.exp(-elapsed / 70))
+		eye.lid += (lid - eye.lid) * (still || blinking ? 1 : 1 - Math.exp(-elapsed / 60))
 		eye.wide += (wide - eye.wide) * (still ? 1 : 1 - Math.exp(-elapsed / 90))
-		eye.slant = (eye.slant ?? 0) + (slant - (eye.slant ?? 0)) * (still ? 1 : 1 - Math.exp(-elapsed / 120))
+		eye.slant += (slant - eye.slant) * (still ? 1 : 1 - Math.exp(-elapsed / 50))
+		eye.lower += (lower - eye.lower) * (still ? 1 : 1 - Math.exp(-elapsed / 80))
 		eye.squeeze = squeeze
+		eye.dizzy = dizzy
 	}
 
 	private onScreen(p: Vec, margin: number) {
@@ -1560,151 +1464,109 @@ export class AgentWorms {
 		}
 	}
 
-	// ---------- subagents' tiny loopers ----------
+	// ---------- subagents' dots ----------
 
-	/** Adds tiny loopers for subagents that started and sends off those whose subagent finished. */
-	private syncTinies(worm: Worm, subagents: SubagentInfo[], now: number) {
+	/** Adds dots for subagents that started and sends off those whose subagent finished. */
+	private syncDots(worm: Worm, subagents: SubagentInfo[], now: number) {
 		const ids = new Set(subagents.map((s) => s.id))
-		for (const tiny of worm.tinies.values()) {
-			if (!ids.has(tiny.id) && !tiny.leaving) {
-				tiny.leaving = true
-				tiny.leaveStart = now
+		for (const dot of worm.dots.values()) {
+			if (!ids.has(dot.id) && !dot.leaving) {
+				dot.leaving = true
+				dot.leaveStart = now
 			}
 		}
 		subagents.forEach((s, slot) => {
 			const tip = s.agent ? `${s.title || 'Subagent'} · @${s.agent}` : s.title || 'Subagent'
-			let tiny = worm.tinies.get(s.id)
-			if (!tiny || tiny.leaving) {
-				const seed = Math.random() * 1000
-				const dir = slot % 2 ? -1 : 1
-				const start = (Math.random() - 0.5) * TINY_RANGE
-				tiny = {
+			let dot = worm.dots.get(s.id)
+			if (!dot || dot.leaving) {
+				dot = {
 					id: s.id,
 					tip,
-					seed,
+					seed: Math.random() * 1000,
 					slot,
+					a: worm.orbit + (slot * Math.PI * 2) / Math.max(1, subagents.length),
 					scale: 0,
 					popStart: now,
 					leaving: false,
 					leaveStart: 0,
-					head: start + (dir * TINY_FOOT) / 2,
-					tail: start - (dir * TINY_FOOT) / 2,
-					dir,
-					phase: 'gather',
-					at: now + Math.random() * TINY_STRIDE_MS * 0.5,
-					from: start - (dir * TINY_FOOT) / 2,
-					screen: { x: -1e9, y: -1e9 },
 					fade: 1,
+					screen: { x: -1e9, y: -1e9 },
+					depth: 0,
 				}
-				worm.tinies.set(s.id, tiny)
+				worm.dots.set(s.id, dot)
 			}
-			tiny.slot = slot
-			tiny.tip = tip
+			dot.slot = slot
+			dot.tip = tip
 		})
 	}
 
-	/**
-	 * Moves and draws the tiny loopers by `mid` (screen, the ground under the parent): those behind
-	 * it (layer "back", moving them all) before it and those in front ("front") after.
-	 */
-	private drawTinies(worm: Worm, now: number, mid: Vec, layer: 'back' | 'front') {
-		const ctx = this.ctx
-		const alpha = ctx.globalAlpha
+	/** Moves the dots round their orbit about `c` (screen), spaced evenly; false-free: removes the ones gone. */
+	private moveDots(worm: Worm, now: number, elapsed: number, c: Vec) {
 		const still = this.reducedMotion.matches
-		if (layer === 'back') worm.tiniesAt = now
-		for (const tiny of [...worm.tinies.values()]) {
-			if (layer === 'back' && !this.moveTiny(worm, tiny, now)) continue
-			const lane = TINY_LANES[tiny.slot % TINY_LANES.length]
-			if ((layer === 'front') !== lane > 0) continue
-			const size = TINY_SIZE * tiny.scale
-			if (size < 0.02) continue
-			// Leaving, it wriggles off outward.
-			const away = (tiny.leaving ? 1 + 1.4 * Math.pow(Math.min(1, (now - tiny.leaveStart) / TINY_LEAVE_MS), 2) : 1) * this.fights.scatter(worm, now)
-			const y = mid.y + lane * away
-			const tr = TAIL_R * size
-			const hr = HEAD_R * size
-			const e = still ? 0 : Math.min(1, Math.max(0, (now - tiny.at) / (tiny.phase === 'turn' ? TINY_TURN_MS : TINY_STRIDE_MS / 2)))
-			const lift = Math.sin(Math.PI * e)
-			const a = { x: mid.x + tiny.tail * away, y: y - tr - (tiny.phase === 'gather' ? 2 * lift : 0) }
-			let b = { x: mid.x + tiny.head * away, y: y - hr - (tiny.phase === 'reach' ? 3 * lift : 0) }
-			if (tiny.phase === 'turn') {
-				// up and over its tail to face the other way
-				const th = Math.PI * easeInOutSine(e)
-				b = { x: a.x + tiny.dir * TINY_FOOT * Math.cos(th), y: y - hr - TINY_FOOT * 1.1 * Math.sin(th) }
-			}
-			const pts = archPose(a, b, TINY_POINTS, LENGTH * size)
-			// a soft shadow under it
-			ctx.globalAlpha = alpha * tiny.fade * 0.16
-			ctx.fillStyle = '#000'
-			ctx.beginPath()
-			ctx.ellipse((a.x + b.x) / 2, y + 0.5, Math.abs(b.x - a.x) / 2 + 3, 1.6, 0, 0, Math.PI * 2)
-			ctx.fill()
-			ctx.globalAlpha = alpha * tiny.fade
-			drawTiny(ctx, pts, size, worm.tinyColor, { x: Math.sign(b.x - a.x) * 0.8 || 0, y: 0.2 })
-			tiny.screen = { ...pts[0] }
-		}
-		ctx.globalAlpha = alpha
-	}
-
-	/** One tiny looper's step along its lane; false once it has gone (and is removed). */
-	private moveTiny(worm: Worm, tiny: Tiny, now: number) {
-		const still = this.reducedMotion.matches
-		if (tiny.leaving) {
-			const u = still ? 1 : (now - tiny.leaveStart) / TINY_LEAVE_MS
-			if (u >= 1 || worm.asleep) {
-				worm.tinies.delete(tiny.id)
-				if (this.tipFor === tiny) this.tipFor = null
-				return false
-			}
-			tiny.fade = 1 - u
-			tiny.scale = 1 - 0.5 * u
-		} else {
-			const popT = Math.min(1, (now - tiny.popStart) / POP_MS)
-			tiny.scale = still ? 1 : easeOutBack(popT)
-		}
-		if (still) return true
-		// Inching: the tail gathers up behind the head, then the head reaches on; at the end of its
-		// lane it rears up over its tail and heads back.
-		for (;;) {
-			const dur = tiny.phase === 'turn' ? TINY_TURN_MS : TINY_STRIDE_MS / 2
-			if (now - tiny.at < dur) break
-			tiny.at += dur
-			if (tiny.phase === 'gather') {
-				tiny.tail = tiny.from + tiny.dir * TINY_STRIDE
-				tiny.phase = 'reach'
-				tiny.from = tiny.head
-			} else if (tiny.phase === 'reach') {
-				tiny.head = tiny.from + tiny.dir * TINY_STRIDE
-				const end = tiny.dir * tiny.head > TINY_RANGE
-				tiny.phase = end ? 'turn' : 'gather'
-				tiny.from = tiny.tail
+		const dt = elapsed / 1000
+		const t = now / 1000
+		if (!still) worm.orbit += ORBIT_SPEED * dt
+		const active = [...worm.dots.values()].filter((d) => !d.leaving).sort((a, b) => a.slot - b.slot)
+		const n = active.length
+		const scatter = this.fights.scatter(worm, now)
+		for (const dot of [...worm.dots.values()]) {
+			if (dot.leaving) {
+				const u = still ? 1 : (now - dot.leaveStart) / DOT_LEAVE_MS
+				if (u >= 1 || worm.asleep) {
+					worm.dots.delete(dot.id)
+					if (this.tipFor === dot) this.tipFor = null
+					continue
+				}
+				dot.fade = 1 - u
+				if (!still) dot.a += ORBIT_SPEED * 1.5 * dt
 			} else {
-				tiny.dir = -tiny.dir
-				tiny.head = tiny.tail + tiny.dir * TINY_FOOT
-				tiny.phase = 'gather'
-				tiny.from = tiny.tail
+				dot.scale = still ? 1 : easeOutBack(Math.min(1, (now - dot.popStart) / DOT_POP_MS))
+				const want = worm.orbit + (active.indexOf(dot) * Math.PI * 2) / Math.max(1, n)
+				dot.a += turn(dot.a, want) * (still ? 1 : 1 - Math.exp(-elapsed / 450))
 			}
+			const out = dot.leaving ? 1 + 0.8 * (1 - dot.fade) : 0.45 + 0.55 * Math.min(1, dot.scale)
+			const r = out * scatter * (1 + 0.1 * (dot.slot % 2))
+			const bob = still ? 0 : 2 * Math.sin(t * 1.7 + dot.seed)
+			const drift = still ? 0 : 1.5 * wobble(t * 0.9 + dot.seed)
+			dot.depth = Math.sin(dot.a)
+			dot.screen = { x: c.x + Math.cos(dot.a) * ORBIT.x * r + drift, y: c.y + 2 + Math.sin(dot.a) * ORBIT.y * r + bob }
 		}
-		const e = easeInOutSine((now - tiny.at) / (TINY_STRIDE_MS / 2))
-		if (tiny.phase === 'gather') tiny.tail = tiny.from + tiny.dir * TINY_STRIDE * e
-		else if (tiny.phase === 'reach') tiny.head = tiny.from + tiny.dir * TINY_STRIDE * e
-		return true
 	}
 
-	/** The tooltip of the tiny looper under the pointer, following it. */
+	/** Draws the dots behind the pointer (the far side of their orbit) or in front of it. */
+	private drawDots(worm: Worm, front: boolean) {
+		const ctx = this.ctx
+		const dpr = window.devicePixelRatio || 1
+		ctx.save()
+		for (const dot of worm.dots.values()) {
+			if (dot.depth > 0 !== front || dot.screen.x < -1e8) continue
+			const r = DOT_R * (dot.leaving ? 1 - 0.4 * (1 - dot.fade) : dot.scale) * (0.85 + 0.15 * dot.depth)
+			if (r < 0.2) continue
+			ctx.globalAlpha = dot.fade * (0.8 + 0.2 * dot.depth)
+			ctx.shadowColor = worm.color || worm.dotColor
+			ctx.shadowBlur = 6 * dpr
+			ctx.fillStyle = worm.dotColor
+			ctx.beginPath()
+			ctx.arc(dot.screen.x, dot.screen.y, r, 0, Math.PI * 2)
+			ctx.fill()
+		}
+		ctx.restore()
+	}
+
+	/** The tooltip of the dot under the pointer, following it. */
 	private showTip() {
-		let best: Tiny | null = null
+		let best: Dot | null = null
 		const p = this.pointer
 		if (p && !this.press) {
-			let bestD = TINY_HOVER_PX + (this.tipFor ? 4 : 0)
+			let bestD = DOT_HOVER_PX + (this.tipFor ? 4 : 0)
 			for (const worm of this.worms.values()) {
 				if (worm.leaving || worm.asleep) continue
-				for (const tiny of worm.tinies.values()) {
-					if (tiny.leaving || tiny.scale < 0.5) continue
-					const d = Math.hypot(tiny.screen.x - p.x, tiny.screen.y - p.y)
+				for (const dot of worm.dots.values()) {
+					if (dot.leaving || dot.scale < 0.5) continue
+					const d = Math.hypot(dot.screen.x - p.x, dot.screen.y - p.y)
 					if (d < bestD) {
 						bestD = d
-						best = tiny
+						best = dot
 					}
 				}
 			}
@@ -1714,7 +1576,7 @@ export class AgentWorms {
 			this.tip.hidden = !best
 			if (best) this.tip.textContent = best.tip
 		}
-		if (best) this.tip.style.transform = `translate(${best.screen.x}px, ${best.screen.y - 10}px) translate(-50%, -100%)`
+		if (best) this.tip.style.transform = `translate(${best.screen.x}px, ${best.screen.y - 8}px) translate(-50%, -100%)`
 	}
 
 	// ---------- drawing ----------
@@ -1740,8 +1602,8 @@ export class AgentWorms {
 			layer.height = this.canvas.height
 		}
 		const ctx = layer.getContext('2d')!
-		const at = this.editor.pageToScreen(worm.root)
-		const R = 120
+		const at = this.centreOf(worm)
+		const R = 90
 		const sx = Math.max(0, Math.floor((at.x - R) * dpr))
 		const sy = Math.max(0, Math.floor((at.y - R) * dpr))
 		const sw = Math.min(layer.width - sx, Math.ceil(R * 2 * dpr))
@@ -1765,105 +1627,62 @@ export class AgentWorms {
 	}
 
 	private drawCreature(worm: Worm, now: number, elapsed: number) {
-		const ctx = this.ctx
-		const ground = this.editor.pageToScreen(worm.root)
-		// A landing squashes it flat and wide for a moment, about the ground under its middle.
-		const sq = worm.squash
-		const sx = 1 + 0.14 * sq
-		const sy = 1 - 0.26 * sq
-		const pts = worm.body.p.map((p) => ({ x: ground.x + p.x * sx, y: ground.y + p.y * sy }))
-		const writhe = worm.writhe
-		if (writhe && !this.reducedMotion.matches) {
-			// a shiver over the writhing, stronger in a clench
-			const amp = (writhe.calm ? 0.15 : 0.35 + 0.9 * writhe.clench) * writhe.intensity
-			pts.forEach((p, i) => {
-				const f = i / (POINTS - 1)
-				p.x += Math.sin(now * 0.071 + i * 1.7) * amp * (1 - f * 0.7)
-				p.y += Math.sin(now * 0.063 + i * 2.3 + 1) * amp * 0.5 * (1 - f * 0.7)
-			})
+		const still = this.reducedMotion.matches
+		const t = now / 1000 + worm.seed
+		const home = this.centreOf(worm)
+		const c = { x: home.x + worm.off.x, y: home.y + worm.off.y }
+		let scale = 1 - 0.12 * worm.squash * Math.cos((now - worm.modeAt) * 0.03)
+		let heading = worm.heading
+		const calling = worm.calls > 0 && !worm.el.classList.contains('attending')
+		if (worm.mode === 'pop') scale *= easeOutBack(Math.min(1, (now - worm.modeAt) / POP_MS))
+		else if (worm.mode === 'vanish') scale *= 1 - Math.pow(Math.min(1, (now - worm.modeAt) / VANISH_MS), 2)
+		if (!still && worm.mode !== 'carried') {
+			// hovering: a gentle bob; asleep, slow breaths; calling, little hops
+			if (worm.asleep) scale *= 1 + 0.035 * Math.sin(t * 1.3)
+			else if (calling) c.y -= 3.5 * Math.abs(Math.sin(t * 4.2))
+			else c.y += 1.6 * Math.sin(t * 2.3)
+			// thinking: a fine fast tremble
+			if (worm.fretting) {
+				const k = worm.bubble ? 0.4 : 1
+				c.x += 0.5 * k * Math.sin(now * 0.11)
+				c.y += 0.4 * k * Math.sin(now * 0.093 + 1)
+				heading += 0.03 * k * Math.sin(now * 0.077)
+			}
+			const wake = (now - worm.wakeAt) / WAKE_MS
+			if (wake >= 0 && wake < 1) scale *= 1 + 0.14 * Math.sin(Math.PI * wake)
 		}
-		if (worm.tinies.size) this.drawTinies(worm, now, ground, 'back')
-
-		const kinematic = worm.mode === 'emerge' || worm.mode === 'dive'
-		if (worm.mode === 'here' || worm.mode === 'falling') {
-			// its shadow, fainter the higher it is
-			let lo = Infinity
-			let hi = -Infinity
-			let bottom = -Infinity
-			pts.forEach((p, i) => {
-				lo = Math.min(lo, p.x)
-				hi = Math.max(hi, p.x)
-				bottom = Math.max(bottom, p.y + radius(i / (POINTS - 1)))
-			})
-			const height = Math.max(0, ground.y - bottom)
-			ctx.save()
-			ctx.globalAlpha *= 0.2 * Math.max(0, 1 - height / 90)
-			ctx.fillStyle = '#000'
-			ctx.beginPath()
-			ctx.ellipse((lo + hi) / 2, ground.y + 0.5, (hi - lo) / 2 + 5, 2.6, 0, 0, Math.PI * 2)
-			ctx.fill()
-			ctx.restore()
+		const shape = place(c, heading, Math.max(0.001, scale))
+		worm.shape = shape
+		if (worm.dots.size) {
+			this.moveDots(worm, now, elapsed, c)
+			this.drawDots(worm, false)
 		}
-		if (kinematic) {
-			// the hole it comes out of or goes down
-			const e = (now - worm.modeAt) / (worm.mode === 'emerge' ? EMERGE_MS : DIVE_MS)
-			const open = worm.mode === 'emerge' ? Math.min(1, (1 - e) / 0.35, e / 0.1) : Math.min(1, e / 0.15, (1 - e) / 0.12)
-			ctx.save()
-			ctx.globalAlpha *= 0.55 * Math.max(0, open)
-			ctx.fillStyle = '#000'
-			ctx.beginPath()
-			ctx.ellipse(ground.x + worm.hole, ground.y, 10 * Math.max(0.3, open), 3, 0, 0, Math.PI * 2)
-			ctx.fill()
-			ctx.restore()
-			ctx.save()
-			ctx.beginPath()
-			ctx.rect(-1e5, -1e5, 2e5, 1e5 + ground.y + 0.5)
-			ctx.clip()
-		}
-		const stress = writhe && !writhe.calm ? { amount: Math.min(1, 0.35 + writhe.intensity * 0.5 + writhe.clench + writhe.press), t: this.reducedMotion.matches ? 0 : now / 1000 + worm.seed, color: worm.stressColor } : undefined
-		const samples = drawLooper(ctx, pts, worm.eye, worm.palette, 1, true, stress)
-		if (kinematic) ctx.restore()
-		if (worm.tinies.size) this.drawTinies(worm, now, ground, 'front')
-
-		worm.drawn = pts
-		const n = samples.length
-		worm.hit = []
-		for (let i = 0; i < n; i += 2) {
-			if (kinematic && samples[i].y > ground.y) continue
-			worm.hit.push({ x: samples[i].x, y: samples[i].y, r: radius(i / (n - 1)) + 1 })
-		}
-		this.placeLabels(worm, pts, ground, elapsed)
+		// thinking: a soft glow pulsing in its colour
+		const glow = worm.think * (still ? 0.6 : 0.5 + 0.3 * Math.sin(now * 0.0055))
+		drawPointer(this.ctx, shape, worm.palette, worm.eye, { dpr: window.devicePixelRatio || 1, glow, glowColor: worm.color })
+		if (worm.dots.size) this.drawDots(worm, true)
+		this.placeLabels(worm, shape, elapsed)
 	}
 
 	/**
-	 * Where the name tag hangs (under it, on the ground), and the head and middle of its body from
-	 * there (CSS --hx/--hy and --mx/--my), which the bubbles, thought cloud, zzz and ring follow.
-	 * Placed from this frame's camera (`ground`, its root on screen), so they move with the canvas
-	 * exactly; only how they sit on the body is eased, in the creature's own frame.
+	 * Where the name tag hangs (under it, where it is on the page, following knocks and dangling),
+	 * and its top and middle from there (CSS --hx/--hy and --mx/--my), which the bubbles, thought
+	 * cloud, zzz and ring follow. Placed from this frame's camera, so they move with the canvas
+	 * exactly; only how they sit on the shape is eased.
 	 */
-	private placeLabels(worm: Worm, pts: Vec[], ground: Vec, elapsed: number) {
+	private placeLabels(worm: Worm, shape: Shape, elapsed: number) {
 		const still = this.reducedMotion.matches
-		let lo = Infinity
-		let hi = -Infinity
-		let top = Infinity
-		let bottom = -Infinity
-		pts.forEach((p, i) => {
-			const r = radius(i / (POINTS - 1))
-			lo = Math.min(lo, p.x - ground.x)
-			hi = Math.max(hi, p.x - ground.x)
-			top = Math.min(top, p.y - ground.y - r)
-			bottom = Math.max(bottom, p.y - ground.y + r)
-		})
-		const off = worm.mode === 'carried' || worm.mode === 'falling'
-		const want = { x: (lo + hi) / 2, y: off ? Math.max(0, bottom) : 0 }
+		const ground = this.editor.pageToScreen(worm.root)
+		const want = { x: worm.off.x, y: worm.off.y }
 		const k = (ms: number) => (still || !worm.anchor ? 1 : 1 - Math.exp(-elapsed / ms))
 		const a = worm.anchor ?? want
 		worm.anchor = { x: a.x + (want.x - a.x) * k(45), y: a.y + (want.y - a.y) * k(45) }
 		const anchor = worm.anchor
-		const head = { x: pts[0].x - ground.x - anchor.x, y: Math.min(pts[0].y - ground.y, 0) - HEAD_R - anchor.y }
-		// The bubbles follow the head, but not every little bob of it.
+		const c = shape.centre
+		const head = { x: c.x - ground.x - anchor.x, y: Math.min(shape.top, c.y - SIZE * 0.45) - ground.y - anchor.y }
+		// The bubbles follow its top, but not every little bob of it.
 		worm.headAt = { x: worm.headAt.x + (head.x - worm.headAt.x) * k(110), y: worm.headAt.y + (head.y - worm.headAt.y) * k(110) }
-		worm.middleAt = { x: (lo + hi) / 2 - anchor.x, y: (Math.max(top, -90) + Math.min(bottom, 0)) / 2 - anchor.y }
+		worm.middleAt = { x: c.x - ground.x - anchor.x, y: c.y - ground.y - anchor.y }
 		const el = worm.el
 		el.style.transform = `translate(${ground.x + anchor.x}px, ${ground.y + anchor.y}px)`
 		el.style.setProperty('--hx', `${worm.headAt.x.toFixed(1)}px`)
@@ -1902,18 +1721,49 @@ function startleAmount(worm: Worm, now: number) {
 	return t >= 0 && t < 1 ? 1 - t * t : 0
 }
 
-/** Heavier tail points, to keep a standing creature's foot planted. */
-function footWeights(n: number) {
-	return Array.from({ length: POINTS }, (_, i) => (i >= POINTS - n ? 3 : 1))
+/**
+ * The point on a box's edge nearest `p`, and the outward direction there (from inside, the nearest
+ * edge's normal; from outside, the way to `p`).
+ */
+function edgeNear(p: Vec, b: Box): { at: Vec; out: Vec } {
+	const inside = p.x > b.x && p.x < b.x + b.w && p.y > b.y && p.y < b.y + b.h
+	if (!inside) {
+		const at = { x: Math.min(Math.max(p.x, b.x), b.x + b.w), y: Math.min(Math.max(p.y, b.y), b.y + b.h) }
+		const l = Math.hypot(p.x - at.x, p.y - at.y) || 1
+		return { at, out: { x: (p.x - at.x) / l, y: (p.y - at.y) / l } }
+	}
+	const d = [p.x - b.x, b.x + b.w - p.x, p.y - b.y, b.y + b.h - p.y]
+	const i = d.indexOf(Math.min(...d))
+	if (i === 0) return { at: { x: b.x, y: p.y }, out: { x: -1, y: 0 } }
+	if (i === 1) return { at: { x: b.x + b.w, y: p.y }, out: { x: 1, y: 0 } }
+	if (i === 2) return { at: { x: p.x, y: b.y }, out: { x: 0, y: -1 } }
+	return { at: { x: p.x, y: b.y + b.h }, out: { x: 0, y: 1 } }
 }
 
-/** The point `s` along a polyline (with cumulative lengths `cum`). */
-function along(path: Vec[], cum: number[], s: number): Vec {
-	if (s <= 0) return { ...path[0] }
-	let i = 1
-	while (i < cum.length - 1 && cum[i] < s) i++
-	const f = Math.min(1, (s - cum[i - 1]) / (cum[i] - cum[i - 1] || 1))
-	return { x: path[i - 1].x + (path[i].x - path[i - 1].x) * f, y: path[i - 1].y + (path[i].y - path[i - 1].y) * f }
+function rotate(v: Vec, a: number): Vec {
+	const c = Math.cos(a)
+	const s = Math.sin(a)
+	return { x: v.x * c - v.y * s, y: v.x * s + v.y * c }
+}
+
+function bezier(t: Trip, s: number): Vec {
+	const u = 1 - s
+	const a = u * u * u
+	const b = 3 * u * u * s
+	const c = 3 * u * s * s
+	const d = s * s * s
+	return { x: a * t.from.x + b * t.c1.x + c * t.c2.x + d * t.to.x, y: a * t.from.y + b * t.c1.y + c * t.c2.y + d * t.to.y }
+}
+
+function bezierTangent(t: Trip, s: number): Vec {
+	const u = 1 - s
+	const a = 3 * u * u
+	const b = 6 * u * s
+	const c = 3 * s * s
+	return {
+		x: a * (t.c1.x - t.from.x) + b * (t.c2.x - t.c1.x) + c * (t.to.x - t.c2.x),
+		y: a * (t.c1.y - t.from.y) + b * (t.c2.y - t.c1.y) + c * (t.to.y - t.c2.y),
+	}
 }
 
 function smoothstep(t: number) {

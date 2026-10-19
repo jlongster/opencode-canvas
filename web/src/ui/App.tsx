@@ -376,7 +376,7 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 	},
 	{
 		id: 'slap',
-		label: "Slap a looper · interrupts it if it's yours and working",
+		label: "Slap an agent · interrupts it if it's yours and working",
 		key: 'S',
 		icon: (
 			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

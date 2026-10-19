@@ -415,7 +415,7 @@ body,
 	margin-left: 6px;
 }
 
-/* creatures: a looper on a dark disc instead of initials (see LooperGlyph), and a slow pulsing ring, so they read as non-human */
+/* creatures: an eye pointer on a dark disc instead of initials (see PointerGlyph), and a slow pulsing ring, so they read as non-human */
 .avatar.agent {
 	background: #222228;
 }
@@ -445,15 +445,11 @@ body,
 }
 
 .agent-glyph-body {
-	fill: none;
-	stroke: currentColor;
-	stroke-width: 4.4;
-	stroke-linecap: round;
-}
-
-.agent-glyph-head,
-.agent-glyph-lid {
 	fill: currentColor;
+	stroke: rgba(0, 0, 0, 0.35);
+	stroke-width: 0.8;
+	stroke-linejoin: round;
+	paint-order: stroke;
 }
 
 .agent-glyph-eye {
@@ -463,6 +459,10 @@ body,
 .agent-glyph-pupil {
 	fill: #111113;
 	animation: agent-look 7s ease-in-out infinite;
+}
+
+.agent-glyph-glint {
+	fill: #fff;
 }
 
 @keyframes agent-look {

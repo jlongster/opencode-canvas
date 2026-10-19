@@ -4,16 +4,16 @@ import type { Vec } from '../editor/geometry'
 import type { Worm } from './AgentWorms'
 import type { Attention } from './Attention'
 import type { Conjure } from './Conjure'
-import { LENGTH, POINTS, dazedPose, idlePose, knotPose, place, standPose, wobble, type EyeState } from './Looper'
+import { LIFT, SIZE, TIP_REACH, turn, wobble, type EyeState } from './Pointer'
 import type { FightCall } from './Presence'
 
 /** a creature dropped this close (screen px) to another picks a fight with it */
 const NEAR_PX = 70
-/** squaring up, reared back; then two headbutts */
+/** squaring up, pulled back; then two lunges, tip to tip */
 const SQUARE_MS = 450
 const BUTT_MS = 430
 const LUNGE_END = SQUARE_MS + 2 * BUTT_MS
-/** tangled in a knot until they burst apart */
+/** scuffling in a dust cloud until they burst apart */
 const BURST_MS = 2550
 /** the loser lies down dazed by then at the latest */
 const DAZE_MS = BURST_MS + 750
@@ -29,8 +29,10 @@ const WAIT_MS = 8000
 const CALL_MS = 6000
 /** fight calls stamped this far off our clock are left alone */
 const STALE_MS = 5 * 60_000
-/** how far out subagents' tiny loopers run while their parent fights */
-const SCATTER = 2.6
+/** how far out subagents' dots fly while their parent fights */
+const SCATTER = 2.2
+/** the loser flies this long before it's dazed */
+const FLUNG_MS = 650
 
 interface Pending {
 	call: FightCall
@@ -46,18 +48,14 @@ interface Bout {
 	center: Vec
 	home: Record<string, Vec>
 	side: Record<string, number>
-	/** headbutts landed, by session id */
+	/** lunges landed, by session id */
 	hits: Record<string, number>
 	clashes: { at: number; p: Vec }[]
 	nextJolt: number
 	burst: boolean
-	/** the winner stands tall on its foot here (page x) */
-	winnerFoot: number
-	/** the loser: bounced off the ground, when it lay down dazed and where (page x) */
-	bounced: boolean
-	bounceAt: number
+	/** the loser: when it came to rest dazed, and where (screen px from its spot) */
 	flatAt: number
-	flatX: number
+	flatOff: Vec
 }
 
 interface Role {
@@ -68,23 +66,28 @@ interface Role {
 	won: boolean
 }
 
-export interface FightPosture {
-	shape: Vec[]
+/** How a creature is held while it fights or is knocked about (see AgentWorms.knock and steer). */
+export interface Pose {
+	/** screen px from its spot it's pulled to, and how stiffly (rad/s) */
+	off: Vec
 	k: number
-	weights?: number[]
-	limp?: boolean
-	stretch?: number
+	/** thrown: its offset left to fly (only drag) */
+	free?: boolean
+	/** where it points (radians), or null to spin freely; and how stiffly it turns */
+	heading: number | null
+	turn?: number
 }
 
 /**
- * Creatures dropped next to each other fight: they rear up, headbutt, tangle into a writhing knot
- * in a puff of dust, then burst apart, one flung off and dazed, the other standing tall. Then they
- * carry on as they were (the loser inching back to where it was put: positions never change).
+ * Creatures dropped next to each other fight: they point at each other and pull back, lunge in
+ * twice till their tips clash, scuffle in a puff of dust, then burst apart, one flung off spinning
+ * and dazed, the other wiggling proudly. Then they carry on as they were (the loser gliding back
+ * to where it was put: positions never change).
  *
  * The tab that dropped one decides (who's nearby, on its screen, and who wins) and broadcasts that
  * as a fight call in its presence; every tab, its own included, plays the fight once both creatures
- * are back where they were put (the dropped one crawls over on other tabs first). Each tab runs the
- * bodies itself, so the fight looks alike everywhere without sending any of its motion.
+ * are back where they were put (the dropped one glides over on other tabs first). Each tab runs the
+ * motion itself, so the fight looks alike everywhere without sending any of its motion.
  */
 export class Fights {
 	private bouts: Bout[] = []
@@ -111,7 +114,7 @@ export class Fights {
 		let best: Worm | null = null
 		let bestD = NEAR_PX
 		for (const o of worms) {
-			if (o === worm || !o.conjured || o.leaving || !o.sessionId || o.sessionId === a || o.mode === 'carried' || o.mode === 'dive') continue
+			if (o === worm || !o.conjured || o.leaving || !o.sessionId || o.sessionId === a || o.mode === 'carried' || o.mode === 'vanish') continue
 			const s = this.editor.pageToScreen(o.root)
 			const d = Math.hypot(s.x - at.x, s.y - at.y)
 			if (d < bestD) {
@@ -199,7 +202,7 @@ export class Fights {
 
 	/** Sitting where it was put, done landing and walking. */
 	private ready(w: Worm, now: number) {
-		if (w.mode !== 'here' || w.walk || !w.goal || (w.landedAt && now - w.landedAt < 300)) return false
+		if (w.mode !== 'here' || w.trip || !w.goal || now - w.modeAt < 300) return false
 		const z = this.editor.camera.peek().z
 		return Math.hypot(w.goal.x - w.root.x, w.goal.y - w.root.y) * z <= 14
 	}
@@ -220,18 +223,12 @@ export class Fights {
 			clashes: [],
 			nextJolt: now + LUNGE_END,
 			burst: false,
-			winnerFoot: 0,
-			bounced: false,
-			bounceAt: 0,
 			flatAt: 0,
-			flatX: 0,
+			flatOff: { x: 0, y: 0 },
 		}
 		for (const w of [a, b]) {
-			w.facing = bout.side[w.sessionId!]
-			w.walk = null
-			w.landedAt = 0
-			w.writhe = null
-			w.fit = null
+			w.trip = null
+			w.fretting = false
 			w.el.classList.add('fighting')
 		}
 		this.bouts.push(bout)
@@ -256,7 +253,7 @@ export class Fights {
 		return !!this.role(worm, now)
 	}
 
-	/** How far out its tiny loopers run: 1 normally. */
+	/** How far out its dots fly: 1 normally. */
 	scatter(worm: Worm, now: number) {
 		const r = this.role(worm, now)
 		if (!r || r.bout.still) return 1
@@ -264,33 +261,37 @@ export class Fights {
 		return 1 + (SCATTER - 1) * out
 	}
 
-	/** After it moved this frame: knocks and flings, and the glide toward the other. */
-	step(worm: Worm, now: number, elapsed: number, z: number) {
-		const r = this.role(worm, now)
-		if (!r) return
-		const { bout, t, side, won } = r
-		const body = worm.body
-		if (bout.still) {
-			if (t < SHAKE_MS) body.shift(1.8 * Math.sin(t * 0.11) * (1 - t / SHAKE_MS), 0)
-			return
-		}
-		if (t < BURST_MS) {
-			worm.facing = side
-			// they meet on level ground
-			worm.root.y += (bout.center.y - worm.root.y) * (1 - Math.exp(-elapsed / 220))
-		}
-		// headbutts: a knock back at the moment they clash
+	/** Where it and its foe are (from where they were put): the way to the foe, and where its centre goes for their tips to meet. */
+	private geo(worm: Worm, r: Role, z: number) {
 		const id = worm.sessionId!
+		const me = this.editor.pageToScreen(r.bout.home[id])
+		const foe = this.editor.pageToScreen(r.bout.home[r.foe])
+		const d = Math.hypot(foe.x - me.x, foe.y - me.y)
+		const dir = d > 1e-6 ? { x: (foe.x - me.x) / d, y: (foe.y - me.y) / d } : { x: r.side, y: 0 }
+		const reach = TIP_REACH * SIZE * 0.92
+		const meet = { x: dir.x * (d / 2 - reach), y: dir.y * (d / 2 - reach) }
+		// (it may sit a little off where it was put)
+		const base = { x: (r.bout.home[id].x - worm.root.x) * z, y: (r.bout.home[id].y - worm.root.y) * z }
+		return { dir, meet, base, face: Math.atan2(dir.y, dir.x) }
+	}
+
+	/** After it moved this frame: the knocks of the clashes, the shoving, the loser flung spinning. */
+	step(worm: Worm, now: number, _elapsed: number, z: number) {
+		const r = this.role(worm, now)
+		if (!r || r.bout.still) return
+		const { bout, t, side, won } = r
+		const { dir } = this.geo(worm, r, z)
+		const id = worm.sessionId!
+		// lunges: a knock back at the moment their tips clash
 		const butt = Math.floor((t - SQUARE_MS - 0.55 * BUTT_MS) / BUTT_MS) + 1
 		if (t >= SQUARE_MS && butt > bout.hits[id] && butt <= 2) {
 			bout.hits[id] = butt
-			for (let i = 0; i < 6; i++) {
-				const k = 1 - i / 6
-				body.push(i, -side * 300 * k, -150 * k)
-			}
+			worm.offV.x -= dir.x * 300
+			worm.offV.y -= dir.y * 300 + 40
+			worm.spin += side * 4
 			const foe = this.worms.get(r.foe)
-			if (side > 0 && foe?.drawn[0] && worm.drawn[0]) {
-				const p = { x: (worm.drawn[0].x + foe.drawn[0].x) / 2, y: (worm.drawn[0].y + foe.drawn[0].y) / 2 }
+			if (side > 0 && foe?.shape && worm.shape) {
+				const p = { x: (worm.shape.tip.x + foe.shape.tip.x) / 2, y: (worm.shape.tip.y + foe.shape.tip.y) / 2 }
 				bout.clashes.push({ at: now, p: this.editor.screenToPage(p) })
 			}
 		}
@@ -300,107 +301,106 @@ export class Fights {
 			const foe = this.worms.get(r.foe)
 			for (const w of [worm, foe]) {
 				if (!w) continue
-				const i = 2 + Math.floor(Math.random() * 8)
-				w.body.push(i, (Math.random() - 0.5) * 520, -80 - Math.random() * 200)
+				w.offV.x += (Math.random() - 0.5) * 420
+				w.offV.y += (Math.random() - 0.5) * 300
+				w.spin += (Math.random() - 0.5) * 10
 			}
 		}
 		if (t >= BURST_MS && !bout.hits[id + ':burst']) {
 			bout.hits[id + ':burst'] = 1
-			if (won) {
-				for (let i = 0; i < 6; i++) body.push(i, -side * 140, -110)
-				bout.winnerFoot = worm.root.x + body.p[Math.round((POINTS - 1) * 0.75)].x / z
-			} else {
-				// flung off: up and away, tumbling
-				const v = 190 + 40 * hash(bout.call.id + 'v')
-				for (let i = 0; i < POINTS; i++) body.push(i, -side * (v + (i - POINTS / 2) * 8), -(400 - i * 8))
+			if (won) worm.offV.y -= 160
+			else {
+				// flung off: up and away, spinning
+				const v = 380 + 60 * hash(bout.call.id + 'v')
+				worm.offV.x = -dir.x * v
+				worm.offV.y = -dir.y * v - 220
+				worm.spin = -side * 24
 				bout.burst = true
 			}
 		}
-		if (!won && bout.burst && !bout.flatAt) {
-			const flying = t - BURST_MS
-			if (!bout.bounced && flying > 140 && body.touching && body.impact > 180) {
-				// one bounce
-				bout.bounced = true
-				bout.bounceAt = t
-				for (let i = 0; i < POINTS; i++) body.push(i, -side * 50, -Math.min(300, body.impact * 0.42))
-			}
-			if ((bout.bounced && t - bout.bounceAt > 260 && body.touching) || t > DAZE_MS) {
-				bout.flatAt = t
-				bout.flatX = worm.root.x
-			}
+		if (!won && bout.burst && !bout.flatAt && t - BURST_MS > FLUNG_MS) {
+			bout.flatAt = t
+			bout.flatOff = { ...worm.off }
 		}
 	}
 
-	/** Its pose while it fights, or null when it isn't (or holds still). */
-	posture(worm: Worm, now: number, z: number): FightPosture | null {
+	/** How it's held while it fights (see AgentWorms.knock and steer), or null when it isn't fighting. */
+	pose(worm: Worm, now: number, z: number): Pose | null {
 		const r = this.role(worm, now)
-		if (!r || r.bout.still || worm.mode !== 'here') return null
+		if (!r || worm.mode !== 'here') return null
 		const { bout, t, side, won } = r
-		const id = worm.sessionId!
-		const f = worm.facing
-		const home = bout.home[id].x
-		const c = bout.center.x
-		const local = (x: number) => (x - worm.root.x) * z
+		const { dir, meet, base, face } = this.geo(worm, r, z)
+		const add = (a: Vec, b: Vec, k = 1): Vec => ({ x: a.x + b.x * k, y: a.y + b.y * k })
+		if (bout.still) {
+			// a shake and a glare
+			const shake = t < SHAKE_MS ? 1.8 * Math.sin(t * 0.11) * (1 - t / SHAKE_MS) : 0
+			return { off: add(base, { x: shake, y: 0 }), k: 20, heading: face }
+		}
+		const back = { x: -dir.x * 9, y: -dir.y * 9 }
 		if (t < SQUARE_MS) {
-			// rearing back, trembling with rage
+			// pulling back, pointed at each other, trembling with rage
 			const u = smooth(t / 250)
-			const foot = home + (c - home) * 0.15
-			return { shape: place(standPose(0.34 * u + 0.05 * Math.sin(t * 0.06), 0.15), f, local(foot)), k: 260, weights: footWeights(4) }
+			const tremble = 0.9 * Math.sin(t * 0.09)
+			return { off: add(add(base, back, u), { x: -dir.y * tremble, y: dir.x * tremble }), k: 22, heading: face + 0.06 * Math.sin(t * 0.06), turn: 16 }
 		}
 		if (t < LUNGE_END) {
+			// lunging in till the tips clash, twice
 			const u = ((t - SQUARE_MS) % BUTT_MS) / BUTT_MS
-			const sway = u < 0.55 ? 0.36 - 1.32 * Math.pow(u / 0.55, 2) : -0.96 + 1.32 * smooth((u - 0.55) / 0.45)
-			const foot = home + (c - (side * 16) / z - home) * 0.75
-			return { shape: place(standPose(sway, 0.25 - 0.5 * Math.min(0, sway)), f, local(foot)), k: 340, weights: footWeights(4) }
+			const a = u < 0.55 ? Math.pow(u / 0.55, 2) : 1 - 0.9 * smooth((u - 0.55) / 0.45)
+			return { off: add(base, { x: back.x + (meet.x - back.x) * a, y: back.y + (meet.y - back.y) * a }), k: 38, heading: face, turn: 20 }
 		}
 		if (t < BURST_MS) {
-			// a writhing knot, swaying about together
+			// a scuffle, jostling about together
 			const s = t / 1000
-			const foot = c + (-side * 7 + 5 * wobble(s * 1.3 + bout.seed)) / z
-			return { shape: place(knotPose(s + bout.seed, side > 0 ? 0 : Math.PI), f, local(foot)), k: 300, weights: footWeights(3), stretch: 0.96 + 0.04 * Math.sin(s * 13) }
+			const jostle = { x: 6 * wobble(s * 3 + bout.seed + side), y: 5 * wobble(s * 2.6 + bout.seed * 2 + side) }
+			return { off: add(add(base, meet, 0.85), jostle), k: 26, heading: face + 0.55 * wobble(s * 2.2 + bout.seed + side * 7), turn: 18 }
 		}
 		const after = t - BURST_MS
 		if (won) {
-			// standing tall, a proud little wiggle
-			const wiggle = 0.2 * Math.sin(after * 0.018) * Math.max(0, 1 - after / 1100)
-			return { shape: place(standPose(wiggle, -0.35, LENGTH), f, local(bout.winnerFoot)), k: 240, weights: footWeights(4), stretch: 1.1 }
+			// a proud little hop and wiggle
+			const decay = Math.max(0, 1 - after / 1100)
+			const hop = -7 * Math.abs(Math.sin(after * 0.012)) * decay
+			return { off: add(add(base, meet, 0.5 * (1 - smooth(after / 450))), { x: 0, y: hop }), k: 18, heading: face + 0.45 * Math.sin(after * 0.025) * decay }
 		}
-		if (!bout.flatAt) return { shape: place(idlePose(0), f, 0), k: 0, limp: true }
-		return { shape: place(dazedPose(t / 1000), f, local(bout.flatX)), k: 150 }
+		if (!bout.flatAt) return { off: base, k: 0, heading: null, free: true }
+		// dazed where it landed, drooping
+		return { off: bout.flatOff, k: 9, heading: worm.rest + 0.35 * Math.sign(turn(worm.rest, Math.PI / 2) || 1) + 0.25 * wobble(t * 0.002 + bout.seed), turn: 6 }
 	}
 
-	/** How its eye looks while it fights: glaring, wide as it's flung, rolling about dazed, smug. */
-	eye(worm: Worm, now: number): Required<EyeState> | null {
+	/** How its eye looks while it fights: glaring, dizzy as it's flung, rolling about dazed, smug. */
+	eye(worm: Worm, now: number): EyeState | null {
 		const r = this.role(worm, now)
 		if (!r) return null
 		const { bout, t, won } = r
-		const head = worm.drawn[0]
-		const other = this.worms.get(r.foe)?.drawn[0]
+		const me = worm.shape?.eye
+		const other = this.worms.get(r.foe)?.shape?.centre
 		let glare: Vec = { x: r.side, y: 0 }
-		if (head && other) {
-			const l = Math.hypot(other.x - head.x, other.y - head.y) || 1
-			glare = { x: ((other.x - head.x) / l) * 0.9, y: ((other.y - head.y) / l) * 0.9 }
+		if (me && other) {
+			const l = Math.hypot(other.x - me.x, other.y - me.y) || 1
+			glare = { x: ((other.x - me.x) / l) * 0.9, y: ((other.y - me.y) / l) * 0.9 }
 		}
+		const eye = (e: Partial<EyeState>): EyeState => ({ look: glare, lid: 0, wide: 0, slant: 0, squeeze: 0, lower: 0, dizzy: 0, ...e })
 		if (bout.still || t < BURST_MS) {
 			const u = ((t - SQUARE_MS) % BUTT_MS) / BUTT_MS
 			const wince = !bout.still && t > SQUARE_MS && t < LUNGE_END && u > 0.52 && u < 0.7
 			const scrunch = !bout.still && t > LUNGE_END && wobble(t * 0.004 + bout.seed + (won ? 3 : 0)) > 0.45
-			if (wince || scrunch) return { look: glare, lid: 1, wide: 0, slant: 0.55, squeeze: 1 }
-			return { look: glare, lid: 0.44, wide: 0, slant: 0.55, squeeze: 0 }
+			if (wince || scrunch) return eye({ lid: 1, slant: 0.5, squeeze: 1 })
+			return eye({ lid: 0.4, slant: 0.5, lower: 0.25 })
 		}
 		const after = t - BURST_MS
-		if (won) return { look: { x: 0.55 * worm.facing, y: -0.5 }, lid: 0.42, wide: 0, slant: -0.22, squeeze: 0 }
-		if (!bout.flatAt) return { look: { x: Math.cos(after * 0.03), y: Math.sin(after * 0.03) }, lid: 0, wide: 1, slant: 0, squeeze: 0 }
-		return { look: { x: 0.8 * Math.cos(t * 0.011), y: 0.6 * Math.sin(t * 0.011) }, lid: 0.55, wide: 0, slant: 0, squeeze: 0 }
+		if (won) return eye({ look: { x: 0.5 * Math.cos(worm.heading), y: -0.5 }, lid: 0.4, slant: -0.2, lower: 0.3 })
+		if (!bout.flatAt) return eye({ look: { x: 0, y: 0 }, wide: 1, dizzy: 1 })
+		return eye({ look: { x: 0.8 * Math.cos(after * 0.011), y: 0.6 * Math.sin(after * 0.011) }, lid: 0.5 })
 	}
 
 	/** The dust, motion ticks and little stars, over the creatures. */
 	private draw(ctx: CanvasRenderingContext2D, bout: Bout, now: number) {
 		const t = now - bout.start
 		const c = this.editor.pageToScreen(bout.center)
+		c.y -= LIFT - 12
 		c.x += 5 * wobble((t / 1000) * 1.3 + bout.seed)
 		ctx.save()
-		// clashing heads: a burst of ticks and a star
+		// clashing tips: a burst of ticks and a star
 		for (const clash of bout.clashes) {
 			const age = (now - clash.at) / 220
 			if (age >= 1) continue
@@ -408,7 +408,7 @@ export class Fights {
 			ticks(ctx, p, 6 + 6 * age, 11 + 8 * age, 4, -Math.PI / 2, (1 - age) * 0.9, '#a8a29e')
 			star(ctx, p.x, p.y - 9, 3.6 * Math.sin(Math.PI * Math.min(1, age * 1.4)), '#facc15', 1 - age)
 		}
-		// the dust cloud round the knot
+		// the dust cloud round the scuffle
 		const dust = smooth((t - LUNGE_END + 150) / 250) * (1 - smooth((t - BURST_MS - 100) / 350))
 		if (dust > 0.01) {
 			const s = t / 1000
@@ -459,7 +459,7 @@ export class Fights {
 		}
 		// the loser's dazed stars, round its head
 		const loser = this.worms.get(bout.call.winner === bout.call.a ? bout.call.b : bout.call.a)
-		const head = loser?.drawn[0]
+		const head = loser?.shape && { x: loser.shape.centre.x, y: loser.shape.top + 6 }
 		if (bout.flatAt && head) {
 			const fade = smooth((t - bout.flatAt) / 200) * (1 - smooth((t - (END_MS - 350)) / 300))
 			for (let k = 0; k < 3; k++) {
@@ -516,9 +516,4 @@ export function hash(s: string) {
 export function smooth(t: number) {
 	const u = Math.min(1, Math.max(0, t))
 	return u * u * (3 - 2 * u)
-}
-
-/** Heavier tail points, to keep a standing creature's foot planted. */
-function footWeights(n: number) {
-	return Array.from({ length: POINTS }, (_, i) => (i >= POINTS - n ? 3 : 1))
 }

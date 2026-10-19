@@ -2,7 +2,7 @@ import type { Editor } from '../editor/Editor'
 import type { Box, Vec } from '../editor/geometry'
 import type { Worm } from './AgentWorms'
 import type { Conjure } from './Conjure'
-import { radius, POINTS } from './Looper'
+import { LIFT, NATIVE, POINTER_EYE, pointerD } from './Pointer'
 import './offscreen.css'
 
 /** the arrow's half size, screen px: its centre sits this far inside the edge */
@@ -33,9 +33,9 @@ const OUT_PX = 2
 const IN_PX = 14
 /** quiet markers (pointer only) closer than this along an edge share one, with a count */
 const MERGE_PX = 14
-/** about how far its body's middle is above the ground it stands on, screen px */
-const BODY_UP = 14
-/** a creature moving less than this (screen px) where it stands, fidgeting or writhing, doesn't move its marker */
+/** the marker's pointer: its height, px */
+const GLYPH = 21
+/** a creature moving less than this (screen px) where it sits, bobbing or trembling, doesn't move its marker */
 const STAND_PX = 3
 /** how often the bars around the edges are measured again, ms */
 const MEASURE_MS = 300
@@ -48,6 +48,17 @@ const FLY_MIN_ZOOM = 0.35
 const FLY_MS = 320
 
 type Edge = 'left' | 'right' | 'top' | 'bottom'
+
+/** The marker: the eye pointer itself, turned to point at its creature, its pupil looking where it points. */
+const GLYPH_SVG = (() => {
+	const e = { x: POINTER_EYE.x * GLYPH, y: POINTER_EYE.y * GLYPH, r: POINTER_EYE.r * GLYPH * 1.15 }
+	const look = { x: Math.cos(NATIVE) * e.r * 0.35, y: Math.sin(NATIVE) * e.r * 0.35 }
+	return (
+		`<path d="${pointerD(GLYPH)}"/>` +
+		`<circle class="offscreen-eye" cx="${e.x.toFixed(2)}" cy="${e.y.toFixed(2)}" r="${e.r.toFixed(2)}"/>` +
+		`<circle class="offscreen-pupil" cx="${(e.x + look.x).toFixed(2)}" cy="${(e.y + look.y).toFixed(2)}" r="${(e.r * 0.58).toFixed(2)}"/>`
+	)
+})()
 
 /** One creature out of view this frame. */
 interface Target {
@@ -177,12 +188,12 @@ export class Offscreen {
 			this.out.add(key)
 			// (from where it stands rather than its body, so a creature fidgeting on the spot doesn't nudge its marker)
 			const z = this.editor.camera.peek().z
-			// (sitting, where it was put; its root sways a little as it writhes and fidgets)
-			const at0 = worm.mode === 'here' && !worm.walk && worm.goal ? worm.goal : worm.root
+			// (sitting, where it was put; it drifts a little as it's knocked about)
+			const at0 = worm.mode === 'here' && !worm.trip && worm.goal ? worm.goal : worm.root
 			let stand = this.stands.get(key)
 			if (!stand || Math.hypot(at0.x - stand.x, at0.y - stand.y) * z > STAND_PX) this.stands.set(key, (stand = { ...at0 }))
 			const ground = this.editor.pageToScreen(stand)
-			const at = { x: ground.x, y: ground.y - BODY_UP }
+			const at = { x: ground.x, y: ground.y - LIFT }
 			const d = { x: at.x - c.x, y: at.y - c.y }
 			const kx = d.x ? (inner.r - c.x) / Math.abs(d.x) : Infinity
 			const ky = d.y ? (inner.b - c.y) / Math.abs(d.y) : Infinity
@@ -231,7 +242,7 @@ export class Offscreen {
 			this.since.delete(key)
 			if (this.stopping.delete(key)) this.interruptedAt.set(key, now)
 		}
-		const subagents = [...worm.tinies.values()].filter((t) => !t.leaving).length
+		const subagents = [...worm.dots.values()].filter((t) => !t.leaving).length
 		const subs = subagents ? `${subagents} subagent${subagents === 1 ? '' : 's'}` : ''
 		const busy = (s: string) => (subs ? `${s} · ${subs}` : s)
 		if (worm.calls) return `needs you · ${worm.calls > 99 ? '99+' : worm.calls}`
@@ -332,9 +343,9 @@ export class Offscreen {
 		}
 		const calls = members.reduce((a, m) => a + m.worm.calls, 0)
 		const busy = members.filter((m) => m.status).length
-		if (calls) return { status: `needs you · ${calls}`, title: `${members.length} loopers` }
-		if (busy) return { status: `${busy} busy`, title: `${members.length} loopers` }
-		return hovered ? { status: `${members.length} loopers`, title: members.map((m) => m.worm.nameText).join(', ') } : null
+		if (calls) return { status: `needs you · ${calls}`, title: `${members.length} agents` }
+		if (busy) return { status: `${busy} busy`, title: `${members.length} agents` }
+		return hovered ? { status: `${members.length} agents`, title: members.map((m) => m.worm.nameText).join(', ') } : null
 	}
 
 	// ---------- markers ----------
@@ -347,10 +358,7 @@ export class Offscreen {
 		el.className = 'offscreen-marker'
 		el.innerHTML =
 			'<span class="offscreen-body">' +
-			'<span class="offscreen-arrow"><svg viewBox="-13 -13 26 26" width="26" height="26" aria-hidden="true">' +
-			'<path d="M10.2 -1.6 Q11.8 0 10.2 1.6 L-5.6 9.4 Q-8.6 10.6 -7.6 7.6 L-4.6 0 L-7.6 -7.6 Q-8.6 -10.6 -5.6 -9.4 Z"/>' +
-			'<circle class="offscreen-eye" cx="1.2" cy="0" r="2.7"/><circle class="offscreen-pupil" cx="2" cy="0" r="1.2"/>' +
-			'</svg></span>' +
+			`<span class="offscreen-arrow"><svg viewBox="-13 -13 26 26" width="26" height="26" aria-hidden="true">${GLYPH_SVG}</svg></span>` +
 			'<span class="offscreen-count" hidden></span>' +
 			'<span class="offscreen-pill" hidden><span class="offscreen-status"></span><span class="offscreen-title"></span></span>' +
 			'</span>'
@@ -433,7 +441,7 @@ export class Offscreen {
 		const aim = g.members.reduce((a, t) => ({ x: a.x + t.at.x / g.members.length, y: a.y + t.at.y / g.members.length }), { x: 0, y: 0 })
 		const angle = Math.atan2(aim.y - y, aim.x - x)
 		m.el.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`
-		m.arrow.style.transform = `rotate(${angle.toFixed(3)}rad)`
+		m.arrow.style.transform = `rotate(${(angle - NATIVE).toFixed(3)}rad)`
 		if (m.color !== lead.worm.color) {
 			m.color = lead.worm.color
 			m.el.style.setProperty('--marker-color', m.color)
@@ -459,7 +467,7 @@ export class Offscreen {
 			m.pill.style.transform = `translate(${px.toFixed(1)}px, ${py.toFixed(1)}px)`
 		}
 		const titles = g.members.map((t) => `${t.worm.nameText || 'Untitled session'}${t.status ? ` (${t.status})` : t.worm.asleep ? ' (asleep)' : ''}`)
-		const label = n > 1 ? `${n} loopers off screen: ${titles.join('; ')}` : `${titles[0]}: click to go there`
+		const label = n > 1 ? `${n} agents off screen: ${titles.join('; ')}` : `${titles[0]}: click to go there`
 		if (m.el.title !== label) {
 			m.el.title = label
 			m.el.setAttribute('aria-label', label)
@@ -609,24 +617,23 @@ function spread(groups: Group[]): boolean {
 	return true
 }
 
-/** Its body on screen as last drawn (or where it stands, before it's drawn). */
+/** Its shape on screen as last drawn (or about where it sits, before it's drawn). */
 function bodyBox(worm: Worm, editor: Editor): Box {
-	const pts = worm.drawn
-	if (!pts.length) {
+	const pts = worm.shape?.poly
+	if (!pts) {
 		const at = editor.pageToScreen(worm.root)
-		return { x: at.x - 30, y: at.y - 30, w: 60, h: 30 }
+		return { x: at.x - 18, y: at.y - LIFT - 18, w: 36, h: 36 }
 	}
 	let x0 = Infinity
 	let y0 = Infinity
 	let x1 = -Infinity
 	let y1 = -Infinity
-	pts.forEach((p, i) => {
-		const r = radius(i / (POINTS - 1))
-		x0 = Math.min(x0, p.x - r)
-		y0 = Math.min(y0, p.y - r)
-		x1 = Math.max(x1, p.x + r)
-		y1 = Math.max(y1, p.y + r)
-	})
+	for (const p of pts) {
+		x0 = Math.min(x0, p.x)
+		y0 = Math.min(y0, p.y)
+		x1 = Math.max(x1, p.x)
+		y1 = Math.max(y1, p.y)
+	}
 	return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
 }
 

@@ -486,7 +486,17 @@ function getItem(id: string): Item {
 	return item
 }
 
-function updateItem(item: Item, changes: Partial<Pick<Item, 'group' | 'title' | 'caption' | 'name'>>): Item {
+type ItemChanges = Partial<Pick<Item, 'group' | 'title' | 'caption' | 'name'>>
+
+/** Changes an item's metadata (and an HTML item's size) for everyone. */
+function updateItem(item: Item, changes: ItemChanges, size?: { width: number; height: number }): Item {
+	const next = applyChanges(item, changes)
+	if (size) Object.assign(next, size)
+	commitItem(next)
+	return next
+}
+
+function applyChanges(item: Item, changes: ItemChanges): Item {
 	const next: Item = { ...item }
 	for (const key of ['group', 'title', 'caption'] as const) {
 		if (!(key in changes)) continue
@@ -495,15 +505,18 @@ function updateItem(item: Item, changes: Partial<Pick<Item, 'group' | 'title' | 
 		else next[key] = value
 	}
 	if (changes.name) next.name = changes.name
-	db.items.set(next.id, next)
-	save()
-	broadcast({ type: 'item', item: next })
 	return next
 }
 
-/** The changes of PATCH /api/items/:itemId (also used by the MCP update_item tool). */
-function itemChanges(body: Record<string, unknown>): Partial<Pick<Item, 'group' | 'title' | 'caption' | 'name'>> {
-	const changes: Partial<Pick<Item, 'group' | 'title' | 'caption' | 'name'>> = {}
+function commitItem(item: Item) {
+	db.items.set(item.id, item)
+	save()
+	broadcast({ type: 'item', item })
+}
+
+/** The metadata changes of PATCH /api/items/:itemId (also used by the MCP update_item tool); see patchItem. */
+function itemChanges(body: Record<string, unknown>): ItemChanges {
+	const changes: ItemChanges = {}
 	if ('group' in body) changes.group = groupField(body.group) ?? undefined
 	if ('title' in body) changes.title = body.title === null ? undefined : textField(body.title)
 	if ('caption' in body) changes.caption = body.caption === null ? undefined : textField(body.caption)
@@ -511,7 +524,6 @@ function itemChanges(body: Record<string, unknown>): Partial<Pick<Item, 'group' 
 		changes.name = nameField(body.name)
 		if (!changes.name) throw new HttpError(400, '"name" can\'t be empty')
 	}
-	if (!Object.keys(changes).length) throw new HttpError(400, 'send any of {"group", "title", "caption", "name"} (null clears, except name)')
 	return changes
 }
 
@@ -555,8 +567,6 @@ function newId() {
 }
 
 interface ItemOptions {
-	/** original file name or path: gives the extension, and the item's name unless `name` is set */
-	filename?: string
 	name?: string
 	group?: string | null
 	title?: string
@@ -574,70 +584,104 @@ interface ItemOptions {
 	sourceTime?: number
 }
 
-async function addItem(canvasId: string, sessionId: string, data: Blob, opts: ItemOptions): Promise<Item> {
-	const ext = (extname(opts.filename ?? '').toLowerCase() || extFromMime(data.type)).toLowerCase()
+/** An item's media: what posting a file (or replacing an item's file) sets. */
+type Media = Pick<Item, 'kind' | 'src' | 'thumb' | 'width' | 'height' | 'duration'>
+
+/**
+ * What a post or a replacement brings: a file, with its original name or path (which gives the
+ * extension, and the item's name unless one is sent), or inline HTML.
+ */
+type MediaSource = { data: Blob; filename?: string } | { html: string }
+
+/**
+ * Writes posted media into the media folder as "<base><ext>" (plus "<base>.thumb.webp") and reads
+ * its kind, size and (videos) length. HTML pages are laid out at `size` (default 800x600) and have
+ * no thumbnail.
+ */
+async function storeMedia(base: string, source: MediaSource, size: { width?: number; height?: number }): Promise<Media> {
+	if ('html' in source) return storeHtml(base, source.html, size)
+	const { data, filename } = source
+	const ext = (extname(filename ?? '').toLowerCase() || extFromMime(data.type)).toLowerCase()
 	const kind = kindOf(ext, data.type)
 	if (!kind) throw new HttpError(415, `unsupported media type (${ext || data.type || 'unknown'})`)
-	const name = opts.name ?? (opts.filename ? basename(opts.filename) || undefined : undefined)
 	if (kind === 'html') {
 		if (data.size > HTML_MAX_BYTES) throw new HttpError(413, `HTML is larger than ${HTML_MAX_BYTES / 1024 / 1024} MB`)
-		return addHtmlItem(canvasId, sessionId, await data.text(), { ...opts, name })
+		return storeHtml(base, await data.text(), size)
 	}
 
-	const id = opts.id ?? newId()
-	const file = `${id}${ext}`
-	const thumbFile = `${id}.thumb.webp`
+	const file = `${base}${ext}`
+	const thumbFile = `${base}.thumb.webp`
 	const path = join(MEDIA_DIR, file)
 	await Bun.write(path, data)
 
 	try {
-		let size: { width: number; height: number } | null
+		let dims: { width: number; height: number } | null
 		let thumb = `/media/${thumbFile}`
 		if (HAS_FFMPEG) {
-			size = await probe(path)
+			dims = await probe(path)
 			await makeThumb(path, join(MEDIA_DIR, thumbFile))
 		} else {
 			if (kind === 'video') throw new Error('posting videos needs ffmpeg installed on the canvas server\'s machine')
-			size = imageSize(new Uint8Array(await Bun.file(path).arrayBuffer()))
-			if (!size) throw new Error('can\'t read this image\'s size without ffmpeg (PNG, JPEG, GIF and WebP work; install ffmpeg for others)')
+			dims = imageSize(new Uint8Array(await Bun.file(path).arrayBuffer()))
+			if (!dims) throw new Error('can\'t read this image\'s size without ffmpeg (PNG, JPEG, GIF and WebP work; install ffmpeg for others)')
 			thumb = `/media/${file}`
 		}
-		const { width, height } = size
 		const duration = kind === 'video' && HAS_FFMPEG ? await probeDuration(path) : undefined
-		// The canvas may have been deleted while the media was processed.
-		getCanvas(canvasId)
-		ensureSession(canvasId, sessionId, opts.sessionTitle, { onlyIfUntitled: true })
-		const item: Item = {
-			id,
-			canvasId,
-			sessionId,
-			kind,
-			name: name ?? file,
-			src: `/media/${file}`,
-			thumb,
-			width,
-			height,
-			...(duration !== undefined ? { duration } : {}),
-			...(opts.group ? { group: opts.group } : {}),
-			title: opts.title,
-			caption: opts.caption,
-			...(opts.sourceItemId ? { sourceItemId: opts.sourceItemId, sourceTime: opts.sourceTime } : {}),
-			createdAt: opts.createdAt ?? Date.now(),
-		}
-		db.items.set(id, item)
-		save()
-		broadcast({ type: 'item', item })
-		return item
+		return { kind, src: `/media/${file}`, thumb, width: dims.width, height: dims.height, ...(duration !== undefined ? { duration } : {}) }
 	} catch (e) {
 		await rm(path, { force: true })
+		await rm(join(MEDIA_DIR, thumbFile), { force: true })
 		throw e instanceof HttpError ? e : new HttpError(422, (e as Error).message)
 	}
 }
 
+/** An HTML page, shown on the canvas in a sandboxed iframe at the size it was designed for. No thumbnail. */
+async function storeHtml(base: string, html: string, size: { width?: number; height?: number }): Promise<Media> {
+	if (Buffer.byteLength(html) > HTML_MAX_BYTES) throw new HttpError(413, `HTML is larger than ${HTML_MAX_BYTES / 1024 / 1024} MB`)
+	if (!html.trim()) throw new HttpError(400, '"html" is empty')
+	const src = `/media/${base}.html`
+	await Bun.write(join(MEDIA_DIR, basename(src)), htmlDocument(html))
+	return { kind: 'html', src, thumb: src, width: size.width ?? HTML_DEFAULT_SIZE.width, height: size.height ?? HTML_DEFAULT_SIZE.height }
+}
+
+async function addItem(canvasId: string, sessionId: string, source: MediaSource, opts: ItemOptions): Promise<Item> {
+	const id = opts.id ?? newId()
+	const media = await storeMedia(id, source, opts)
+	try {
+		// The canvas may have been deleted while the media was processed.
+		getCanvas(canvasId)
+	} catch (e) {
+		await removeItemFiles(media)
+		throw e
+	}
+	ensureSession(canvasId, sessionId, opts.sessionTitle, { onlyIfUntitled: true })
+	const filename = 'data' in source ? source.filename : undefined
+	const name =
+		opts.name ??
+		(filename ? basename(filename) || undefined : undefined) ??
+		(media.kind === 'html' ? `${opts.title?.replaceAll('/', '-') ?? id}.html` : basename(media.src))
+	const item: Item = {
+		id,
+		canvasId,
+		sessionId,
+		name,
+		...media,
+		...(opts.group ? { group: opts.group } : {}),
+		title: opts.title,
+		caption: opts.caption,
+		...(opts.sourceItemId ? { sourceItemId: opts.sourceItemId, sourceTime: opts.sourceTime } : {}),
+		createdAt: opts.createdAt ?? Date.now(),
+	}
+	db.items.set(id, item)
+	save()
+	broadcast({ type: 'item', item })
+	return item
+}
+
 /** The JSON body of POST /api/canvases/:cid/sessions/:sessionId/items (also used by the MCP post_item tool). */
 interface ItemJson {
-	path?: string
-	url?: string
+	path?: unknown
+	url?: unknown
 	html?: unknown
 	width?: unknown
 	height?: unknown
@@ -646,6 +690,38 @@ interface ItemJson {
 	caption?: string
 	name?: unknown
 	sessionTitle?: unknown
+}
+
+/** The file a JSON post or PATCH sends: {"html"}, {"path"} (a file on this machine) or {"url"}; null for none. */
+async function jsonSource(body: ItemJson | null): Promise<MediaSource | null> {
+	if (body?.html !== undefined && body.html !== null) {
+		if (typeof body.html !== 'string') throw new HttpError(400, '"html" must be a string')
+		return { html: body.html }
+	}
+	if (body?.path) {
+		if (typeof body.path !== 'string') throw new HttpError(400, '"path" must be a string')
+		const f = Bun.file(body.path)
+		if (!(await f.exists())) throw new HttpError(404, `no file at ${body.path}`)
+		return { data: f, filename: body.path }
+	}
+	if (body?.url) {
+		if (typeof body.url !== 'string') throw new HttpError(400, '"url" must be a string')
+		let pathname: string
+		try {
+			pathname = new URL(body.url).pathname
+		} catch {
+			throw new HttpError(400, `not a URL: ${body.url}`)
+		}
+		const res = await fetch(body.url)
+		if (!res.ok) throw new HttpError(502, `fetch ${body.url} failed: ${res.status}`)
+		const data = await res.blob()
+		let filename = pathname
+		try {
+			filename = decodeURIComponent(pathname)
+		} catch {}
+		return { data, filename }
+	}
+	return null
 }
 
 async function addItemFromJson(canvasId: string, sessionId: string, body: ItemJson | null): Promise<Item> {
@@ -658,57 +734,59 @@ async function addItemFromJson(canvasId: string, sessionId: string, body: ItemJs
 		height: sizeField(body?.height, 'height'),
 		sessionTitle: textField(body?.sessionTitle)?.slice(0, TITLE_MAX),
 	}
-	if (body?.html !== undefined) {
-		if (typeof body.html !== 'string') throw new HttpError(400, '"html" must be a string')
-		return addHtmlItem(canvasId, sessionId, body.html, meta)
-	}
-	if (body?.path) {
-		const f = Bun.file(body.path)
-		if (!(await f.exists())) throw new HttpError(404, `no file at ${body.path}`)
-		return addItem(canvasId, sessionId, f, { filename: body.path, ...meta })
-	}
-	if (body?.url) {
-		const res = await fetch(body.url)
-		if (!res.ok) throw new HttpError(502, `fetch ${body.url} failed: ${res.status}`)
-		const blob = await res.blob()
-		const pathname = new URL(body.url).pathname
-		let filename = pathname
-		try {
-			filename = decodeURIComponent(pathname)
-		} catch {}
-		return addItem(canvasId, sessionId, blob, { filename, ...meta })
-	}
-	throw new HttpError(400, 'send multipart "file", or JSON {"path"}, {"url"} or {"html"}')
+	const source = await jsonSource(body)
+	if (!source) throw new HttpError(400, 'send multipart "file", or JSON {"path"}, {"url"} or {"html"}')
+	return addItem(canvasId, sessionId, source, meta)
 }
 
-/** An HTML page, shown on the canvas in a sandboxed iframe at the size it was designed for. No thumbnail. */
-async function addHtmlItem(canvasId: string, sessionId: string, html: string, opts: ItemOptions): Promise<Item> {
-	if (Buffer.byteLength(html) > HTML_MAX_BYTES) throw new HttpError(413, `HTML is larger than ${HTML_MAX_BYTES / 1024 / 1024} MB`)
-	if (!html.trim()) throw new HttpError(400, '"html" is empty')
-	const id = opts.id ?? newId()
-	const file = `${id}.html`
-	await Bun.write(join(MEDIA_DIR, file), htmlDocument(html))
-	getCanvas(canvasId)
-	ensureSession(canvasId, sessionId, opts.sessionTitle, { onlyIfUntitled: true })
-	const item: Item = {
-		id,
-		canvasId,
-		sessionId,
-		kind: 'html',
-		name: opts.name ?? `${opts.title?.replaceAll('/', '-') ?? id}.html`,
-		src: `/media/${file}`,
-		thumb: `/media/${file}`,
-		width: opts.width ?? HTML_DEFAULT_SIZE.width,
-		height: opts.height ?? HTML_DEFAULT_SIZE.height,
-		...(opts.group ? { group: opts.group } : {}),
-		title: opts.title,
-		caption: opts.caption,
-		createdAt: opts.createdAt ?? Date.now(),
+/**
+ * PATCH /api/items/:itemId (and the MCP update_item tool): changes the item's name, title, caption
+ * or group, and/or replaces its file in place with `source` (sent like a post's). A replaced item
+ * keeps its id, session, group, title, caption (unless changed too) and annotations, and gets a new
+ * media URL, so every viewer loads the new file; it moves to the top of its group, like a new post.
+ * Metadata-only edits leave it where it is. "width"/"height" alone resize an HTML item.
+ */
+async function patchItem(item: Item, body: Record<string, unknown>, source: MediaSource | null): Promise<Item> {
+	const changes = itemChanges(body)
+	const width = sizeField(body.width, 'width')
+	const height = sizeField(body.height, 'height')
+	if (!source) {
+		const resize = width !== undefined || height !== undefined
+		if (resize && item.kind !== 'html') throw new HttpError(400, '"width"/"height" only resize HTML items (or size a new HTML file)')
+		if (!resize && !Object.keys(changes).length) {
+			throw new HttpError(
+				400,
+				'send a new file (multipart "file", or JSON {"path"}, {"url"} or {"html"}) and/or any of {"group", "title", "caption", "name"} (null clears, except name)',
+			)
+		}
+		return updateItem(item, changes, resize ? { width: width ?? item.width, height: height ?? item.height } : undefined)
 	}
-	db.items.set(id, item)
-	save()
-	broadcast({ type: 'item', item })
-	return item
+	// An HTML page replaced by another keeps its size unless it's given a new one.
+	const keep = item.kind === 'html' ? { width: item.width, height: item.height } : {}
+	const media = await storeMedia(`${item.id}-${randomId(8)}`, source, { width: width ?? keep.width, height: height ?? keep.height })
+	const current = db.items.get(item.id)
+	if (!current) {
+		await removeItemFiles(media)
+		throw new HttpError(404, `item ${item.id} was deleted while its new file was processed`)
+	}
+	const filename = 'data' in source ? source.filename : undefined
+	// No longer a frame of the video it was taken from, nor its old length.
+	const { duration: _, sourceItemId: __, sourceTime: ___, ...rest } = current
+	const next = applyChanges(
+		{ ...rest, ...media, name: (filename && basename(filename)) || withExtension(current.name, media.src), createdAt: Date.now() },
+		changes,
+	)
+	commitItem(next)
+	await removeItemFiles(current)
+	return next
+}
+
+/** A file name with the extension of `src` (an item's name after its file is replaced by one of another type). */
+function withExtension(name: string, src: string) {
+	const ext = extname(src)
+	const old = extname(name)
+	if (old.toLowerCase() === ext.toLowerCase()) return name
+	return (old ? name.slice(0, -old.length) : name) + ext
 }
 
 /** Full documents are kept as they are; fragments get a minimal page: UTF-8, no margin, white background. */
@@ -750,9 +828,10 @@ function ensureSession(canvasId: string, id: string, title?: string, opts: { onl
 	return session
 }
 
-async function removeItemFiles(item: Item) {
-	await rm(join(MEDIA_DIR, item.src.replace('/media/', '')), { force: true })
-	if (item.thumb && item.thumb !== item.src) await rm(join(MEDIA_DIR, item.thumb.replace('/media/', '')), { force: true })
+async function removeItemFiles(item: Pick<Item, 'src' | 'thumb'>) {
+	for (const src of new Set([item.src, item.thumb])) {
+		if (src?.startsWith('/media/')) await rm(join(MEDIA_DIR, basename(src)), { force: true })
+	}
 }
 
 function sessionItems(canvasId: string, sessionId: string) {
@@ -1166,9 +1245,17 @@ const API_INDEX = {
 			'→ .data.title) with every post, JSON or multipart: it names the session\'s frame when the session is new or ' +
 			'still untitled, and never replaces a real title (rename with PUT). Multipart uploads may also send "createdAt" ' +
 			'(ms; orders the item in its group), and "sourceItemId" + "sourceTime" (a frame extracted from that video item, ' +
-			'at that many seconds; kept on the item). Creates the session if needed.',
+			'at that many seconds; kept on the item). Creates the session if needed. Iterating on something already ' +
+			'posted? Replace it with PATCH /api/items/:itemId instead (post again only to show both versions side by side).',
 		'GET /api/items/:itemId': 'One item',
-		'PATCH /api/items/:itemId': 'Change an item\'s "group", "title", "caption" (null clears) or "name"',
+		'PATCH /api/items/:itemId':
+			'Change an item\'s "group", "title", "caption" (null clears) or "name", and/or replace its file in place: send a ' +
+			'new file exactly as when posting (JSON {"path"}, {"url"} or {"html", "width", "height"}, or multipart "file" with ' +
+			'the other fields as form fields). To show a new version of the same image, video or page, replace it instead of ' +
+			'posting a new item: it keeps its id, link, session, group, title, caption and annotations (pinned to the same ' +
+			'relative spots), gets a new media url (open canvases swap it live), takes the new file\'s kind, size and name ' +
+			'(unless "name" is sent), and moves to the top of its group like a new post; HTML pages keep their width/height ' +
+			'unless given new ones. Metadata-only changes don\'t move it. "width"/"height" alone resize an HTML item',
 		'DELETE /api/items/:itemId':
 			'Delete an item (restorable for an hour). Deleting a session\'s last item deletes the session too ' +
 			'(the response says {"sessionDeleted": true})',
@@ -1231,7 +1318,8 @@ const API_INDEX = {
 		'control everything. Inline everything (styles, scripts, images as data: URLs).',
 	layout:
 		'Sessions sit side by side, newest on the right, unless people arranged them (see /order); hidden ones aren\'t shown. In a session, the group posted to most recently ' +
-		'comes first; each group\'s items flow left to right in rows, newest first (frames taken from a video follow it). A session shows ' +
+		'comes first; each group\'s items flow left to right in rows, newest first (an item whose file was replaced counts as ' +
+		'new; frames taken from a video follow it). A session shows ' +
 		'its newest 50 items; older ones stay stored and listed, and viewers can show more of them.',
 }
 
@@ -1599,7 +1687,7 @@ async function handle(req: Request): Promise<Response> {
 				...sourceFields(canvasId, form.get('sourceItemId'), form.get('sourceTime')),
 			}
 			const filename = file instanceof File ? file.name : undefined
-			return json(await addItem(canvasId, sessionId, file, { filename, ...meta }), 201)
+			return json(await addItem(canvasId, sessionId, { data: file, filename }, meta), 201)
 		}
 		return json(await addItemFromJson(canvasId, sessionId, (await req.json().catch(() => null)) as ItemJson | null), 201)
 	}
@@ -1609,8 +1697,18 @@ async function handle(req: Request): Promise<Response> {
 		const item = getItem(decodeURIComponent(m[1]))
 		if (method === 'GET') return json(item)
 		if (method === 'PATCH') {
-			const body = (await req.json().catch(() => ({}))) as Record<string, unknown>
-			return json(updateItem(item, itemChanges(body)))
+			if ((req.headers.get('content-type') ?? '').includes('multipart/form-data')) {
+				const form = await req.formData()
+				const file = form.get('file')
+				if (file !== null && !(file instanceof Blob)) throw new HttpError(400, '"file" must be a file')
+				const body: Record<string, unknown> = {}
+				for (const key of ['group', 'title', 'caption', 'name', 'width', 'height']) if (form.has(key)) body[key] = form.get(key)
+				// browsers send multipart text with CRLF line breaks
+				if (typeof body.caption === 'string') body.caption = body.caption.replace(/\r\n?/g, '\n')
+				return json(await patchItem(item, body, file ? { data: file, filename: file instanceof File ? file.name : undefined } : null))
+			}
+			const body = ((await req.json().catch(() => null)) ?? {}) as Record<string, unknown>
+			return json(await patchItem(item, body, await jsonSource(body)))
 		}
 		if (method === 'DELETE') {
 			const { sessionDeleted } = deleteItem(item.id)
@@ -1656,7 +1754,7 @@ const mcp = createCanvasMcp({
 	createCanvas: (title) => createCanvas(canvasTitle(title)),
 	getItem,
 	addItem: (canvasId, sessionId, body) => addItemFromJson(getCanvas(canvasId).id, assertSessionId(sessionId), body as ItemJson),
-	updateItem: (id, changes) => updateItem(getItem(id), itemChanges(changes)),
+	updateItem: async (id, body) => patchItem(getItem(id), body, await jsonSource(body)),
 	deleteItem: (id) => deleteItem(getItem(id).id),
 	restore,
 	queueAction: (canvasId, sessionId, body) => attention.queue(getCanvas(canvasId).id, sessionId, body),

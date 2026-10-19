@@ -43,8 +43,10 @@ for everyone looking at the canvas.
 
 Whenever you generate an image, or make a new iteration of one, post it immediately, before
 doing anything else with it: first drafts, small tweaks, failed attempts, throwaway variants.
-Don't batch, don't wait until it looks good, don't ask. One iteration = one post. Videos and
-recordings too, as soon as the file is written.
+Don't batch, don't wait until it looks good, don't ask. Every iteration shows up right away.
+Videos and recordings too, as soon as the file is written. A new version of something already
+on the canvas replaces that item in place (see "Updating an item" below) unless both versions
+should be seen side by side.
 
 ## Session id and title: send both with every post
 
@@ -96,7 +98,7 @@ All bodies are JSON. Paths below are relative to `$API`.
 | `PATCH` | `/canvases/$CID/sessions/$SID` | Hide or show a frame for everyone: `{"hidden": true\|false}` (only when the user asks) |
 | `GET` / `PUT` | `/canvases/$CID/order` | The frames' order `{"sessionIds"}` / rearrange them (only when the user asks) |
 | `POST` | `/canvases/$CID/sessions/$SID/items` | Add an image/video/HTML: `{"path"}` or `{"url"}`, or multipart `file`, or `{"html", "width", "height"}`; plus `sessionTitle` (always) and optional `group`, `title`, `caption`, `name` |
-| `GET` / `PATCH` / `DELETE` | `/items/<itemId>` | Get / change `group`, `title`, `caption` (`null` clears), `name` / delete (`{"sessionDeleted": true}` if it was the session's last item) |
+| `GET` / `PATCH` / `DELETE` | `/items/<itemId>` | Get / change `group`, `title`, `caption` (`null` clears), `name`, and/or **replace its file** (same `{"path"}`, `{"url"}`, `{"html"}` or multipart `file` as posting; see "Updating an item") / delete (`{"sessionDeleted": true}` if it was the session's last item) |
 | `PATCH` / `DELETE` | `/canvases/$CID/sessions/$SID/groups/<name>` | Rename a group `{"name"}` (`null` ungroups) / delete it and its items |
 | `POST` | `/canvases/$CID/restore` | Undo deletes: `{"itemIds": [...], "sessionIds": [...]}` (either or both) → `{sessions, items}` restored |
 | `GET` | `/canvases/$CID/notes` | Sticky notes: `[{id, text, author, color, x, y, createdAt}]` |
@@ -205,6 +207,43 @@ echo "$BASE/c/$CID"
 
 JSON works too (when the server runs on this machine): `curl -s -X POST $API/canvases/$CID/sessions/$SID/items -H 'content-type: application/json' -d '{"path":"/tmp/out/v2.png","group":"2. Outline","title":"v2","sessionTitle":"Diff panel focus treatments"}'`.
 
+## Updating an item: replace it in place
+
+To show a new version of the same visual (a fixed diagram, a re-render, a corrected screenshot,
+an HTML page you revised), **replace the item in place** instead of posting a new one:
+`update_item {itemId, path | url | html, width?, height?}` over MCP, or `PATCH $API/items/<itemId>`
+with exactly the body you'd post: JSON `{"path"}`, `{"url"}` or `{"html", "width", "height"}`, or
+multipart `file` (other fields as form fields). It can be combined with `title`, `caption`,
+`group`, `name` changes.
+
+- The item keeps its **id**, its link, its session and group, its title and caption (unless you
+  change them too), and the user's **annotations** (pinned to the same relative spots, so check
+  they still make sense if the layout changed a lot).
+- It gets the new file's kind (an image can become a video or an HTML page), size and file name
+  (unless you send `name`), and a new media `url`; everyone looking at the canvas sees the new
+  version right away, including an open HTML drawer.
+- It **moves to the top of its group**, like a new post. Changing only title/caption/group/name
+  doesn't move it.
+- HTML pages keep their `width`/`height` unless you send new ones; `width`/`height` alone resize
+  an HTML item.
+
+Post a new item instead only when both versions should be seen side by side (variants the user
+will compare, a before/after pair). Keep the item id from the post's response (or find it with
+`get_canvas`/`find_items`) to replace it later.
+
+```bash
+# API set as above; ITEM is the id from the post's response
+# JSON: a file on the canvas server's machine (absolute path), or {"url"}
+curl -s -X PATCH $API/items/$ITEM -H 'content-type: application/json' \
+  -d '{"path":"/tmp/out/hero.png","caption":"v4: warmer light"}'
+# multipart: upload the file (works from anywhere)
+curl -s -X PATCH $API/items/$ITEM -F "file=@/tmp/out/hero.png" --form-string caption="v4: warmer light"
+# HTML from a heredoc (keeps its width/height unless you send -F width=… -F height=…)
+curl -s -X PATCH $API/items/$ITEM -F 'file=@-;filename=flow.html' <<'EOF'
+<div style="padding:24px;font:16px system-ui">Revised diagram</div>
+EOF
+```
+
 ## Getting the user's attention: say and highlight
 
 Your session has a **creature** on the canvas: a small character beside your frame (the canvas
@@ -259,7 +298,10 @@ session take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
   post into your frame (`path` must be absolute, on the canvas server's machine). **Always pass `sessionTitle`.**
 - `say {canvas, sessionId, sessionTitle, text}` and `highlight {canvas, sessionId, sessionTitle, target, text?}`:
   queue steps on your creature (see above). Return the step's `id` and `position` in your queue.
-- `update_item`, `delete_item`, `restore`: edit, soft-delete, undo deletes.
+- `update_item {itemId, path | url | html, width?, height?, name?, title?, caption?, group?}`: replace an
+  item's file in place (a new version of the same visual; see "Updating an item") and/or change its
+  metadata (`null` clears title, caption, group).
+- `delete_item`, `restore`: soft-delete, undo deletes.
 - `list_canvases`, `create_canvas`, `get_canvas` (sessions, groups, items, notes, annotations), `find_items`, `list_notes`.
 - `list_annotations {canvas, sessionId?, itemId?}`: the user's comments pinned to spots on items, with pixel coordinates (see above).
 - `get_item {itemId, includeImage?, fullSize?}`: see an image (or an HTML item's source).

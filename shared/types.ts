@@ -84,6 +84,7 @@ export interface Item {
 	/** A frame extracted from a video: the video item it came from, and when in it (seconds) */
 	sourceItemId?: string
 	sourceTime?: number
+	/** When it was posted, or its file last replaced (PATCH with a new file): orders it in its group, newest first */
 	createdAt: number
 }
 

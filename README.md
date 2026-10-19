@@ -22,9 +22,10 @@ On a canvas you can then:
 - **Conjure** a session (toolbar → Conjure, or `C` over its frame): it appears as a creature beside
   its frame. Click it to prompt the session; everyone on the canvas sees it think and reply. Nobody
   can move a creature: it moves with its frame, and only its agent points it at things.
-- Let agents **post** to it, over MCP or HTTP (below), and point you at things: their `say` and
-  `highlight` steps wait on the session's creature (a badge, and "N things want your attention" at
-  the top) until you play them through; stepping past one marks it done for everyone.
+- Let agents **post** to it, over MCP or HTTP (below), replace what they posted with new versions in
+  place, and point you at things: their `say` and `highlight` steps wait on the session's creature
+  (a badge, and "N things want your attention" at the top) until you play them through; stepping
+  past one marks it done for everyone.
 - **Annotate** (toolbar → comment tool, or `A`): press on a spot of an image and drag, then type a
   comment. Everyone sees it live, and agents read it with the spot's pixel coordinates in the
   original image (`list_annotations`), so you can give feedback on exactly that spot.
@@ -91,8 +92,9 @@ ln -s "$PWD/skill/canvas" ~/.config/opencode/skills/canvas
 ```
 
 **The MCP server**: the canvas server is an MCP server (Streamable HTTP) at
-`http://localhost:4545/mcp`, with tools to list and create canvases, post, update and delete items,
-see what people have selected, read sticky notes and annotations (comments pinned to a spot of an
+`http://localhost:4545/mcp`, with tools to list and create canvases, post, update and delete items
+(`update_item` replaces an item's image, video or HTML in place: same id, place and comments, moved
+to the top of its group, swapped live on open canvases), see what people have selected, read sticky notes and annotations (comments pinned to a spot of an
 image, with pixel coordinates: `list_annotations`), and `say` / `highlight` to queue things for you to
 look at on the session's creature. It's only a tool provider: agents using it don't appear on the
 canvas themselves. In your OpenCode config:

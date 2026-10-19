@@ -66,11 +66,13 @@ export class VideoPool {
 	}
 
 	sync(wanted: { id: string; src: string }[]) {
-		const keep = new Set(wanted.slice(0, MAX_PLAYING).map((w) => w.id))
+		const keep = new Map(wanted.slice(0, MAX_PLAYING).map((w) => [w.id, w.src]))
 		for (const [id, video] of this.videos) {
-			if (keep.has(id)) continue
+			const src = keep.get(id)
+			if (src === video.dataset.src) continue
 			const state = this.playback.get(id)
-			if (state) state.time = video.currentTime
+			// A video whose file was replaced starts the new one from the beginning.
+			if (state) state.time = src === undefined ? video.currentTime : 0
 			video.pause()
 			video.removeAttribute('src')
 			video.load()
@@ -89,6 +91,7 @@ export class VideoPool {
 			// (and for extracting frames into a canvas)
 			video.crossOrigin = 'anonymous'
 			video.src = src
+			video.dataset.src = src
 			const changed = () => (this.dirty = true)
 			for (const type of ['loadeddata', 'seeked', 'pause', 'play', 'volumechange', 'durationchange']) video.addEventListener(type, changed)
 			video.addEventListener('loadedmetadata', () => {

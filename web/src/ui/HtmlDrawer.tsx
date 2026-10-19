@@ -39,7 +39,9 @@ type Mode = 'fit' | 'original'
 export function HtmlDrawer({ editor }: { editor: Editor }) {
 	const item = useValue(() => {
 		const id = editor.htmlDrawer.get()
-		return id ? (editor.items.get()[id] ?? null) : null
+		const item = id ? editor.items.get()[id] : undefined
+		// (its file may have been replaced by an image or video)
+		return item?.kind === 'html' ? item : null
 	})
 	const openId = useValue(() => editor.htmlDrawer.get())
 	// The last item stays on screen while the drawer slides out.
@@ -47,7 +49,7 @@ export function HtmlDrawer({ editor }: { editor: Editor }) {
 	if (item && item !== shown) setShown(item)
 	if (!item && shown && reducedMotion()) setShown(null)
 
-	// Its item was deleted.
+	// Its item was deleted, or isn't a page anymore.
 	useEffect(() => {
 		if (openId && !item) editor.closeHtmlDrawer()
 	}, [openId, item, editor])

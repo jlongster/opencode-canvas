@@ -93,6 +93,8 @@ export class Renderer {
 	private linkHover: LinkHover
 	private openButton: HtmlOpenButton
 
+	/** the texture each item was last drawn with, by item id (see pickTexture) */
+	private drawnTextures = new Map<string, string>()
 	private displayedItems = new Map<string, Displayed>()
 	private displayedSections = new Map<string, Displayed>()
 	private lastEpoch = -1
@@ -565,8 +567,21 @@ export class Renderer {
 		return { video: false, bindGroup: copy.bindGroup }
 	}
 
-	/** Thumbnail first; full resolution only once the item is bigger on screen than the thumbnail. */
+	/**
+	 * Thumbnail first; full resolution only once the item is bigger on screen than the thumbnail. An
+	 * item whose file was replaced keeps showing the last texture drawn for it until the new one is ready.
+	 */
 	private pickTexture(item: Item, screenPx: number) {
+		const entry = this.pickNewTexture(item, screenPx)
+		if (entry) {
+			this.drawnTextures.set(item.id, entry.url)
+			return entry
+		}
+		const last = this.drawnTextures.get(item.id)
+		return last ? this.textures.peek(last) : undefined
+	}
+
+	private pickNewTexture(item: Item, screenPx: number) {
 		const thumb = this.textures.request(item.thumb)
 		const originalLarger = Math.max(item.width, item.height) > THUMB_SIZE
 		if (item.kind === 'image' && originalLarger && screenPx > THUMB_SIZE * 1.1) {
@@ -853,8 +868,8 @@ class HtmlItems {
 	 * the iframe loads the URL itself (no links).
 	 */
 	private load(f: HtmlFrame, src: string) {
+		// A page replaced by a new version stays on screen until the new one has loaded.
 		f.src = src
-		f.loaded = false
 		f.links = []
 		f.nonce = makeNonce()
 		const nonce = f.nonce

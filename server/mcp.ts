@@ -5,7 +5,7 @@
  *   "canvas": { "type": "remote", "url": "http://localhost:4410/mcp" }
  *
  * Tools let agents list canvases, see what people on a canvas have selected, read notes, inspect
- * items (including the images themselves) and post or edit items. They call the server's own
+ * items (including the images themselves) and post, edit or replace items. They call the server's own
  * functions (see CanvasMcpDeps) rather than its HTTP API.
  *
  * Each MCP client gets its own session (the mcp-session-id header) with its own McpServer and
@@ -44,8 +44,8 @@ export interface CanvasMcpDeps {
 	getItem(id: string): Item
 	/** same body and validation as POST /api/canvases/:cid/sessions/:sessionId/items */
 	addItem(canvasId: string, sessionId: string, body: Record<string, unknown>): Promise<Item>
-	/** same body and validation as PATCH /api/items/:itemId */
-	updateItem(id: string, changes: Record<string, unknown>): Item
+	/** same JSON body and validation as PATCH /api/items/:itemId: metadata changes and/or a new file */
+	updateItem(id: string, body: Record<string, unknown>): Promise<Item>
 	deleteItem(id: string): { sessionDeleted: boolean }
 	restore(canvasId: string, sessionIds: string[], itemIds: string[]): { sessions: Session[]; items: Item[] }
 	/** same body and validation as POST /api/canvases/:cid/sessions/:sessionId/actions */
@@ -250,7 +250,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'queue them in the order they should be read. Pass sessionId and sessionTitle (your OpenCode session\'s ' +
 					'title) on every post_item, say and highlight. The user gives feedback on a specific spot of an image with ' +
 					'annotations: check list_annotations (filter by your sessionId) for comments on what you posted; their ' +
-					'px/py are pixel coordinates in the original image.',
+					'px/py are pixel coordinates in the original image. To show a new version of something you posted, replace ' +
+					'it in place with update_item (path, url or html) rather than posting it again: it keeps its place and comments.',
 			},
 		)
 
@@ -513,7 +514,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'set width/height to the CSS pixel size it is designed for, default 800x600). Use group to organise items ' +
 					'within the session. Pass sessionTitle (your OpenCode session\'s title) on every post: it names your frame ' +
 					'while it is new or untitled, and never overwrites a title it already has. Posting to a frame people hid ' +
-					'works but doesn\'t unhide it.',
+					'works but doesn\'t unhide it. For a new version of something you already posted, replace that item with ' +
+					'update_item instead.',
 				inputSchema: {
 					canvas: canvasArg,
 					sessionId: sessionIdArg,
@@ -560,19 +562,47 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 		server.registerTool(
 			'update_item',
 			{
-				description: 'Change an item\'s file name, title, caption or group. Pass null to clear title, caption or group.',
+				description:
+					'Change an item: replace its image, video or HTML page in place, and/or change its file name, title, caption ' +
+					'or group (null clears title, caption or group). To show a new version of the same image/page, update it in ' +
+					'place instead of posting a new item: give exactly one of path, url or html, as for post_item. The item keeps ' +
+					'its id, link, place in your frame, group, title, caption and the user\'s annotations, takes the new file\'s ' +
+					'kind, size and file name (unless name is given), and moves to the top of its group like a new post; open ' +
+					'canvases show the new version right away. HTML pages keep their width/height unless you give new ones ' +
+					'(width/height alone resize an HTML item). Post a new item instead only when both versions should be seen ' +
+					'side by side.',
 				inputSchema: {
 					itemId: z.string(),
-					name: z.string().optional(),
+					path: z.string().optional().describe('Replace the file: absolute path of an image/video/HTML file on this machine'),
+					url: z.string().optional().describe('Replace the file: URL of an image/video/HTML file to fetch'),
+					html: z.string().optional().describe('Replace the file with inline HTML (a fragment or a full document)'),
+					width: z.number().optional().describe('HTML items: CSS pixel width the page is laid out at (default: unchanged)'),
+					height: z.number().optional().describe('HTML items: CSS pixel height (default: unchanged)'),
+					name: z.string().optional().describe('File name (defaults to the new file\'s name when replacing)'),
 					title: z.string().nullable().optional(),
 					caption: z.string().nullable().optional(),
 					group: z.string().nullable().optional(),
 				},
 			},
-			tool(async ({ itemId, ...changes }: { itemId: string; name?: string; title?: string | null; caption?: string | null; group?: string | null }) => {
+			tool(async ({ itemId, ...changes }: {
+				itemId: string
+				path?: string
+				url?: string
+				html?: string
+				width?: number
+				height?: number
+				name?: string
+				title?: string | null
+				caption?: string | null
+				group?: string | null
+			}) => {
 				const body = Object.fromEntries(Object.entries(changes).filter(([, v]) => v !== undefined))
-				if (!Object.keys(body).length) throw new ToolError('nothing to change: give name, title, caption or group')
-				return ok(itemDetail(deps.updateItem(itemId, body)))
+				if (!Object.keys(body).length) throw new ToolError('nothing to change: give path, url or html (a new file), and/or name, title, caption or group')
+				if ([changes.path, changes.url, changes.html].filter((s) => s !== undefined).length > 1) throw new ToolError('give at most one of path, url or html')
+				if (changes.path !== undefined && !isAbsolute(changes.path)) {
+					throw new ToolError(`path must be absolute (the canvas server doesn't share your working directory), got ${JSON.stringify(changes.path)}`)
+				}
+				return ok(itemDetail(await deps.updateItem(itemId, body)))
 			}),
 		)
 

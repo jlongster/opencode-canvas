@@ -71,50 +71,93 @@
 	color: #fca5a5;
 }
 
-/* ── header ── */
+/* ── floating × and ⋯ (over the top-right of the thread; it scrolls under them) ── */
 
-.pt-head {
+.pt-body {
 	position: relative;
+}
+
+.pt-float {
+	position: absolute;
+	top: 6px;
+	right: 6px;
+	z-index: 8;
+	isolation: isolate;
 	display: flex;
-	align-items: center;
-	gap: 8px;
-	padding: 8px 6px 8px 10px;
-	border-bottom: 1px solid var(--line);
+	gap: 4px;
+	opacity: 0;
+	transform: translateY(-2px);
+	transition:
+		opacity 120ms ease-out,
+		transform 120ms ease-out;
+	pointer-events: none;
 }
 
-.pt-title {
-	display: flex;
-	flex-direction: column;
-	min-width: 0;
-	flex: 1;
+/* A soft scrim in the corner, from the panel's colour to clear, so they read over any text. */
+.pt-float::before {
+	content: '';
+	position: absolute;
+	top: -6px;
+	right: -6px;
+	z-index: -1;
+	width: 150px;
+	height: 72px;
+	border-top-right-radius: 7px;
+	background: radial-gradient(ellipse 100% 100% at 100% 0%, rgb(26 26 29 / 0.95) 0%, rgb(26 26 29 / 0.82) 40%, rgb(26 26 29 / 0) 78%);
+	pointer-events: none;
 }
 
-.pt-title b {
-	font-weight: 550;
-	font-size: 13px;
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
+.pt:hover .pt-float,
+.pt-float:focus-within,
+.pt-float.open {
+	opacity: 1;
+	transform: none;
+	pointer-events: auto;
 }
 
-.pt-title > span {
-	display: block;
-	font-size: 11.5px;
-	color: var(--dim);
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	font-variant-numeric: tabular-nums;
+@media (hover: none) {
+	.pt-float {
+		opacity: 1;
+		transform: none;
+		pointer-events: auto;
+	}
 }
 
-.pt-title > span em {
-	font-style: normal;
-	color: var(--c);
+.pt .pt-fb {
+	width: 24px;
+	height: 24px;
+	border-radius: 50%;
+	display: grid;
+	place-items: center;
+	color: var(--mut);
+	background: rgb(38 38 43 / 0.62);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	box-shadow:
+		0 1px 0 rgba(255, 255, 255, 0.05) inset,
+		0 2px 8px rgba(0, 0, 0, 0.45);
+	-webkit-backdrop-filter: blur(6px) saturate(140%);
+	backdrop-filter: blur(6px) saturate(140%);
+	transition:
+		background 100ms,
+		color 100ms,
+		border-color 100ms;
 }
 
-.pt-title .pt-spin {
-	vertical-align: -1px;
-	margin-right: 4px;
+.pt .pt-fb:hover,
+.pt .pt-fb[aria-expanded='true'] {
+	color: var(--tx);
+	background: rgb(56 56 62 / 0.78);
+	border-color: rgba(255, 255, 255, 0.16);
+}
+
+.pt .pt-fb:focus-visible {
+	outline: 2px solid color-mix(in srgb, var(--c) 70%, transparent);
+	outline-offset: 1px;
+}
+
+.pt-fb svg {
+	width: 12px;
+	height: 12px;
 }
 
 .pt-moon {
@@ -134,8 +177,7 @@
 	color: var(--mut);
 }
 
-.pt .pt-ib:hover:not(:disabled),
-.pt .pt-ib[aria-expanded='true'] {
+.pt .pt-ib:hover:not(:disabled) {
 	background: rgba(255, 255, 255, 0.06);
 	color: var(--tx);
 }
@@ -154,7 +196,7 @@
 .pt-menu {
 	position: absolute;
 	right: 6px;
-	top: 40px;
+	top: 36px;
 	z-index: 9;
 	width: 220px;
 	display: flex;
@@ -225,7 +267,7 @@
 	display: flex;
 	flex-direction: column;
 	gap: 10px;
-	max-height: 220px;
+	max-height: 240px;
 	overflow: auto;
 	padding: 12px 12px 4px;
 	overscroll-behavior: contain;
@@ -241,9 +283,18 @@
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 2px 0 6px;
+	min-height: 18px;
+	padding: 1px 64px 4px 0;
 	font-size: 12px;
 	color: var(--dim);
+}
+
+.pt-dot {
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: color-mix(in srgb, var(--c) 55%, transparent);
 }
 
 .pt-me {
@@ -439,7 +490,7 @@ img.pt-th.sm {
 	flex-direction: column;
 	gap: 5px;
 	flex: none;
-	padding: 2px 0;
+	padding: 2px 60px 2px 0;
 	font-size: 12px;
 	color: var(--mut);
 }
@@ -670,6 +721,15 @@ img.pt-th.sm {
 	margin-bottom: 2px;
 	color: var(--tx);
 	font-weight: 500;
+}
+
+.pt-asleep {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	margin-left: 4px;
+	color: var(--dim);
+	font-weight: 400;
 }
 
 /* ── spinner, caret ── */

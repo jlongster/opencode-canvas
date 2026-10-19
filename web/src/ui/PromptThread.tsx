@@ -55,10 +55,10 @@ interface LocalMessage {
 }
 
 /**
- * The prompt thread under a clicked conjured worm (direction B, "Mini thread"): a status header,
- * its last exchange as bubbles (your prompts, its reply streaming in live, what it's doing while it
- * works), and a composer for its owner (send, steer, stop, attach). Everyone else sees the thread
- * and a note on whose it is.
+ * The prompt thread under a clicked conjured worm (direction B, "Mini thread"), headerless (its name
+ * is on the pointer's tag; × and ⋯ float over the thread on hover): its last exchange as bubbles
+ * (your prompts, its reply streaming in live, what it's doing while it works), and a composer for
+ * its owner (send, steer, stop, attach). Everyone else sees the thread and a note on whose it is.
  */
 export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Conjure }) {
 	const target = useValue(() => conjure.prompting.get(), [conjure])
@@ -393,27 +393,8 @@ function PromptThread({ conjure, target, meta }: { conjure: Conjure; target: Pro
 	top = Math.round(Math.max(MARGIN, Math.min(top, vh - h - MARGIN)))
 
 	const hasContent = !!text.trim() || attachments.length > 0
-	let status: ReactNode
-	if (failed) status = <span className="pt-err">Not delivered</span>
-	else if (asleep)
-		status = (
-			<>
-				<MoonIcon /> Asleep · {block === 'not-yours' ? 'someone else’s' : block === 'unowned' ? 'nobody’s' : 'not paired here'}
-			</>
-		)
-	else if (stopping && thinking) status = <em>Stopping…</em>
-	else if (streaming) status = <em>Replying…</em>
-	else if (thinking)
-		status = (
-			<>
-				<span className="pt-spin pt-spin-xs" />
-				<em>Thinking {mmss(Date.now() - turnStart)}</em>
-			</>
-		)
-	else status = 'Idle'
-
 	const empty = !prompts.length && !reply && !thinking && !failed
-	const busyRow = thinking && !streaming
+	const busyRow = thinking && (!streaming || stopping)
 
 	return (
 		<div
@@ -438,17 +419,85 @@ function PromptThread({ conjure, target, meta }: { conjure: Conjure; target: Pro
 			}}
 			{...dropHandlers}
 		>
-			<div className="pt-head">
-				<div className="pt-title">
-					<b title={name}>{name}</b>
-					<span className="pt-status">{status}</span>
+			<div className="pt-body">
+				<div
+					ref={threadRef}
+					className={`pt-thread${expanded ? ' expanded' : ''}`}
+					onScroll={(e) => {
+						const t = e.currentTarget
+						atEnd.current = t.scrollHeight - t.scrollTop - t.clientHeight < 24
+					}}
+				>
+					{empty &&
+						(loading ? (
+							<div className="pt-empty">
+								<span className="pt-spin" /> Loading the last exchange…
+							</div>
+						) : (
+							<div className="pt-empty">
+								<span className="pt-dot" />
+								{owner ? 'Idle · nothing said yet' : 'Idle · its replies show here'}
+							</div>
+						))}
+					{prompts.map((m) => (
+						<MeBubble key={m.id} text={m.text} images={m.images} />
+					))}
+					{reply && (
+						<div className="pt-it">
+							<div className="pt-who">
+								{name}
+								{!streaming && !thinking && replyAt ? ` · ${relativeTime(replyAt)}` : ''}
+							</div>
+							<div
+								ref={replyRef}
+								className={`pt-md${!expanded && !streaming ? ' clamped' : ''}${canExpand && !expanded ? ' faded' : ''}`}
+								dangerouslySetInnerHTML={{ __html: streaming ? withCaret(replyHtml) : replyHtml }}
+							/>
+							{canExpand && (
+								<button
+									className="pt-expand"
+									onClick={() => {
+										atEnd.current = false
+										setExpanded(!expanded)
+									}}
+								>
+									{expanded ? 'Show less' : 'Show full'}
+								</button>
+							)}
+						</div>
+					)}
+					{busyRow && (
+						<div className="pt-think">
+							<div className="pt-row">
+								<span className="pt-spin" />
+								<b>{mmss(Date.now() - turnStart)}</b> {stopping ? 'Stopping' : 'Thinking'}
+								{activity ? ` · ${activity}` : ''}
+							</div>
+						</div>
+					)}
+					{failed && (
+						<>
+							<MeBubble text={failed.text} images={failed.images} dim />
+							<div className="pt-fail" title={failed.error}>
+								<WarnIcon />
+								<span>
+									{/isn't reachable/.test(failed.error ?? '') ? 'Couldn’t reach its OpenCode.' : (failed.error ?? 'Not delivered.')}{' '}
+									<button onClick={() => send()} disabled={sending}>
+										Retry
+									</button>
+								</span>
+							</div>
+						</>
+					)}
 				</div>
-				<button className="pt-ib pt-more-button" title="More" aria-expanded={!!menu} onClick={() => setMenu(menu ? null : 'open')}>
-					<MoreIcon />
-				</button>
-				<button className="pt-ib" title="Close (Esc)" onClick={close}>
-					<XIcon />
-				</button>
+				<div className={`pt-float${menu ? ' open' : ''}`}>
+					<button className="pt-fb pt-more-button" title="More" aria-label="More" aria-expanded={!!menu} onClick={() => setMenu(menu ? null : 'open')}>
+						<MoreIcon />
+					</button>
+					<button className="pt-fb" title="Close (Esc)" aria-label="Close" onClick={close}>
+						<XIcon />
+					</button>
+				</div>
 				{menu === 'open' && (
 					<div className="pt-menu" role="menu">
 						<button
@@ -493,74 +542,6 @@ function PromptThread({ conjure, target, meta }: { conjure: Conjure; target: Pro
 				)}
 			</div>
 
-			<div
-				ref={threadRef}
-				className={`pt-thread${expanded ? ' expanded' : ''}`}
-				onScroll={(e) => {
-					const t = e.currentTarget
-					atEnd.current = t.scrollHeight - t.scrollTop - t.clientHeight < 24
-				}}
-			>
-				{empty &&
-					(loading ? (
-						<div className="pt-empty">
-							<span className="pt-spin" /> Loading the last exchange…
-						</div>
-					) : (
-						<div className="pt-empty">{owner ? 'Nothing said yet. Say something to start.' : 'Nothing to show yet: its reply shows here when it says something.'}</div>
-					))}
-				{prompts.map((m) => (
-					<MeBubble key={m.id} text={m.text} images={m.images} />
-				))}
-				{reply && (
-					<div className="pt-it">
-						<div className="pt-who">
-							{name}
-							{!streaming && !thinking && replyAt ? ` · ${relativeTime(replyAt)}` : ''}
-						</div>
-						<div
-							ref={replyRef}
-							className={`pt-md${!expanded && !streaming ? ' clamped' : ''}${canExpand && !expanded ? ' faded' : ''}`}
-							dangerouslySetInnerHTML={{ __html: streaming ? withCaret(replyHtml) : replyHtml }}
-						/>
-						{canExpand && (
-							<button
-								className="pt-expand"
-								onClick={() => {
-									atEnd.current = false
-									setExpanded(!expanded)
-								}}
-							>
-								{expanded ? 'Show less' : 'Show full'}
-							</button>
-						)}
-					</div>
-				)}
-				{busyRow && (
-					<div className="pt-think">
-						<div className="pt-row">
-							<span className="pt-spin" />
-							<b>{mmss(Date.now() - turnStart)}</b> {stopping ? 'Stopping' : 'Thinking'}
-							{activity ? ` · ${activity}` : ''}
-						</div>
-					</div>
-				)}
-				{failed && (
-					<>
-						<MeBubble text={failed.text} images={failed.images} dim />
-						<div className="pt-fail" title={failed.error}>
-							<WarnIcon />
-							<span>
-								{/isn't reachable/.test(failed.error ?? '') ? 'Couldn’t reach its OpenCode.' : (failed.error ?? 'Not delivered.')}{' '}
-								<button onClick={() => send()} disabled={sending}>
-									Retry
-								</button>
-							</span>
-						</div>
-					</>
-				)}
-			</div>
-
 			{error && (
 				<div className="pt-error">
 					<WarnIcon />
@@ -572,6 +553,11 @@ function PromptThread({ conjure, target, meta }: { conjure: Conjure; target: Pro
 				<div className="pt-ro">
 					<b>
 						<LockIcon /> Read-only
+						{asleep && (
+							<span className="pt-asleep">
+								<MoonIcon /> asleep
+							</span>
+						)}
 					</b>
 					{block === 'unowned'
 						? 'Nobody has conjured it: its session called it up to show you something. To talk to it, conjure the session from your OpenCode (Conjure, or C over its frame).'

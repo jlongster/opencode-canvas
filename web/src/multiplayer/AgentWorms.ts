@@ -428,7 +428,7 @@ export class AgentWorms {
 		if (this.worms.size === 0) {
 			if (this.drewLastFrame) ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
 			this.drewLastFrame = false
-			this.offscreen.frame(now, [])
+			this.offscreen.frame(now, elapsed, [])
 			return
 		}
 		ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -449,7 +449,7 @@ export class AgentWorms {
 		this.fights.frame(ctx, now, this.worms.values())
 		this.slaps.frame(ctx, now, this.worms.values())
 		this.showTip()
-		this.offscreen.frame(now, this.worms.values())
+		this.offscreen.frame(now, elapsed, this.worms.values())
 	}
 
 	destroy() {

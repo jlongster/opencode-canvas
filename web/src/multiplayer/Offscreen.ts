@@ -11,6 +11,21 @@ const ARROW = 13
 const PILL_GAP = 4
 const GAP = 6
 const PILL_H = 24
+/** the widest a pill gets (see offscreen.css), unless it's hovered open */
+const PILL_MAX = 220
+/**
+ * The room each marker keeps along its edge, whatever its pill says: an arrow's (turned
+ * diagonally it takes a little more), or on the top and bottom, a busy one's whole pill. Hovering
+ * and changing text never change it; only going busy or quiet does.
+ */
+const SLOT = ARROW * 2 + 4 + GAP
+const BUSY_SLOT = PILL_MAX + GAP
+/** gone quiet, a marker keeps a busy one's room this long, so a status flickering off doesn't move its neighbours */
+const BUSY_HOLD_MS = 2500
+/** quiet markers sharing one stay together until they're this much further apart than MERGE_PX */
+const MERGE_SLACK = 10
+/** markers moved along the edge by their neighbours (or bars appearing at the edges) get there this smoothly, ms */
+const SETTLE_MS = 140
 /** how far in from the viewport's sides (and the bars) the markers keep */
 const EDGE = 8
 /** a creature counts as out of view once none of its body is this far inside, and back in view once some is this far in */
@@ -18,6 +33,10 @@ const OUT_PX = 2
 const IN_PX = 14
 /** quiet markers (pointer only) closer than this along an edge share one, with a count */
 const MERGE_PX = 14
+/** about how far its body's middle is above the ground it stands on, screen px */
+const BODY_UP = 14
+/** a creature moving less than this (screen px) where it stands, fidgeting or writhing, doesn't move its marker */
+const STAND_PX = 3
 /** how often the bars around the edges are measured again, ms */
 const MEASURE_MS = 300
 const FADE_MS = 180
@@ -40,7 +59,8 @@ interface Target {
 	edge: Edge
 	s: number
 	status: string | null
-	quiet: boolean
+	/** whether it keeps a busy marker's room (see BUSY_HOLD_MS) */
+	busy: boolean
 }
 
 /** What's drawn at one spot on an edge: one creature, or several close together. */
@@ -56,7 +76,7 @@ interface Group {
 	min: number
 	max: number
 	marker: Marker
-	pillW: number
+	busy: boolean
 }
 
 interface Marker {
@@ -75,6 +95,8 @@ interface Marker {
 	/** what a click flies to */
 	worms: Worm[]
 	color: string
+	/** how far it's shown from where its creature's ray meets the edge, eased toward where it's spread to */
+	off: Vec | null
 }
 
 /**
@@ -90,13 +112,22 @@ export class Offscreen {
 	private markers = new Map<string, Marker>()
 	private out = new Set<string>()
 	private hovered: string | null = null
-	private insets = { top: EDGE, bottom: EDGE, left: EDGE, right: EDGE }
+	/** the bars along the edges as measured, and as used (eased toward them) */
+	private insets: Insets = { top: EDGE, bottom: EDGE, left: EDGE, right: EDGE }
+	private shownInsets: Insets | null = null
+	/** the attention tray's extent, under the top bar */
+	private stack: Span | null = null
+	/** where each creature stands (page), held still through fidgets smaller than STAND_PX */
+	private stands = new Map<string, Vec>()
 	private measuredAt = -Infinity
 	private measuredFor = ''
 	/** per session: since when it has been thinking, whether it's being stopped, when it was interrupted */
 	private since = new Map<string, number>()
 	private stopping = new Set<string>()
 	private interruptedAt = new Map<string, number>()
+	/** per creature: when it last had something to report, and which marker it shared last frame */
+	private busyAt = new Map<string, number>()
+	private sharedWith = new Map<string, string>()
 
 	constructor(
 		parent: HTMLElement,
@@ -116,10 +147,10 @@ export class Offscreen {
 	}
 
 	/** Places the markers for this frame. */
-	frame(now: number, worms: Iterable<Worm>) {
+	frame(now: number, elapsed: number, worms: Iterable<Worm>) {
 		const { w, h } = this.editor.viewport.peek()
 		this.measure(now, w, h)
-		const ins = this.insets
+		const ins = this.easeInsets(elapsed)
 		// where the markers go (and what counts as in view): the viewport less the bars along its edges
 		const R = { l: ins.left, t: ins.top, r: w - ins.right, b: h - ins.bottom }
 		if (R.r - R.l < 120 || R.b - R.t < 80) return this.hideAll(now)
@@ -140,10 +171,18 @@ export class Offscreen {
 			const visible = box.x + box.w > R.l + inset && box.x < R.r - inset && box.y + box.h > R.t + inset && box.y < R.b - inset
 			if (visible) {
 				this.out.delete(key)
+				this.stands.delete(key)
 				continue
 			}
 			this.out.add(key)
-			const at = { x: box.x + box.w / 2, y: box.y + box.h / 2 }
+			// (from where it stands rather than its body, so a creature fidgeting on the spot doesn't nudge its marker)
+			const z = this.editor.camera.peek().z
+			// (sitting, where it was put; its root sways a little as it writhes and fidgets)
+			const at0 = worm.mode === 'here' && !worm.walk && worm.goal ? worm.goal : worm.root
+			let stand = this.stands.get(key)
+			if (!stand || Math.hypot(at0.x - stand.x, at0.y - stand.y) * z > STAND_PX) this.stands.set(key, (stand = { ...at0 }))
+			const ground = this.editor.pageToScreen(stand)
+			const at = { x: ground.x, y: ground.y - BODY_UP }
 			const d = { x: at.x - c.x, y: at.y - c.y }
 			const kx = d.x ? (inner.r - c.x) / Math.abs(d.x) : Infinity
 			const ky = d.y ? (inner.b - c.y) / Math.abs(d.y) : Infinity
@@ -151,10 +190,12 @@ export class Offscreen {
 			const k = Math.min(kx, ky)
 			const edge: Edge = side ? (d.x < 0 ? 'left' : 'right') : d.y < 0 ? 'top' : 'bottom'
 			const s = side ? c.y + d.y * k : c.x + d.x * k
-			targets.push({ worm, key, at, edge, s, status, quiet: status === null })
+			if (status !== null) this.busyAt.set(key, now)
+			const busy = now - (this.busyAt.get(key) ?? -Infinity) < BUSY_HOLD_MS
+			targets.push({ worm, key, at, edge, s, status, busy })
 		}
 		for (const key of [...this.out]) if (!seen.has(key)) this.out.delete(key)
-		for (const key of [...this.since.keys()]) if (!seen.has(key)) this.forget(key)
+		for (const key of new Set([...this.since.keys(), ...this.busyAt.keys(), ...this.stands.keys()])) if (!seen.has(key)) this.forget(key)
 
 		const groups: Group[] = []
 		const ends: Group[] = []
@@ -167,9 +208,11 @@ export class Offscreen {
 		}
 
 		const used = new Set<string>()
+		this.sharedWith.clear()
 		for (const g of groups) {
 			used.add(g.marker.key)
-			this.draw(g, R, inner)
+			for (const t of g.members) this.sharedWith.set(t.key, g.marker.key)
+			this.draw(g, R, inner, elapsed)
 		}
 		// (ones folded into another's marker keep theirs, hidden, for when they're apart again)
 		const out = new Set(targets.map((t) => t.key))
@@ -205,6 +248,8 @@ export class Offscreen {
 		this.since.delete(key)
 		this.stopping.delete(key)
 		this.interruptedAt.delete(key)
+		this.busyAt.delete(key)
+		this.stands.delete(key)
 	}
 
 	// ---------- layout ----------
@@ -212,15 +257,17 @@ export class Offscreen {
 	/**
 	 * One edge's markers: close quiet ones share a marker, then they're spread along the edge so
 	 * none overlap (in order), merging neighbours while they don't fit. The sides keep clear of
-	 * what's already on the top and bottom edges (`ends`).
+	 * what's already on the top and bottom edges (`ends`). Only where the creatures are and each
+	 * marker's fixed room (see SLOT) count: never what the pills say or which one is hovered.
 	 */
 	private place(edge: Edge, list: Target[], R: Rect, inner: Rect, ends: Group[]): Group[] {
 		const side = edge === 'left' || edge === 'right'
 		let groups: Group[] = []
 		for (const t of list) {
 			const last = groups[groups.length - 1]
-			const quiet = t.quiet && this.hovered !== t.key
-			if (last && quiet && last.members.every((m) => m.quiet && this.hovered !== m.key) && t.s - last.members[last.members.length - 1].s < MERGE_PX) {
+			const prev = last?.members[last.members.length - 1]
+			const together = !!prev && this.sharedWith.has(t.key) && this.sharedWith.get(t.key) === this.sharedWith.get(prev.key)
+			if (last && !t.busy && !last.busy && t.s - prev!.s < MERGE_PX + (together ? MERGE_SLACK : 0)) {
 				last.members.push(t)
 			} else groups.push(this.group(edge, [t]))
 		}
@@ -228,7 +275,7 @@ export class Offscreen {
 			groups = groups.map((g) => this.group(edge, g.members))
 			for (const g of groups) {
 				if (!side) {
-					const half = g.ext / 2 - GAP / 2
+					const half = (g.ext - GAP) / 2
 					g.min = Math.max(inner.l, R.l + half)
 					g.max = Math.min(inner.r, R.r - half)
 					continue
@@ -267,13 +314,11 @@ export class Offscreen {
 	private group(edge: Edge, members: Target[]): Group {
 		const marker = this.marker(members[0].key)
 		const s = members.reduce((a, m) => a + m.s, 0) / members.length
-		const pill = this.pillText(members)
-		const pillW = this.setPill(marker, members, pill)
+		const busy = members.some((m) => m.busy)
 		const side = edge === 'left' || edge === 'right'
-		const reach = pillW ? ARROW * 2 + PILL_GAP + (side ? pillW : PILL_H) : ARROW * 2
-		// (an arrow turned diagonally takes a little more room)
-		const across = side ? Math.max(ARROW * 2 + 4, PILL_H) : Math.max(ARROW * 2 + 4, pillW)
-		return { members, edge, s, p: s, ext: across + GAP, depth: reach, min: -Infinity, max: Infinity, marker, pillW }
+		const reach = busy ? ARROW * 2 + PILL_GAP + (side ? PILL_MAX : PILL_H) : ARROW * 2
+		const ext = busy && !side ? BUSY_SLOT : SLOT
+		return { members, edge, s, p: s, ext, depth: reach, min: -Infinity, max: Infinity, marker, busy }
 	}
 
 	/** The pill's line for these creatures (null: no pill, just the arrow). */
@@ -323,6 +368,7 @@ export class Offscreen {
 			removeAt: 0,
 			worms: [],
 			color: '',
+			off: null,
 		}
 		// It's for clicking, not for starting a selection or a pan on the canvas underneath.
 		el.addEventListener('pointerdown', (e) => {
@@ -345,7 +391,7 @@ export class Offscreen {
 		return made
 	}
 
-	/** Fills in the pill (when its text changed) and returns its width, 0 without one. */
+	/** Fills in the pill (when its text changed) and returns its width, 0 without one. Drawing only: layout never reads it. */
 	private setPill(m: Marker, members: Target[], pill: { status: string; title: string } | null): number {
 		const open = members.some((t) => t.key === this.hovered)
 		const text = pill ? `${pill.status}\n${pill.title}\n${open}` : ''
@@ -362,13 +408,27 @@ export class Offscreen {
 		return m.pillW
 	}
 
-	private draw(g: Group, R: Rect, inner: Rect) {
+	private draw(g: Group, R: Rect, inner: Rect, elapsed: number) {
 		const m = g.marker
 		const lead = g.members[0]
 		m.worms = g.members.map((t) => t.worm)
 		const side = g.edge === 'left' || g.edge === 'right'
-		const x = side ? (g.edge === 'left' ? inner.l : inner.r) : g.p
-		const y = side ? g.p : g.edge === 'top' ? inner.t : inner.b
+		const onEdge = (s: number) => (side ? { x: g.edge === 'left' ? inner.l : inner.r, y: s } : { x: s, y: g.edge === 'top' ? inner.t : inner.b })
+		// Where its creature's ray meets the edge, exactly (so it's locked to the camera), plus how far
+		// its neighbours moved it along, which eases.
+		const anchor = onEdge(lead.s)
+		const spot = onEdge(g.p)
+		const stack = this.stack
+		if (g.edge === 'top' && stack) {
+			const half = g.busy ? PILL_MAX / 2 : ARROW + 2
+			if (spot.x + half > stack.l - GAP && spot.x - half < stack.r + GAP) spot.y = Math.max(spot.y, stack.b + EDGE + ARROW)
+		}
+		const want = { x: spot.x - anchor.x, y: spot.y - anchor.y }
+		const k = !m.off || !m.shown || this.reducedMotion.matches ? 1 : 1 - Math.exp(-elapsed / SETTLE_MS)
+		const off = m.off ?? want
+		m.off = { x: off.x + (want.x - off.x) * k, y: off.y + (want.y - off.y) * k }
+		const x = anchor.x + m.off.x
+		const y = anchor.y + m.off.y
 		// pointing at the one it's for, or the middle of a group
 		const aim = g.members.reduce((a, t) => ({ x: a.x + t.at.x / g.members.length, y: a.y + t.at.y / g.members.length }), { x: 0, y: 0 })
 		const angle = Math.atan2(aim.y - y, aim.x - x)
@@ -383,15 +443,16 @@ export class Offscreen {
 		const n = g.members.length
 		m.count.hidden = n < 2
 		if (n > 1) m.count.textContent = String(n)
-		if (g.pillW) {
+		const pillW = this.setPill(m, g.members, this.pillText(g.members))
+		if (pillW) {
 			// inward from the arrow; on the top and bottom, kept inside the edges
 			let px: number
 			let py: number
 			if (side) {
-				px = g.edge === 'left' ? ARROW + PILL_GAP : -ARROW - PILL_GAP - g.pillW
+				px = g.edge === 'left' ? ARROW + PILL_GAP : -ARROW - PILL_GAP - pillW
 				py = -PILL_H / 2
 			} else {
-				const left = Math.min(Math.max(x - g.pillW / 2, R.l), R.r - g.pillW)
+				const left = Math.min(Math.max(x - pillW / 2, R.l), R.r - pillW)
 				px = left - x
 				py = g.edge === 'top' ? ARROW + PILL_GAP : -ARROW - PILL_GAP - PILL_H
 			}
@@ -419,6 +480,7 @@ export class Offscreen {
 		if (m.shown) {
 			m.shown = false
 			m.el.classList.remove('in')
+			m.off = null
 			m.removeAt = now + (this.reducedMotion.matches ? 0 : FADE_MS)
 			if (this.hovered === m.key) this.hovered = null
 		}
@@ -461,6 +523,16 @@ export class Offscreen {
 		if (live.length === 1) window.setTimeout(() => this.startle(live[0]), animate ? FLY_MS : 0)
 	}
 
+	/** The insets to lay out with this frame: the measured ones, eased (a tray appearing slides the markers down). */
+	private easeInsets(elapsed: number): Insets {
+		const to = this.insets
+		const from = this.shownInsets
+		if (!from || this.reducedMotion.matches) return (this.shownInsets = { ...to })
+		const k = 1 - Math.exp(-elapsed / SETTLE_MS)
+		const ease = (a: number, b: number) => (Math.abs(b - a) < 0.1 ? b : a + (b - a) * k)
+		return (this.shownInsets = { top: ease(from.top, to.top), bottom: ease(from.bottom, to.bottom), left: ease(from.left, to.left), right: ease(from.right, to.right) })
+	}
+
 	/** The bars along the viewport's edges (title, toolbar, tray; frames status), measured now and then. */
 	private measure(now: number, w: number, h: number) {
 		const size = `${w}x${h}`
@@ -470,7 +542,7 @@ export class Offscreen {
 		const host = this.layer.getBoundingClientRect()
 		let top = 0
 		let bottom = 0
-		for (const el of document.querySelectorAll<HTMLElement>('.top-bar > *, .top-stack > *, .toolbar.tools, .frames-status, .follow-tag')) {
+		for (const el of document.querySelectorAll<HTMLElement>('.top-bar > *, .toolbar.tools, .frames-status, .follow-tag')) {
 			const r = el.getBoundingClientRect()
 			if (!r.width || !r.height) continue
 			const t = r.top - host.top
@@ -480,7 +552,30 @@ export class Offscreen {
 			else bottom = Math.max(bottom, h - t)
 		}
 		this.insets = { top: top + EDGE, bottom: bottom + EDGE, left: EDGE, right: EDGE }
+		// The attention tray comes and goes under the middle of the top bar: only the markers under it
+		// make way (see draw), so it doesn't move the rest.
+		let stack: Span | null = null
+		for (const el of document.querySelectorAll<HTMLElement>('.top-stack > *')) {
+			const r = el.getBoundingClientRect()
+			if (!r.width || !r.height) continue
+			const span = { l: r.left - host.left, r: r.right - host.left, b: r.bottom - host.top }
+			stack = stack ? { l: Math.min(stack.l, span.l), r: Math.max(stack.r, span.r), b: Math.max(stack.b, span.b) } : span
+		}
+		this.stack = stack
 	}
+}
+
+interface Span {
+	l: number
+	r: number
+	b: number
+}
+
+interface Insets {
+	top: number
+	bottom: number
+	left: number
+	right: number
 }
 
 interface Rect {

@@ -19,8 +19,14 @@
 	color: #f4f4f5;
 	cursor: pointer;
 	pointer-events: none;
+	z-index: 1;
 	will-change: transform;
 	--marker-color: #22d3ee;
+}
+
+/* hovered: its label floats over its neighbours (it never moves them) */
+.offscreen-marker.open {
+	z-index: 2;
 }
 
 .offscreen-marker:focus {
@@ -88,12 +94,12 @@
 	stroke: #fff;
 }
 
-/* asleep: dim, eye shut */
-.offscreen-marker.asleep .offscreen-body {
+/* asleep: a dim arrow, eye shut (its hover label isn't dimmed: it floats over its neighbours) */
+.offscreen-marker.asleep .offscreen-arrow {
 	opacity: 0.5;
 }
 
-.offscreen-marker.asleep:hover .offscreen-body {
+.offscreen-marker.asleep:hover .offscreen-arrow {
 	opacity: 0.85;
 }
 
@@ -200,6 +206,7 @@
 
 /* hovered: the whole title */
 .offscreen-marker.open .offscreen-pill {
+	background: rgb(24, 24, 27);
 	max-width: min(440px, 70vw);
 }
 

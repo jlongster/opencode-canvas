@@ -8,10 +8,12 @@ const LONG_PRESS_MS = 500
 const LONG_PRESS_SLOP = 8
 /** screen px from a creature's spot that still counts as over it */
 const CREATURE_REACH = 36
+/** screen px outside a session frame (title strip included) that still counts as on it */
+const FRAME_REACH = 48
 
 /**
  * Calling up a session's worm (edit links): press C while the pointer is over anything of a session
- * frame (an item, a group, the frame's title or background) or its worm, or long-press it on touch.
+ * frame (an item, a group, the frame's title or background, or just outside it) or its worm, or long-press it on touch.
  * The session's worm comes to the pointer (conjured there if it isn't here yet) with its prompt
  * box open; someone else's stays put and shows whose it is (see Conjure.summon). When it can't, the
  * reason shows in the toast. C (or a long press) anywhere else opens the session picker next to the
@@ -45,7 +47,8 @@ export class Summon {
 
 	/**
 	 * The session under a page point, if any: a creature's (near where it's perched), else the
-	 * session whose frame (title strip included) contains the point, whatever is on it.
+	 * session whose frame (title strip included) contains the point or is nearest within
+	 * FRAME_REACH screen px of it.
 	 */
 	private sessionAt(point: Vec): string | null {
 		const z = this.editor.getZoom()
@@ -58,10 +61,14 @@ export class Summon {
 			if (d <= CREATURE_REACH && (!best || d < best.d)) best = { sessionId, d }
 		}
 		if (best) return best.sessionId
+		const reach = FRAME_REACH / z
+		let nearest: { sessionId: string; d: number } | null = null
 		for (const section of this.editor.layout.get().sections) {
-			if (Box.contains(section.box, point) || Box.contains(frameTitleBox(section, z), point)) return section.id
+			if (this.editor.isSessionHidden(section.id)) continue
+			const d = Math.min(distanceToBox(section.box, point), distanceToBox(frameTitleBox(section, z), point))
+			if (d <= reach && (!nearest || d < nearest.d)) nearest = { sessionId: section.id, d }
 		}
-		return null
+		return nearest?.sessionId ?? null
 	}
 
 	/** The session's worm to `point`, or the picker there when it's over no session. */
@@ -119,6 +126,13 @@ export class Summon {
 		clearTimeout(this.press.timer)
 		this.press = null
 	}
+}
+
+/** Page distance from a point to a box, 0 inside it */
+function distanceToBox(b: Box, p: Vec) {
+	const dx = Math.max(b.x - p.x, 0, p.x - (b.x + b.w))
+	const dy = Math.max(b.y - p.y, 0, p.y - (b.y + b.h))
+	return Math.hypot(dx, dy)
 }
 
 function isEditable(target: EventTarget | null) {

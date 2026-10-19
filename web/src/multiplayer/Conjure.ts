@@ -23,7 +23,30 @@ export interface PromptAttachment {
 /** Why this browser can't talk to a worm, or null when it can. 'unowned': nobody conjured it (an agent's say/highlight made it). */
 export type TalkBlock = 'not-yours' | 'not-paired' | 'unowned' | null
 
+/** One of your prompts in a session, as the prompt thread shows it: the text you typed and the images' data: URLs. */
+export interface ThreadPrompt {
+	id: string
+	text: string
+	images: string[]
+	at: number
+}
+
+/** A session's last exchange from OpenCode: your latest prompts (oldest first, steers included) and what it said since. */
+export interface LastExchange {
+	prompts: ThreadPrompt[]
+	reply: { text: string; at: number } | null
+}
+
+/** A worm's turn in progress, as seen from here (see Conjure.turns). */
+export interface TurnInfo {
+	/** when it started thinking (or when we first saw it thinking) */
+	since: number
+}
+
 const PROMPT_MAX = 20_000
+const EXCHANGE_SCAN = 40
+const EXCHANGE_PROMPTS_MAX = 3
+const MUTED_KEY = 'canvas.conjure.muted'
 const FIND_SESSION_MS = 8_000
 const INTERRUPT_MS = 10_000
 /** a worm still thinking this long after its session was interrupted can be stopped again */
@@ -71,8 +94,13 @@ export class Conjure {
 	})
 	/** our own worms whose sessions we interrupted, by session id (when), until they stop thinking */
 	readonly stopping = atom<Record<string, number>>('conjureStopping', {})
+	/** when each thinking worm's turn started, by session id, from its presence (gone when it stops thinking) */
+	readonly turns = atom<Record<string, TurnInfo>>('conjureTurns', {})
+	/** worms muted here (their bubbles kept off the canvas), by session id; this browser only */
+	readonly muted = atom<string[]>('conjureMuted', loadMuted())
 	private host: WormHost | null
 	private unwatchStopping: () => void
+	private unwatchTurns: () => void
 	private unwatchPointer: () => void
 	/** where the pointer last was on the canvas (page space), for menus to conjure at */
 	private lastPointer: Vec | null = null
@@ -97,6 +125,32 @@ export class Conjure {
 			const at = this.editor.pointerPage.get()
 			if (at) this.lastPointer = at
 		})
+		this.unwatchTurns = react(() => this.trackTurns(this.presence.peers.get()))
+	}
+
+	/** Keeps `turns` in step with the worms' presence: when each started thinking. */
+	private trackTurns(peers: Peer[]) {
+		const prev = this.turns.peek()
+		const next: Record<string, TurnInfo> = {}
+		for (const p of peers) {
+			const id = p.user.sessionId
+			if (p.user.conjured && id && p.thinking) next[id] = prev[id] ?? { since: Date.now() }
+		}
+		const keys = Object.keys(next)
+		if (keys.length !== Object.keys(prev).length || keys.some((id) => next[id] !== prev[id])) this.turns.set(next)
+	}
+
+	isMuted(sessionId: string) {
+		return this.muted.get().includes(sessionId)
+	}
+
+	setMuted(sessionId: string, muted: boolean) {
+		const next = this.muted.peek().filter((id) => id !== sessionId)
+		if (muted) next.push(sessionId)
+		this.muted.set(next)
+		try {
+			localStorage.setItem(MUTED_KEY, JSON.stringify(next))
+		} catch {}
 	}
 
 	/**
@@ -169,9 +223,10 @@ export class Conjure {
 	 * Prompts the worm's session, straight from this browser; whoever runs the worm shows the reply.
 	 * Attached images go along as data: URLs (they never touch the canvas server). While the session
 	 * is running, the prompt steers it: OpenCode adds it to the turn in progress (as its TUI does when
-	 * you type while it works). Resolves to whether it steered a running session.
+	 * you type while it works); with `queue` it waits for the turn to finish instead. Resolves to
+	 * whether it went to a running session.
 	 */
-	async send(target: PromptTarget, text: string, attachments: PromptAttachment[] = []): Promise<{ steered: boolean }> {
+	async send(target: PromptTarget, text: string, attachments: PromptAttachment[] = [], opts: { queue?: boolean } = {}): Promise<{ steered: boolean }> {
 		const r = this.record(target.sessionId)
 		if (!r) throw new Error('that worm was banished')
 		const block = this.talkBlock(r.sessionId)
@@ -192,7 +247,7 @@ export class Conjure {
 				text: from ? `${from} (on the canvas "${title}"): ${body}` : body,
 				...(attachments.length ? { files: attachments.map((a) => ({ uri: a.dataUrl, name: a.name })) } : {}),
 				metadata: { source: 'canvas', canvasId: this.canvasId, ...(from ? { from } : {}) },
-				delivery: 'steer',
+				delivery: opts.queue ? 'queue' : 'steer',
 			})
 			return { steered: r.sessionId in active }
 		})
@@ -318,6 +373,38 @@ export class Conjure {
 		return lastAssistantText(r.serverKey, sessionId)
 	}
 
+	/**
+	 * Our own worm's last exchange, from its session's messages in OpenCode: the latest prompts
+	 * (with the canvas's "Name (on the canvas …):" prefix taken off again) and the newest thing it
+	 * said after them. Null when it isn't ours to read.
+	 */
+	async lastExchange(sessionId: string): Promise<LastExchange | null> {
+		const r = this.record(sessionId)
+		if (!r || !this.ours(sessionId)) return null
+		const res = await withServer(r.serverKey, (c) =>
+			c.message.list({ sessionID: sessionId, limit: EXCHANGE_SCAN, order: 'desc' }, { signal: AbortSignal.timeout(10_000) }),
+		)
+		const prompts: ThreadPrompt[] = []
+		let reply: LastExchange['reply'] = null
+		for (const m of res.data as RawMessage[]) {
+			if (m?.type === 'assistant') {
+				const text = (m.content ?? [])
+					.filter((p) => p.type === 'text')
+					.map((p) => p.text ?? '')
+					.join('\n\n')
+					.trim()
+				if (!text) continue
+				// (newest first: text before any prompt is the reply; text after one is the exchange before)
+				if (prompts.length) break
+				reply ??= { text, at: m.time?.completed ?? m.time?.created ?? 0 }
+			} else if (m?.type === 'user') {
+				prompts.unshift(threadPrompt(m))
+				if (prompts.length >= EXCHANGE_PROMPTS_MAX) break
+			} else if (m?.type === 'compaction' && prompts.length) break
+		}
+		return { prompts, reply }
+	}
+
 	/** What the worm is saying in the room right now (its reply, finished or not), or null. */
 	saying(sessionId: string): string | null {
 		const peer = this.presence.peers.get().find((p) => p.user.conjured && p.user.sessionId === sessionId)
@@ -350,6 +437,7 @@ export class Conjure {
 	destroy() {
 		this.unwatchStopping()
 		this.unwatchPointer()
+		this.unwatchTurns()
 		this.host?.destroy()
 		this.host = null
 	}
@@ -368,6 +456,45 @@ async function findSession(sessionId: string): Promise<{ serverKey: string; titl
 	)
 	for (const r of results) if (r.status === 'fulfilled') return r.value
 	return null
+}
+
+interface RawMessage {
+	id?: string
+	type?: string
+	text?: string
+	time?: { created?: number; completed?: number }
+	metadata?: Record<string, unknown>
+	files?: { data?: string; mime?: string; source?: { type?: string; uri?: string } }[]
+	content?: { type: string; text?: string }[]
+}
+
+/** A user message as the thread shows it: without what send() put round it, and its images as data: URLs. */
+function threadPrompt(m: RawMessage): ThreadPrompt {
+	let text = m.text ?? ''
+	const from = m.metadata?.source === 'canvas' && typeof m.metadata.from === 'string' ? m.metadata.from : ''
+	if (from && text.startsWith(`${from} (on the canvas "`)) {
+		const end = text.indexOf('"): ', from.length)
+		if (end >= 0) text = text.slice(end + 4)
+	}
+	const images = (m.files ?? [])
+		.map((f) => {
+			const uri = f.source?.type === 'uri' ? (f.source.uri ?? '') : ''
+			if (/^data:image\//.test(uri)) return uri
+			if (f.data && f.mime?.startsWith('image/')) return `data:${f.mime};base64,${f.data}`
+			return ''
+		})
+		.filter(Boolean)
+	if (images.length && /^\(sent (an image|\d+ images)\)$/.test(text)) text = ''
+	return { id: m.id ?? '', text, images, at: m.time?.created ?? 0 }
+}
+
+function loadMuted(): string[] {
+	try {
+		const ids = JSON.parse(localStorage.getItem(MUTED_KEY) ?? '[]')
+		return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : []
+	} catch {
+		return []
+	}
 }
 
 /** A stable made-up awareness id for a sleeping worm (negative, so it never clashes with real ones). */

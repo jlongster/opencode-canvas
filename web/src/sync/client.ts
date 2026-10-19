@@ -85,15 +85,15 @@ const conjuredPath = (canvasId: string, sessionId?: string) =>
 	`/api/canvases/${encodeURIComponent(canvasId)}/conjured${sessionId ? `/${encodeURIComponent(sessionId)}` : ''}`
 
 export const listConjured = (canvasId: string) => request<ConjuredAgent[]>(conjuredPath(canvasId))
-/** Brings an OpenCode session onto the canvas as a worm at page position (x, y). Fails with status 409 if it's already here. */
+/** Brings an OpenCode session onto the canvas as a worm, placed by the server beside its frame. Fails with status 409 if it's already here. */
 export const conjure = (
 	canvasId: string,
-	worm: { sessionId: string; serverKey: string; ownerId: string; title: string; x: number; y: number },
+	worm: { sessionId: string; serverKey: string; ownerId: string; title: string },
 ) => request<ConjuredAgent>(conjuredPath(canvasId), json('POST', worm))
 export const banishConjured = (canvasId: string, sessionId: string) =>
 	request<unknown>(conjuredPath(canvasId, sessionId), { method: 'DELETE' })
-/** Moves the worm and/or renames it. */
-export const updateConjured = (canvasId: string, sessionId: string, changes: { x?: number; y?: number; title?: string }) =>
+/** Renames the worm (the server decides where it sits). */
+export const updateConjured = (canvasId: string, sessionId: string, changes: { title: string }) =>
 	request<ConjuredAgent>(conjuredPath(canvasId, sessionId), json('PATCH', changes))
 
 // ---------- attention (creatures' queued says and highlights, see server/attention.ts) ----------

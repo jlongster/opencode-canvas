@@ -912,7 +912,7 @@ body,
 	cursor: pointer !important;
 }
 
-.canvas-container.conjure-dragging {
+.canvas-container.conjure-panning {
 	cursor: grabbing !important;
 }
 

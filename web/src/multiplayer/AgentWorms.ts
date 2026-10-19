@@ -3,9 +3,8 @@ import { markdownToHtml } from '../ui/markdown'
 import type { Box, Vec } from '../editor/geometry'
 import type { Attention } from './Attention'
 import type { Conjure } from './Conjure'
-import { Fights, type Pose } from './Fight'
 import { Offscreen } from './Offscreen'
-import { Slaps } from './Slap'
+import { Slaps, type Pose } from './Slap'
 import './farAway.css'
 import type { Peer, SubagentInfo } from './Presence'
 import { LIFT, NATIVE, SIZE, TIP_REACH, drawPointer, hits, mixColor, openEye, palette, place, turn, wobble, type EyeState, type Palette, type Shape } from './Pointer'
@@ -50,10 +49,8 @@ const SPEECH_CLOSE_MS = 220
 const STARTLE_MS = 1100
 /** extra screen px around the shape that still counts as clicking it */
 const HIT_SLOP = 4
-/** a press that moves further than this (screen px) drags it instead of clicking */
+/** a press that moves further than this (screen px) pans the canvas instead of clicking */
 const DRAG_PX = 5
-/** a dropped creature stays where it was put this long at most while waiting for its new position to come back */
-const PIN_MS = 5000
 /** the pointer this close to its eye (screen px) gets stared at */
 const STARE_PX = 170
 /** a conjured creature's finished reply puts itself away (locally) after this long, unless it's pinned */
@@ -78,7 +75,7 @@ const POINT_AT_PX = 420
 /** a highlight step: it goes this far (screen px) outside the target's edge to point in at it */
 const VISIT_PX = 36
 
-type Mode = 'here' | 'pop' | 'vanish' | 'carried'
+type Mode = 'here' | 'pop' | 'vanish'
 
 /** A glide: a cubic curve in page space, setting off the way it pointed and coming in to the goal. */
 interface Trip {
@@ -88,20 +85,6 @@ interface Trip {
 	to: Vec
 	at: number
 	dur: number
-}
-
-/** Dangling from where it was picked up: a pendulum about the grab point. */
-interface Swing {
-	/** the grab point from its centre, in its own unturned frame (screen px) */
-	local: Vec
-	len: number
-	/** the angle from the grab point to its centre, and how fast that turns */
-	a: number
-	v: number
-	/** the grab point on screen last frame, its velocity and acceleration */
-	prev: Vec | null
-	vel: Vec
-	acc: Vec
 }
 
 /** A subagent's dot, orbiting its parent. */
@@ -166,7 +149,7 @@ export interface Worm {
 	nextGlance: number
 	dart: Vec
 	nextDart: number
-	/** 0..1 a squash from being let go, easing back */
+	/** 0..1 squashed (slapped), easing back */
 	squash: number
 	wakeAt: number
 	recoilAt: number
@@ -180,11 +163,6 @@ export interface Worm {
 	nextFit: number
 	/** the startle (from conjure.startled) the body last reacted to */
 	startleSeen: number
-	swing: Swing | null
-	/** where its grab point is being carried to (page space), while someone here carries it */
-	carried: Vec | null
-	/** where it was dropped, held until its presence catches up */
-	pinned: { at: Vec; until: number } | null
 	/** as last drawn */
 	shape: Shape | null
 	/** where the labels hang (screen, from root), and its top and middle from there, eased */
@@ -245,18 +223,21 @@ export interface Worm {
 	badge: HTMLButtonElement | null
 }
 
-/** A pointer that went down on a creature: a click unless it moves, then a drag. */
+/** A pointer that went down on a creature: a click unless it moves, then it pans the canvas. */
 interface Press {
 	pointerId: number
 	worm: Worm
 	start: Vec
-	dragging: boolean
+	/** where it was last, while it pans */
+	last: Vec
+	panning: boolean
 }
 
 /**
  * Sessions' creatures (real OpenCode sessions, see Conjure): eye pointers (see Pointer.ts) that sit
- * where they were put and glide about when moved, the tip always facing the way they go, then turn
- * to point at what they're pointing at. Their busy subagents are little dots orbiting them. They're
+ * where the canvas server put them and glide about when it (or their agent) moves them, the tip
+ * always facing the way they go, then turn to point at what they're pointing at. People can't move
+ * them: clicking one opens its box, and dragging from one pans the canvas. Their busy subagents are little dots orbiting them. They're
  * drawn on one 2D canvas in screen space; the name label, bubbles and badges are DOM, like human
  * cursor labels.
  *
@@ -286,8 +267,6 @@ export class AgentWorms {
 	private tipFor: Dot | null = null
 	/** when this page started showing creatures (wall clock), to tell sessions conjured since from ones already here */
 	private bornAt = Date.now()
-	/** creatures dropped by each other, fighting (see Fight) */
-	private fights: Fights
 	/** the slap tool's blows (see Slap) */
 	private slaps: Slaps
 	/** markers at the edges of the view for creatures out of it */
@@ -310,8 +289,7 @@ export class AgentWorms {
 		this.tip = document.createElement('div')
 		this.tip.className = 'agent-worm-tiny-tip'
 		this.tip.hidden = true
-		this.fights = new Fights(editor, conjure, attention, this.reducedMotion)
-		this.slaps = new Slaps(editor, conjure, this.fights, this.reducedMotion)
+		this.slaps = new Slaps(editor, conjure, this.reducedMotion)
 		this.offscreen = new Offscreen(parent, editor, conjure, this.reducedMotion, (worm) => this.startle(worm))
 		this.labels.appendChild(this.tip)
 		// for poking at from the console, like window.editor
@@ -359,15 +337,8 @@ export class AgentWorms {
 			}
 			if (worm.leaving) this.revive(worm, now)
 			this.syncCalls(worm)
-			const placed = peer.user.sessionId ? this.conjure?.placing.get(peer.user.sessionId) : undefined
-			if (placed) {
-				// Summoned here (C): glide over now rather than waiting for the record to come back.
-				this.conjure!.placing.delete(peer.user.sessionId!)
-				worm.pinned = { at: placed, until: now + PIN_MS }
-			}
-			if (worm.pinned && (now > worm.pinned.until || (peer.cursor && near(peer.cursor, worm.pinned.at)))) worm.pinned = null
 			if (target) {
-				worm.goal = worm.pinned?.at ?? target.point
+				worm.goal = target.point
 				worm.focus = target.box
 			} else {
 				worm.focus = null
@@ -408,7 +379,6 @@ export class AgentWorms {
 			}
 			this.draw(worm, now, elapsed)
 		}
-		this.fights.frame(ctx, now, this.worms.values())
 		this.slaps.frame(ctx, now, this.worms.values())
 		this.showTip()
 		this.offscreen.frame(now, elapsed, this.worms.values())
@@ -416,16 +386,15 @@ export class AgentWorms {
 
 	destroy() {
 		for (const d of this.disposers.splice(0)) d()
-		this.fights.destroy()
 		this.slaps.destroy()
 		this.offscreen.destroy()
-		this.container?.classList.remove('conjure-hover', 'conjure-dragging')
+		this.container?.classList.remove('conjure-hover', 'conjure-panning')
 		this.canvas.remove()
 		this.labels.remove()
 		this.worms.clear()
 	}
 
-	// ---------- clicking and dragging creatures ----------
+	// ---------- clicking creatures (nobody here moves them: dragging one pans the canvas) ----------
 
 	/** The topmost creature under a point in client coordinates. */
 	private hitTest(clientX: number, clientY: number): Worm | null {
@@ -464,7 +433,7 @@ export class AgentWorms {
 		this.swallowed.add(e.pointerId)
 		const at = this.local(e)
 		if (this.slaps.active) return this.slaps.hit(worm, at)
-		this.press = { pointerId: e.pointerId, worm, start: at, dragging: false }
+		this.press = { pointerId: e.pointerId, worm, start: at, last: at, panning: false }
 		try {
 			;(e.target as Element).setPointerCapture?.(e.pointerId)
 		} catch {}
@@ -476,38 +445,21 @@ export class AgentWorms {
 		const press = this.press
 		if (press?.pointerId !== e.pointerId) return
 		this.press = null
-		this.container?.classList.remove('conjure-dragging')
+		this.container?.classList.remove('conjure-panning')
 		const worm = press.worm
 		const peer = this.conjure?.peer(worm.id)
-		if (!press.dragging) {
-			if (!peer || e.type !== 'pointerup') return
-			// Calling for attention: a click opens its walkthrough, and another one (or a click while it
-			// isn't calling) the prompt box.
-			const sessionId = peer.user.sessionId
-			if (sessionId && worm.calls && !this.attention?.isOpen(sessionId)) {
-				this.startle(worm)
-				return this.attention!.open(sessionId)
-			}
-			if (this.conjure!.canPrompt) {
-				this.attention?.close()
-				this.conjure!.open(peer)
-			}
-			return
+		if (press.panning || !peer || e.type !== 'pointerup') return
+		// Calling for attention: a click opens its walkthrough, and another one (or a click while it
+		// isn't calling) the prompt box.
+		const sessionId = peer.user.sessionId
+		if (sessionId && worm.calls && !this.attention?.isOpen(sessionId)) {
+			this.startle(worm)
+			return this.attention!.open(sessionId)
 		}
-		const sessionId = peer?.user.sessionId
-		// A cancelled drag (or a creature that left meanwhile) glides back where it was.
-		const ok = !!sessionId && e.type === 'pointerup' && worm.mode === 'carried'
-		this.letGo(worm)
-		if (!ok) return
-		const drop = { x: Math.round(worm.root.x), y: Math.round(worm.root.y) }
-		worm.goal = drop
-		worm.dest = drop
-		worm.pinned = { at: drop, until: performance.now() + PIN_MS }
-		this.fights.dropped(worm, this.worms.values())
-		this.conjure!.move(sessionId!, drop).catch((err) => {
-			console.error('moving the creature failed', err)
-			worm.pinned = null
-		})
+		if (this.conjure!.canPrompt) {
+			this.attention?.close()
+			this.conjure!.open(peer)
+		}
 	}
 
 	private onPointerMove = (e: PointerEvent) => {
@@ -515,51 +467,23 @@ export class AgentWorms {
 		if (press?.pointerId === e.pointerId) {
 			e.stopPropagation()
 			const at = this.local(e)
-			if (!press.dragging) {
-				if (!this.conjure?.canEdit || Math.hypot(at.x - press.start.x, at.y - press.start.y) < DRAG_PX) return
-				press.dragging = true
-				press.worm.pinned = null
-				if (this.conjure?.prompting.peek()?.clientId === press.worm.id) this.conjure.close()
+			if (!press.panning) {
+				if (Math.hypot(at.x - press.start.x, at.y - press.start.y) < DRAG_PX) return
+				press.panning = true
 				this.container?.classList.remove('conjure-hover')
-				this.container?.classList.add('conjure-dragging')
-				this.pickUp(press.worm, press.start)
+				this.container?.classList.add('conjure-panning')
 			}
-			press.worm.carried = this.editor.screenToPage(at)
+			// Pressed on a creature and dragged: the canvas pans, as from anywhere empty.
+			const cam = this.editor.camera.peek()
+			this.editor.stopCameraMotion()
+			this.editor.setCamera({ x: cam.x + (at.x - press.last.x) / cam.z, y: cam.y + (at.y - press.last.y) / cam.z, z: cam.z })
+			press.last = at
 			return
 		}
 		if (this.swallowed.has(e.pointerId)) return e.stopPropagation()
 		const over = e.buttons === 0 && this.overCanvas(e) ? this.hitTest(e.clientX, e.clientY) : null
 		this.slaps.hovered = this.slaps.active ? over : null
 		this.container?.classList.toggle('conjure-hover', !!over && !this.slaps.active)
-	}
-
-	/** Picked up by the point under the pointer (screen `at`): it hangs from there. */
-	private pickUp(worm: Worm, at: Vec) {
-		if (worm.mode === 'pop' || worm.mode === 'vanish') this.settle(worm)
-		const centre = worm.shape?.centre ?? this.centreOf(worm)
-		const rho = worm.heading - NATIVE
-		const d = { x: at.x - centre.x, y: at.y - centre.y }
-		const local = rotate(d, -rho)
-		worm.mode = 'carried'
-		worm.modeAt = performance.now()
-		worm.trip = null
-		worm.vel = { x: 0, y: 0 }
-		worm.off = { x: 0, y: 0 }
-		worm.offV = { x: 0, y: 0 }
-		worm.carried = this.editor.screenToPage(at)
-		worm.swing = { local, len: Math.hypot(local.x, local.y), a: Math.atan2(-d.y, -d.x), v: 0, prev: null, vel: { x: 0, y: 0 }, acc: { x: 0, y: 0 } }
-		worm.nextDart = 0
-	}
-
-	/** Lets go of a carried creature: it stays there, turning back the way it points. */
-	private letGo(worm: Worm) {
-		worm.carried = null
-		worm.swing = null
-		if (worm.mode !== 'carried') return
-		worm.mode = 'here'
-		worm.modeAt = performance.now()
-		worm.dest = { ...worm.root }
-		if (!this.reducedMotion.matches) worm.squash = 0.6
 	}
 
 	// ---------- state ----------
@@ -634,9 +558,6 @@ export class AgentWorms {
 			fit: -1e9,
 			nextFit: 0,
 			startleSeen: -1e9,
-			swing: null,
-			carried: null,
-			pinned: null,
 			shape: null,
 			anchor: null,
 			headAt: { x: 0, y: -SIZE },
@@ -693,7 +614,7 @@ export class AgentWorms {
 		if (prev) {
 			// Leaving, it was blinking out: back as it was.
 			if (prev.leaving && prev.mode === 'vanish' && !prev.warpTo) prev.mode = 'here'
-			for (const key of ['root', 'vel', 'dest', 'trip', 'heading', 'spin', 'off', 'offV', 'mode', 'modeAt', 'warpTo', 'seed', 'eye', 'glance', 'squash', 'wakeAt', 'recoilAt', 'swing', 'carried', 'anchor', 'headAt', 'middleAt', 'shape', 'dots', 'orbit'] as const) {
+			for (const key of ['root', 'vel', 'dest', 'trip', 'heading', 'spin', 'off', 'offV', 'mode', 'modeAt', 'warpTo', 'seed', 'eye', 'glance', 'squash', 'wakeAt', 'recoilAt', 'anchor', 'headAt', 'middleAt', 'shape', 'dots', 'orbit'] as const) {
 				;(worm as unknown as Record<string, unknown>)[key] = prev[key]
 			}
 			worm.startleSeen = prev.startleSeen
@@ -735,9 +656,8 @@ export class AgentWorms {
 		worm.el.classList.add('leaving')
 		if (this.press?.worm === worm) {
 			this.press = null
-			this.container?.classList.remove('conjure-dragging')
+			this.container?.classList.remove('conjure-panning')
 		}
-		this.letGo(worm)
 		if (this.reducedMotion.matches) worm.gone = true
 		else this.vanish(worm, now, null)
 	}
@@ -1032,7 +952,7 @@ export class AgentWorms {
 		}
 
 		worm.rest = this.restHeading(worm, this.centreOf(worm))
-		const held = this.fights.holds(worm, now) || this.slaps.holds(worm, now)
+		const held = this.slaps.holds(worm, now)
 		if (!held) {
 			this.locomote(worm, now, dt, z)
 			this.maybeFidget(worm, now)
@@ -1041,14 +961,10 @@ export class AgentWorms {
 			worm.vel = { x: 0, y: 0 }
 		}
 		if (worm.mode === 'pop' || worm.mode === 'vanish') this.popping(worm, now)
-		this.fights.step(worm, now, elapsed, z)
 		this.slaps.step(worm, now)
-		const pose = this.fights.pose(worm, now, z) ?? this.slaps.pose(worm, now, z)
-		if (worm.mode === 'carried') this.dangle(worm, dt)
-		else {
-			this.knock(worm, pose, dt)
-			this.steer(worm, pose, now, dt, z)
-		}
+		const pose = this.slaps.pose(worm, now, z)
+		this.knock(worm, pose, dt)
+		this.steer(worm, pose, now, dt, z)
 		worm.squash *= 1 - ease(140)
 		this.eyes(worm, now, elapsed)
 	}
@@ -1139,7 +1055,7 @@ export class AgentWorms {
 		} else worm.gone = true
 	}
 
-	/** Knocked out of place (fights, slaps, recoils): sprung back, or thrown and left to fly. */
+	/** Knocked out of place (slaps, recoils): sprung back, or thrown and left to fly. */
 	private knock(worm: Worm, pose: Pose | null, dt: number) {
 		const to = pose?.off ?? { x: 0, y: 0 }
 		if (this.reducedMotion.matches) {
@@ -1251,43 +1167,6 @@ export class AgentWorms {
 		return NATIVE
 	}
 
-	/** Dangling from where it's held: a pendulum about the grab point, swung by the carrying. */
-	private dangle(worm: Worm, dt: number) {
-		const sw = worm.swing
-		if (!worm.carried || !sw) return
-		const G = this.editor.pageToScreen(worm.carried)
-		const still = this.reducedMotion.matches
-		if (sw.prev && dt > 0) {
-			const v = { x: (G.x - sw.prev.x) / dt, y: (G.y - sw.prev.y) / dt }
-			const a = { x: (v.x - sw.vel.x) / dt, y: (v.y - sw.vel.y) / dt }
-			const lim = 9000
-			sw.acc = { x: sw.acc.x * 0.5 + Math.max(-lim, Math.min(lim, a.x)) * 0.5, y: sw.acc.y * 0.5 + Math.max(-lim, Math.min(lim, a.y)) * 0.5 }
-			sw.vel = v
-		}
-		sw.prev = G
-		if (!still) {
-			// a compound pendulum (its radius of gyration about its centre ~9px), gravity less the hand's acceleration
-			const L = sw.len
-			const k = L / (81 + L * L)
-			for (let left = dt; left > 1e-6; left -= 1 / 120) {
-				const h = Math.min(left, 1 / 120)
-				const gx = -sw.acc.x
-				const gy = 2600 - sw.acc.y
-				const torque = Math.cos(sw.a) * gy - Math.sin(sw.a) * gx
-				sw.v += (k * torque - 2.4 * sw.v) * h
-				sw.a += sw.v * h
-			}
-			worm.heading = turn(0, sw.a - Math.atan2(-sw.local.y, -sw.local.x) + NATIVE)
-			worm.spin = sw.v
-		}
-		const rho = worm.heading - NATIVE
-		const l = rotate(sw.local, rho)
-		const centre = { x: G.x - l.x, y: G.y - l.y }
-		worm.root = this.editor.screenToPage({ x: centre.x, y: centre.y + LIFT })
-		worm.off = { x: 0, y: 0 }
-		worm.offV = { x: 0, y: 0 }
-	}
-
 	/** Thinking (busy, not talking): fretting, and now and then a fit of frustration. */
 	private fret(worm: Worm, now: number) {
 		const busy = worm.think > 0.5 && worm.talk < 0.3 && worm.mode === 'here' && !worm.trip && !worm.asleep
@@ -1346,19 +1225,9 @@ export class AgentWorms {
 		let squeeze = 0
 		let lower = 0
 		let dizzy = 0
-		const fighting = this.fights.eye(worm, now) ?? this.slaps.eye(worm, now)
-		if (fighting) ({ look, lid, wide, slant, squeeze, lower, dizzy } = fighting)
-		else if (worm.mode === 'carried') {
-			// squinting, peering down at where it'll be dropped, eyes darting
-			if (now > worm.nextDart) {
-				worm.dart = { x: (Math.random() - 0.5) * 0.9, y: 0.7 + Math.random() * 0.3 }
-				worm.nextDart = now + 160 + Math.random() * 260
-			}
-			look = worm.dart
-			lid = 0.4
-			lower = 0.35
-			slant = 0.25
-		} else if (startle > 0) {
+		const slapped = this.slaps.eye(worm, now)
+		if (slapped) ({ look, lid, wide, slant, squeeze, lower, dizzy } = slapped)
+		else if (startle > 0) {
 			look = { x: 0, y: 0 }
 			wide = startle
 		} else if (worm.mode === 'pop' || worm.mode === 'vanish') {
@@ -1417,7 +1286,7 @@ export class AgentWorms {
 			look = worm.glance
 		}
 		// blinks (even with reduced motion: they're the one thing it keeps); calling, in twos
-		if (worm.mode !== 'carried' && !worm.asleep && now > worm.nextBlink) {
+		if (!worm.asleep && now > worm.nextBlink) {
 			worm.blinkStart = now
 			worm.doubleBlink = calling || Math.random() < 0.2
 			worm.nextBlink = now + (calling ? 1700 : 2200 + Math.random() * 3600)
@@ -1508,7 +1377,6 @@ export class AgentWorms {
 		if (!still) worm.orbit += ORBIT_SPEED * dt
 		const active = [...worm.dots.values()].filter((d) => !d.leaving).sort((a, b) => a.slot - b.slot)
 		const n = active.length
-		const scatter = this.fights.scatter(worm, now)
 		for (const dot of [...worm.dots.values()]) {
 			if (dot.leaving) {
 				const u = still ? 1 : (now - dot.leaveStart) / DOT_LEAVE_MS
@@ -1525,7 +1393,7 @@ export class AgentWorms {
 				dot.a += turn(dot.a, want) * (still ? 1 : 1 - Math.exp(-elapsed / 450))
 			}
 			const out = dot.leaving ? 1 + 0.8 * (1 - dot.fade) : 0.45 + 0.55 * Math.min(1, dot.scale)
-			const r = out * scatter * (1 + 0.1 * (dot.slot % 2))
+			const r = out * (1 + 0.1 * (dot.slot % 2))
 			const bob = still ? 0 : 2 * Math.sin(t * 1.7 + dot.seed)
 			const drift = still ? 0 : 1.5 * wobble(t * 0.9 + dot.seed)
 			dot.depth = Math.sin(dot.a)
@@ -1582,7 +1450,7 @@ export class AgentWorms {
 	// ---------- drawing ----------
 
 	private draw(worm: Worm, now: number, elapsed: number) {
-		if (worm.asleep && !this.fights.awake(worm, now) && !this.slaps.awake(worm, now)) return this.drawFaded(worm, now, elapsed, 0.5)
+		if (worm.asleep && !this.slaps.awake(worm, now)) return this.drawFaded(worm, now, elapsed, 0.5)
 		this.ctx.save()
 		try {
 			this.drawCreature(worm, now, elapsed)
@@ -1636,7 +1504,7 @@ export class AgentWorms {
 		const calling = worm.calls > 0 && !worm.el.classList.contains('attending')
 		if (worm.mode === 'pop') scale *= easeOutBack(Math.min(1, (now - worm.modeAt) / POP_MS))
 		else if (worm.mode === 'vanish') scale *= 1 - Math.pow(Math.min(1, (now - worm.modeAt) / VANISH_MS), 2)
-		if (!still && worm.mode !== 'carried') {
+		if (!still) {
 			// hovering: a gentle bob; asleep, slow breaths; calling, little hops
 			if (worm.asleep) scale *= 1 + 0.035 * Math.sin(t * 1.3)
 			else if (calling) c.y -= 3.5 * Math.abs(Math.sin(t * 4.2))
@@ -1710,11 +1578,6 @@ function renderSpeech(el: HTMLElement, text: string) {
 	else el.appendChild(caret)
 }
 
-/** Same spot, give or take the server rounding it to whole page units. */
-function near(a: Vec, b: Vec) {
-	return Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1
-}
-
 /** 1 right after a creature is startled, easing to 0 over STARTLE_MS. */
 function startleAmount(worm: Worm, now: number) {
 	const t = (now - worm.startledAt) / STARTLE_MS
@@ -1738,12 +1601,6 @@ function edgeNear(p: Vec, b: Box): { at: Vec; out: Vec } {
 	if (i === 1) return { at: { x: b.x + b.w, y: p.y }, out: { x: 1, y: 0 } }
 	if (i === 2) return { at: { x: p.x, y: b.y }, out: { x: 0, y: -1 } }
 	return { at: { x: p.x, y: b.y + b.h }, out: { x: 0, y: 1 } }
-}
-
-function rotate(v: Vec, a: number): Vec {
-	const c = Math.cos(a)
-	const s = Math.sin(a)
-	return { x: v.x * c - v.y * s, y: v.x * s + v.y * c }
 }
 
 function bezier(t: Trip, s: number): Vec {

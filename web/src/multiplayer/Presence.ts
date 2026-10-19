@@ -37,8 +37,6 @@ export interface PresenceState {
 	thinking?: boolean
 	/** conjured worms: their busy subagents (child sessions), oldest first */
 	subagents?: SubagentInfo[]
-	/** the last creature fight this person started by dropping one on another (see Fight) */
-	fight?: FightCall | null
 	/** the last slap this person gave a creature (see Slap) */
 	slap?: SlapCall | null
 }
@@ -50,16 +48,6 @@ export interface SlapCall {
 	i: number
 	dx: number
 	dy: number
-	at: number
-}
-
-/** Two creatures (by session id) set fighting, and how it ends; `d` is how far apart they were, page px. */
-export interface FightCall {
-	id: string
-	a: string
-	b: string
-	winner: string
-	d: number
 	at: number
 }
 
@@ -96,8 +84,6 @@ export class Presence {
 	/** Our cursor chat message (null when there's none) and whether we're still typing it */
 	readonly chat = atom<string | null>('chat', null)
 	readonly chatOpen = atom<boolean>('chatOpen', false)
-	/** our last fight call, broadcast for a few seconds */
-	readonly fight = atom<FightCall | null>('fight', null)
 	/** our last slap, broadcast for a few seconds */
 	readonly slap = atom<SlapCall | null>('slap', null)
 	private chatTimer = 0
@@ -132,7 +118,6 @@ export class Presence {
 				this.me.get()
 				this.chat.get()
 				this.chatOpen.get()
-				this.fight.get()
 				this.slap.get()
 				editor.pointerPage.get()
 				editor.selectedIds.get()
@@ -270,7 +255,6 @@ export class Presence {
 			chat: this.chat.peek(),
 			chatSent: !this.chatOpen.peek(),
 			view: editor.viewportPageBounds.get(),
-			fight: this.fight.peek(),
 			slap: this.slap.peek(),
 		}
 		this.provider.awareness.setLocalState(state)

@@ -167,6 +167,30 @@ const attention = createAttention(
 
 /** how far apart (page px) creatures placed by the server sit */
 const CREATURE_GAP = 90
+/** a creature this far (page px) above a frame still sits on it, in its title strip, and moves with it */
+const CREATURE_REACH = 200
+
+function canvasLayout(canvasId: string) {
+	const sessions = Object.fromEntries(canvasSessions(canvasId).map((s) => [s.id, s]))
+	const items = Object.fromEntries([...db.items.values()].filter((i) => i.canvasId === canvasId).map((i) => [i.id, i]))
+	return computeLayout(sessions, items, db.canvases.get(canvasId)?.sessionOrder)
+}
+
+/**
+ * Runs a change that moves frames (hiding, showing, reordering them), then moves the creatures
+ * sitting on a frame (or its title strip) along with it: only the server moves creatures.
+ */
+function framesMoving<T>(canvasId: string, change: () => T): T {
+	const before = canvasLayout(canvasId)
+	const result = change()
+	const after = canvasLayout(canvasId)
+	for (const r of conjured.list(canvasId)) {
+		const from = before.sections.find((s) => r.x >= s.box.x && r.x <= s.box.x + s.box.w && r.y >= s.box.y - CREATURE_REACH && r.y <= s.box.y + s.box.h)
+		const to = from && after.sections.find((s) => s.id === from.id)
+		if (to) conjured.shift(canvasId, r.sessionId, to.box.x - from.box.x)
+	}
+	return result
+}
 
 /**
  * Where a creature the server makes for a session goes: in its frame's title strip, just after the
@@ -1178,8 +1202,9 @@ const API_INDEX = {
 			'into the room while its tab is open ("awake"); otherwise it sleeps. Creatures made for attention actions have no owner ("")',
 		'POST /api/canvases/:cid/conjured':
 			'Conjure an OpenCode session as a creature. Body: {"sessionId", "serverKey" (non-secret id of its OpenCode), "ownerId" ' +
-			'(the owner browser\'s random id), "title"?, "x", "y"} (page position). Adopts an ownerless one; 409 if that session is already here',
-		'PATCH /api/canvases/:cid/conjured/:sessionId': 'Move and/or rename a creature. Body: {"x", "y"} and/or {"title"}',
+			'(the owner browser\'s random id), "title"?}. The canvas places it beside its session\'s frame (creatures can\'t be moved by anyone: ' +
+			'they move with their frame, and their agent points them at things with highlight). Adopts an ownerless one where it is; 409 if that session is already here',
+		'PATCH /api/canvases/:cid/conjured/:sessionId': 'Rename a creature. Body: {"title"} (sending "x"/"y" is refused with 403: creatures can\'t be moved)',
 		'DELETE /api/canvases/:cid/conjured/:sessionId': 'Banish a creature (and clear its attention queue)',
 		'GET /api/canvases/:cid/actions': 'Every queued attention action on the canvas, oldest first: [{"id", "sessionId", "kind", "text"?, "target"?, "createdAt"}]',
 		'GET /api/canvases/:cid/sessions/:sessionId/actions': 'The session\'s queued attention actions, in order',
@@ -1421,7 +1446,11 @@ async function handle(req: Request): Promise<Response> {
 			let session = getSession(canvas.id, id)
 			const title = textField(body.title)
 			if (title !== undefined) session = ensureSession(canvas.id, id, title)
-			if (typeof body.hidden === 'boolean') session = setSessionHidden(session, body.hidden)
+			if (typeof body.hidden === 'boolean') {
+				const hidden = body.hidden
+				const current = session
+				session = framesMoving(canvas.id, () => setSessionHidden(current, hidden))
+			}
 			return json(sessionView(session))
 		}
 		if (method === 'DELETE') {
@@ -1436,7 +1465,7 @@ async function handle(req: Request): Promise<Response> {
 		if (method === 'GET') return json({ sessionIds: orderedSessions(canvas.id).map((s) => s.id) })
 		if (method === 'PUT') {
 			const body = (await req.json().catch(() => ({}))) as { sessionIds?: unknown }
-			const next = setSessionOrder(canvas, body?.sessionIds)
+			const next = framesMoving(canvas.id, () => setSessionOrder(canvas, body?.sessionIds))
 			return json({ sessionIds: orderedSessions(next.id).map((s) => s.id) })
 		}
 	}
@@ -1478,7 +1507,8 @@ async function handle(req: Request): Promise<Response> {
 		if (method === 'GET') return json(conjuredWorms(canvas.id))
 		if (method === 'POST') {
 			const body = (await req.json().catch(() => null)) as Record<string, unknown> | null
-			return json(conjured.conjure(canvas.id, body), 201)
+			const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
+			return json(conjured.conjure(canvas.id, body, () => creatureSpot(canvas.id, sessionId)), 201)
 		}
 	}
 

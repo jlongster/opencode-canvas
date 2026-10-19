@@ -19,8 +19,9 @@ On a canvas you can then:
 
 - **Seed** an empty canvas from sessions: each gets a frame with its images and videos from the last
   24 hours, or its latest 10 if there are fewer.
-- **Conjure** a session (toolbar → Conjure): it appears as a creature. Click it to prompt the
-  session; everyone on the canvas sees it think and reply.
+- **Conjure** a session (toolbar → Conjure, or `C` over its frame): it appears as a creature beside
+  its frame. Click it to prompt the session; everyone on the canvas sees it think and reply. Nobody
+  can move a creature: it moves with its frame, and only its agent points it at things.
 - Let agents **post** to it, over MCP or HTTP (below), and point you at things: their `say` and
   `highlight` steps wait on the session's creature (a badge, and "N things want your attention" at
   the top) until you play them through; stepping past one marks it done for everyone.

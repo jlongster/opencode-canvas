@@ -3,7 +3,6 @@ import { Editor, type ToolId } from '../editor/Editor'
 import { describeError, Renderer } from '../render/Renderer'
 import { atom, react } from '../state/signals'
 import type { AttentionAction, Canvas, ConjuredAgent } from '../../../shared/types'
-import { Box } from '../editor/geometry'
 import { frameKey } from '../editor/selection'
 import {
 	connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, setSessionHidden, setSessionOrder, viewUrl, type CanvasLink,
@@ -26,9 +25,6 @@ import { SeedPicker } from './SeedPicker'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
 import { API_BASE } from '../base'
-
-/** How far above a frame (page px) a creature still counts as sitting on it, in its title */
-const CREATURE_REACH = 200
 
 /** The last used select/hand tool is remembered across reloads; the note and annotate tools never are. */
 const TOOL_KEY = 'canvas.tool'
@@ -179,15 +175,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					disposers.push(() => cursors.destroy(), () => calls.destroy(), () => spells.destroy(), () => notes.destroy(), () => annotations.destroy(), () => p.destroy())
 					if (link.role === 'edit') {
 						const summon = new Summon(editor, spells, container)
-						// Creatures sitting on a frame (or its title) move along when frames are hidden, shown or reordered here.
-						editor.onFramesMoved = (before, after) => {
-							for (const r of conjured.peek()) {
-								const from = before.sections.find((s) => Box.contains({ ...s.box, y: s.box.y - CREATURE_REACH, h: s.box.h + CREATURE_REACH }, r))
-								const to = from && after.sections.find((s) => s.id === from.id)
-								if (to && to.box.x !== from.box.x) void spells.move(r.sessionId, { x: Math.round(r.x + to.box.x - from.box.x), y: r.y }).catch(() => {})
-							}
-						}
-						disposers.push(() => summon.destroy(), () => (editor.onFramesMoved = null))
+						disposers.push(() => summon.destroy())
 					}
 					setPresence(p)
 					setConjure(spells)

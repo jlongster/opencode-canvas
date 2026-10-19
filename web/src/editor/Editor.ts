@@ -205,8 +205,6 @@ export class Editor {
 	readonly deletions = new Deletions(this)
 	/** Set on edit links: hiding, showing and reordering frames. */
 	frames: FrameBackend | null = null
-	/** Called after this editor hid, showed or reordered frames, with where they were and are now. */
-	onFramesMoved: ((before: Layout, after: Layout) => void) | null = null
 	readonly root: Root
 
 	private cameraAnimation: { from: Camera; to: Camera; start: number; duration: number } | null = null
@@ -320,9 +318,7 @@ export class Editor {
 		const session = this.sessions.peek()[sessionId]
 		if (!this.frames || !session || !!session.hidden === hidden) return
 		const { hidden: _, hiddenAt: __, ...rest } = session
-		const before = this.committedLayout()
 		this.putSession(hidden ? { ...rest, hidden: true, hiddenAt: Date.now() } : rest)
-		this.onFramesMoved?.(before, this.committedLayout())
 		if (!hidden && this.hiddenLink.peek()?.sessionId === sessionId) this.hiddenLink.set(null)
 		this.frames.setHidden(sessionId, hidden).catch((e) => {
 			console.error('could not change whether the frame is hidden', e)
@@ -337,18 +333,11 @@ export class Editor {
 		const before = this.sessionOrder.peek()
 		const current = orderSessions(Object.values(this.sessions.peek()), before).map((s) => s.id)
 		if (arrayEquals(current, sessionIds)) return
-		const layoutBefore = this.committedLayout()
 		this.sessionOrder.set(sessionIds)
-		this.onFramesMoved?.(layoutBefore, this.committedLayout())
 		this.frames.setOrder(sessionIds).catch((e) => {
 			console.error('could not save the frame order', e)
 			this.sessionOrder.set(before)
 		})
-	}
-
-	/** The layout as saved: without a drag in progress. */
-	private committedLayout() {
-		return computeLayout(this.sessions.peek(), this.items.peek(), this.sessionOrder.peek(), this.itemLimits.peek())
 	}
 
 	/** Moves a session to an index of the full order (hidden sessions included). */

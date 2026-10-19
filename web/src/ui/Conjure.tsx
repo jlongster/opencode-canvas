@@ -3,8 +3,6 @@ import type { OpenCodeSessionSummary } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import type { Vec } from '../editor/geometry'
 import type { Conjure, PromptAttachment } from '../multiplayer/Conjure'
-import { ownerId } from '../opencode/pairings'
-import { conjure as conjureSession } from '../sync/client'
 import { PairForm, ServerList, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
 import { useValue } from './useValue'
 
@@ -28,7 +26,7 @@ export function ConjureButton({
 				<WandIcon />
 				<span className="wide-only">Conjure</span>
 			</button>
-			{open && <ConjurePanel editor={editor} conjure={conjure} canvasId={canvasId} onClose={() => setOpen(false)} />}
+			{open && <ConjurePanel conjure={conjure} onClose={() => setOpen(false)} />}
 		</>
 	)
 }
@@ -39,7 +37,7 @@ const PICKER_MARGIN = 8
 
 /**
  * The Conjure panel C opens next to the pointer when it isn't over a session (Conjure.picking):
- * the session picked comes to where the pointer was. Esc, a click outside or C again closes it.
+ * the session picked appears beside its frame. Esc, a click outside or C again closes it.
  */
 export function ConjurePicker({ editor, conjure, canvasId }: { editor: Editor; conjure: Conjure; canvasId: string }) {
 	const picking = useValue(() => conjure.picking.get(), [conjure])
@@ -97,16 +95,16 @@ export function ConjurePicker({ editor, conjure, canvasId }: { editor: Editor; c
 			onPointerDown={(e) => e.stopPropagation()}
 			onWheel={(e) => e.stopPropagation()}
 		>
-			<ConjurePanel editor={editor} conjure={conjure} canvasId={canvasId} at={picking.page} onClose={close} />
+			<ConjurePanel conjure={conjure} onClose={close} />
 		</div>
 	)
 }
 
 /**
- * Picking an OpenCode session to conjure: onto the middle of the screen (the toolbar's button), or
- * to `at` (a page point: C's picker), where our own worm already here crawls over too.
+ * Picking an OpenCode session to conjure (the toolbar's button, or C's picker): it appears beside
+ * its session's frame, wherever the picker was opened.
  */
-function ConjurePanel({ editor, conjure, canvasId, at, onClose }: { editor: Editor; conjure: Conjure; canvasId: string; at?: Vec; onClose: () => void }) {
+function ConjurePanel({ conjure, onClose }: { conjure: Conjure; onClose: () => void }) {
 	const { servers, byServer, errors, reload, retry } = useOpenCode()
 	const [error, setError] = useState<string | null>(null)
 	const [pending, setPending] = useState<string | null>(null)
@@ -125,43 +123,18 @@ function ConjurePanel({ editor, conjure, canvasId, at, onClose }: { editor: Edit
 	)
 	const here = useMemo(() => new Set(hereKey.split(' ').filter(Boolean)), [hereKey])
 
+	// Already here: brought into view with its box open, where it is. Otherwise conjured: the server
+	// puts it beside its session's frame.
 	const pick = async (s: OpenCodeSessionSummary) => {
-		if (at) return summonTo(s, at)
 		if (here.has(s.id)) {
 			conjure.focus(s.id)
+			void conjure.summon(s.id)
 			return onClose()
 		}
-		const view = editor.viewportPageBounds.get()
-		// An unowned one stays where it is.
-		const existing = conjure.record(s.id)
 		setPending(sessionKey(s))
 		setError(null)
 		try {
-			await conjureSession(canvasId, {
-				sessionId: s.id,
-				serverKey: s.serverKey,
-				ownerId,
-				title: s.title,
-				x: existing ? existing.x : Math.round(view.x + view.w / 2),
-				y: existing ? existing.y : Math.round(view.y + view.h / 2),
-			})
-			onClose()
-		} catch (e) {
-			if ((e as { status?: number }).status === 409) {
-				conjure.focus(s.id)
-				return onClose()
-			}
-			setError((e as Error).message)
-		} finally {
-			setPending(null)
-		}
-	}
-
-	const summonTo = async (s: OpenCodeSessionSummary, to: Vec) => {
-		setPending(sessionKey(s))
-		setError(null)
-		try {
-			const message = await conjure.summon(s.id, to, { serverKey: s.serverKey, title: s.title })
+			const message = await conjure.summon(s.id, { serverKey: s.serverKey, title: s.title })
 			if (message) setError(message)
 			else onClose()
 		} catch (e) {
@@ -214,7 +187,7 @@ function ConjurePanel({ editor, conjure, canvasId, at, onClose }: { editor: Edit
 										key={k}
 										className={`conjure-row${isHere ? ' here' : ''}`}
 										disabled={pending !== null}
-										title={isHere ? (at ? 'Already on this canvas: bring it here' : 'Already on this canvas: show it') : `Conjure ${s.title || s.id}`}
+										title={isHere ? 'Already on this canvas: show it' : `Conjure ${s.title || s.id}`}
 										onClick={() => pick(s)}
 									>
 										<span className={`conjure-dot${s.busy ? ' busy' : ''}`} title={s.busy ? 'Working' : 'Idle'} />

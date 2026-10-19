@@ -5,6 +5,9 @@
  * OpenCode URL), where it sits and who owns it (ownerId, a random id kept in the owner's browser).
  * It never talks to OpenCode and never sees credentials.
  *
+ * Where a creature sits is the server's to decide (beside its session's frame, see creatureSpot in
+ * index.ts, and moved along with its frame): nobody moves one from a browser or the API.
+ *
  * Everything live happens in the owner's browser tab, which talks to OpenCode directly: it
  * publishes the creature's presence into the canvas's room (thinking, replies, position). With no
  * owner tab open the creature is asleep (`awake` false in list responses).
@@ -35,11 +38,6 @@ const OWNER_ID = /^[A-Za-z0-9_-]{8,64}$/
 const TITLE_MAX = 200
 
 const key = (canvasId: string, sessionId: string) => `${canvasId}/${sessionId}`
-
-function position(x: unknown, y: unknown, hint: string) {
-	if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) throw new ConjureError(400, hint)
-	return { x: Math.round(x), y: Math.round(y) }
-}
 
 function titleField(value: unknown): string | undefined {
 	if (value === undefined || value === null) return undefined
@@ -107,7 +105,8 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 		list: (canvasId: string): ConjuredAgent[] =>
 			[...records.values()].filter((r) => r.canvasId === canvasId).sort((a, b) => a.createdAt - b.createdAt),
 
-		conjure(canvasId: string, body: Record<string, unknown> | null): ConjuredAgent {
+		/** Conjures a session (or adopts its ownerless creature, where it is); a new one goes at `at`. */
+		conjure(canvasId: string, body: Record<string, unknown> | null, at: () => { x: number; y: number }): ConjuredAgent {
 			const { sessionId, serverKey, ownerId } = body ?? {}
 			if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) {
 				throw new ConjureError(400, `"sessionId" must be an OpenCode session id ("ses_" + 26 characters)`)
@@ -118,19 +117,20 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 			if (typeof ownerId !== 'string' || !OWNER_ID.test(ownerId)) {
 				throw new ConjureError(400, '"ownerId" must be the owner\'s browser id (8-64 characters [A-Za-z0-9_-])')
 			}
-			const at = position(body?.x, body?.y, 'send {"sessionId", "serverKey", "ownerId", "x", "y"} with x/y the page position')
 			if (!deps.canvasExists(canvasId)) throw new ConjureError(404, `no canvas ${canvasId}`)
 			const existing = records.get(key(canvasId, sessionId))
 			// One without an owner (made for an agent's attention actions) is adopted.
 			if (existing?.ownerId) throw new ConjureError(409, 'that session is already conjured on this canvas')
-			if (existing) return put({ ...existing, serverKey, ownerId, title: titleField(body?.title) || existing.title, ...at })
+			if (existing) return put({ ...existing, serverKey, ownerId, title: titleField(body?.title) || existing.title })
+			const spot = at()
 			return put({
 				canvasId,
 				sessionId,
 				serverKey,
 				title: titleField(body?.title) ?? '',
 				color: sessionColor(sessionId),
-				...at,
+				x: Math.round(spot.x),
+				y: Math.round(spot.y),
 				createdAt: Date.now(),
 				ownerId,
 			})
@@ -169,15 +169,19 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 			for (const r of moved) deps.broadcast({ type: 'conjured', agent: r })
 		},
 
-		/** Moves the worm (it was dragged) and/or renames it (its session's title changed). */
+		/** Renames the worm (its session's title changed). Where it sits isn't anyone's to change. */
 		update(canvasId: string, sessionId: string, body: Record<string, unknown> | null): ConjuredAgent {
 			const r = get(canvasId, sessionId)
-			const next = { ...r }
-			if (body && ('x' in body || 'y' in body)) Object.assign(next, position(body.x, body.y, 'send {"x", "y"} with the new page position'))
+			if (body && ('x' in body || 'y' in body)) throw new ConjureError(403, 'creatures can\'t be moved: the canvas places them beside their frame, and only their agent points them at things')
 			const title = titleField(body?.title)
-			if (title !== undefined) next.title = title
-			if (next.x === r.x && next.y === r.y && next.title === r.title) return r
-			return put(next)
+			if (title === undefined) throw new ConjureError(400, 'send {"title"}')
+			return title === r.title ? r : put({ ...r, title })
+		},
+
+		/** Moves the worm by dx (page px): its frame moved along (server-side only). */
+		shift(canvasId: string, sessionId: string, dx: number) {
+			const r = records.get(key(canvasId, sessionId))
+			if (r && dx) put({ ...r, x: Math.round(r.x + dx) })
 		},
 
 		banish(canvasId: string, sessionId: string) {

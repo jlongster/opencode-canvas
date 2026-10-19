@@ -2,7 +2,6 @@ import type { Editor } from '../editor/Editor'
 import type { Vec } from '../editor/geometry'
 import type { Worm } from './AgentWorms'
 import type { Conjure } from './Conjure'
-import { hash, smooth, star, ticks, type Fights, type Pose } from './Fight'
 import { turn, wobble, type EyeState } from './Pointer'
 import type { SlapCall } from './Presence'
 
@@ -29,6 +28,18 @@ const BLOW = 360
 const BLOW_MORE = 70
 const SPIN = 17
 const SPIN_MORE = 4
+
+/** How a creature is held while it's knocked about (see AgentWorms.knock and steer). */
+export interface Pose {
+	/** screen px from its spot it's pulled to, and how stiffly (rad/s) */
+	off: Vec
+	k: number
+	/** thrown: its offset left to fly (only drag) */
+	free?: boolean
+	/** where it points (radians), or null to spin freely; and how stiffly it turns */
+	heading: number | null
+	turn?: number
+}
 
 interface Smack {
 	/** when the last slap landed, and how many have stacked up since it was last left alone */
@@ -62,7 +73,6 @@ export class Slaps {
 	constructor(
 		private editor: Editor,
 		private conjure: Conjure | null,
-		private fights: Fights,
 		private reducedMotion: MediaQueryList,
 	) {}
 
@@ -77,7 +87,7 @@ export class Slaps {
 		if (!c?.canEdit || !sid || worm.leaving) return
 		const now = performance.now()
 		const prev = this.smacks.get(sid)
-		if ((prev && now - prev.at < COOLDOWN_MS) || this.fights.awake(worm, now)) return
+		if (prev && now - prev.at < COOLDOWN_MS) return
 		// knocked away from the side it was hit on, spinning the way a blow there would turn it
 		const mid = worm.shape?.centre ?? at
 		const side = Math.sign(mid.x - at.x) || -Math.sign(Math.cos(worm.heading)) || 1
@@ -199,7 +209,7 @@ export class Slaps {
 			if (!call || this.seen.has(call.id)) continue
 			this.seen.add(call.id)
 			const w = byId.get(call.s)
-			if (w && Math.abs(Date.now() - call.at) < STALE_MS && !this.fights.awake(w, now)) this.apply(w, call, now)
+			if (w && Math.abs(Date.now() - call.at) < STALE_MS) this.apply(w, call, now)
 		}
 		if (this.seen.size > 200) this.seen = new Set([...this.seen].slice(-100))
 		if (this.hovered && (!this.active || this.hovered.leaving || !byId.has(this.hovered.sessionId ?? ''))) this.hovered = null
@@ -271,4 +281,46 @@ export class Slaps {
 		clearTimeout(this.clearTimer)
 		this.smacks.clear()
 	}
+}
+
+/** Short strokes radiating from `p`, from radius r0 to r1, n of them fanned about angle a. */
+export function ticks(ctx: CanvasRenderingContext2D, p: Vec, r0: number, r1: number, n: number, a: number, alpha: number, color: string) {
+	ctx.globalAlpha = Math.max(0, alpha)
+	ctx.strokeStyle = color
+	ctx.lineWidth = 1.6
+	ctx.lineCap = 'round'
+	ctx.beginPath()
+	for (let i = 0; i < n; i++) {
+		const b = a + (n > 1 ? (i / (n - 1) - 0.5) * Math.PI * 1.1 : 0)
+		ctx.moveTo(p.x + Math.cos(b) * r0, p.y + Math.sin(b) * r0)
+		ctx.lineTo(p.x + Math.cos(b) * r1, p.y + Math.sin(b) * r1)
+	}
+	ctx.stroke()
+}
+
+/** A small flat four-pointed star. */
+export function star(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: string, alpha: number) {
+	if (r <= 0.2) return
+	ctx.globalAlpha = Math.max(0, Math.min(1, alpha))
+	ctx.fillStyle = color
+	const w = r * 0.32
+	ctx.beginPath()
+	ctx.moveTo(x, y - r)
+	ctx.quadraticCurveTo(x + w, y - w, x + r, y)
+	ctx.quadraticCurveTo(x + w, y + w, x, y + r)
+	ctx.quadraticCurveTo(x - w, y + w, x - r, y)
+	ctx.quadraticCurveTo(x - w, y - w, x, y - r)
+	ctx.fill()
+}
+
+/** 0..1 from a string. */
+export function hash(s: string) {
+	let h = 2166136261
+	for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0
+	return h / 4294967296
+}
+
+export function smooth(t: number) {
+	const u = Math.min(1, Math.max(0, t))
+	return u * u * (3 - 2 * u)
 }

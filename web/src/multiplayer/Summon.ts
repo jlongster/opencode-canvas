@@ -10,11 +10,12 @@ const LONG_PRESS_SLOP = 8
 const CREATURE_REACH = 36
 
 /**
- * Summoning a session's worm (edit links): press C while the pointer is over anything of a session
- * frame (an item, a group, the frame's title or background), or long-press it on touch. See
- * Conjure.summon for what happens then; when it can't, the reason shows in the toast. C anywhere
- * else opens the session picker next to the pointer (Conjure.picking), to conjure one there; C
- * again closes it.
+ * Calling up a session's worm (edit links): press C while the pointer is over anything of a session
+ * frame (an item, a group, the frame's title or background) or its worm, or long-press it on touch.
+ * A worm that's here already gets its box opened where it is; otherwise it's conjured beside its
+ * frame (see Conjure.summon); when it can't, the reason shows in the toast. Nothing here moves a
+ * worm. C anywhere else opens the session picker next to the pointer (Conjure.picking); C again
+ * closes it.
  */
 export class Summon {
 	private disposers: (() => void)[] = []
@@ -67,7 +68,7 @@ export class Summon {
 		const sessionId = this.sessionAt(point)
 		if (!sessionId) return
 		this.conjure
-			.summon(sessionId, point)
+			.summon(sessionId)
 			.then((message) => message && this.editor.deletions.notify(message))
 			.catch((e: Error) => this.editor.deletions.notify(`Couldn't summon it: ${e.message}`))
 	}

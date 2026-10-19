@@ -3,8 +3,11 @@ import { Editor, type ToolId } from '../editor/Editor'
 import { describeError, Renderer } from '../render/Renderer'
 import { atom, react } from '../state/signals'
 import type { AttentionAction, Canvas, ConjuredAgent } from '../../../shared/types'
+import { Box } from '../editor/geometry'
 import { frameKey } from '../editor/selection'
-import { connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, viewUrl, type CanvasLink } from '../sync/client'
+import {
+	connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, setSessionHidden, setSessionOrder, viewUrl, type CanvasLink,
+} from '../sync/client'
 import { Attention } from '../multiplayer/Attention'
 import { Conjure } from '../multiplayer/Conjure'
 import { PeerCursors } from '../multiplayer/PeerCursors'
@@ -16,11 +19,15 @@ import { AttentionTray, Walkthrough } from './Attention'
 import { ConjureButton, ConjurePicker, ConjurePrompt } from './Conjure'
 import { CursorChat } from './CursorChat'
 import { DeepLink } from './deepLink'
+import { FramesStatus, HiddenLinkToast } from './FramesPanel'
 import { NotFound } from './NotFound'
 import { SeedPicker } from './SeedPicker'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
 import { API_BASE } from '../base'
+
+/** How far above a frame (page px) a creature still counts as sitting on it, in its title */
+const CREATURE_REACH = 200
 
 /** The last used select/hand tool is remembered across reloads; the note and annotate tools never are. */
 const TOOL_KEY = 'canvas.tool'
@@ -93,7 +100,11 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 				deleteSession: (sessionId) => deleteSession(id, sessionId),
 				restore: (ids) => restoreDeleted(id, ids),
 			}
-			disposers.push(() => (editor.deletions.backend = null))
+			editor.frames = {
+				setHidden: (sessionId, hidden) => setSessionHidden(id, sessionId, hidden),
+				setOrder: (sessionIds) => setSessionOrder(id, sessionIds),
+			}
+			disposers.push(() => (editor.deletions.backend = null), () => (editor.frames = null))
 		}
 		disposers.push(react(() => saveTool(editor.currentToolId.get())))
 		const deepLink = new DeepLink(editor)
@@ -167,7 +178,15 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					disposers.push(() => cursors.destroy(), () => calls.destroy(), () => spells.destroy(), () => notes.destroy(), () => annotations.destroy(), () => p.destroy())
 					if (link.role === 'edit') {
 						const summon = new Summon(editor, spells, container)
-						disposers.push(() => summon.destroy())
+						// Creatures sitting on a frame (or its title) move along when frames are hidden, shown or reordered here.
+						editor.onFramesMoved = (before, after) => {
+							for (const r of conjured.peek()) {
+								const from = before.sections.find((s) => Box.contains({ ...s.box, y: s.box.y - CREATURE_REACH, h: s.box.h + CREATURE_REACH }, r))
+								const to = from && after.sections.find((s) => s.id === from.id)
+								if (to && to.box.x !== from.box.x) void spells.move(r.sessionId, { x: Math.round(r.x + to.box.x - from.box.x), y: r.y }).catch(() => {})
+							}
+						}
+						disposers.push(() => summon.destroy(), () => (editor.onFramesMoved = null))
 					}
 					setPresence(p)
 					setConjure(spells)
@@ -235,8 +254,9 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					<Toolbar editor={editor} canvas={role === 'edit' ? canvas : null} conjure={conjure?.canPrompt ? conjure : null} />
 				</div>
 			</div>
-			<StatusBar editor={editor} />
+			<FramesStatus editor={editor} canEdit={role === 'edit'} />
 			<UndoToast editor={editor} />
+			<HiddenLinkToast editor={editor} canEdit={role === 'edit'} />
 			{canvas && <EmptyState editor={editor} canvas={canvas} role={role} topStack={topStack} />}
 			{(rendererError || error) && (
 				<div className="error">
@@ -466,30 +486,6 @@ function ShareLinkRow({ label, hint, url }: { label: string; hint: string; url: 
 			<a href={url} target="_blank" rel="noreferrer">
 				Open
 			</a>
-		</div>
-	)
-}
-
-function StatusBar({ editor }: { editor: Editor }) {
-	const connection = useValue(() => editor.connection.get())
-	const counts = useValue(
-		() => `${Object.keys(editor.sessions.get()).length}·${Object.keys(editor.items.get()).length}·${editor.selectedIds.get().length}`,
-	)
-	const hovered = useValue(() => {
-		const id = editor.hoveredId.get()
-		const item = id ? editor.items.get()[id] : null
-		if (!item) return null
-		const text = [item.title, item.caption].filter(Boolean).join(': ') || item.id
-		return `${text} — ${item.width}×${item.height}`
-	})
-	const [sessions, items, selected] = counts.split('·')
-	return (
-		<div className="status">
-			<span className={`dot ${connection}`} title={connection} />
-			<span className="counts">
-				{sessions} sessions · {items} items{selected !== '0' && ` · ${selected} selected`}
-			</span>
-			{hovered && <span className="hovered">{hovered}</span>}
 		</div>
 	)
 }

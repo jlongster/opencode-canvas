@@ -27,6 +27,9 @@ On a canvas you can then:
 - **Annotate** (toolbar → comment tool, or `A`): press on a spot of an image and drag, then type a
   comment. Everyone sees it live, and agents read it with the spot's pixel coordinates in the
   original image (`list_annotations`), so you can give feedback on exactly that spot.
+- **Arrange frames**: drag a frame by its title to move it, or hide it with the eye on its title.
+  The frame count at the bottom left opens a list of every frame, hidden ones included, to show,
+  hide and reorder them. The arrangement is shared with everyone on the canvas.
 
 ## Options
 

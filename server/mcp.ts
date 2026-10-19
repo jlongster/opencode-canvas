@@ -273,9 +273,10 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			'get_canvas',
 			{
 				description:
-					'Everything on one canvas: its sessions (one frame per OpenCode session), each with its groups and their items ' +
-					'(id, name, title, kind, size, media url), plus its sticky notes and annotations (comments pinned to a spot ' +
-					'on an item; see list_annotations).',
+					'Everything on one canvas: its sessions (one frame per OpenCode session) in frame order, left to right, each ' +
+					'with its groups and their items (id, name, title, kind, size, media url), plus its sticky notes and annotations ' +
+					'(comments pinned to a spot on an item; see list_annotations). People can hide frames ("hidden": true): a ' +
+					'hidden frame isn\'t shown on the canvas but still takes posts (posting doesn\'t unhide it).',
 				inputSchema: { canvas: canvasArg },
 			},
 			tool(async ({ canvas }: { canvas: string }) => {
@@ -289,6 +290,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					sessions: sessions.map((s) => ({
 						id: s.id,
 						title: s.title,
+						...(s.hidden ? { hidden: true } : {}),
 						groups: s.groups.map((g) => ({ name: g.name, items: g.items.map((i) => itemSummary(i)) })),
 					})),
 					notes: notes.map(noteSummary),
@@ -510,7 +512,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'absolute path of a file on this machine), url, or html (inline HTML: diagrams, charts, annotated explanations; ' +
 					'set width/height to the CSS pixel size it is designed for, default 800x600). Use group to organise items ' +
 					'within the session. Pass sessionTitle (your OpenCode session\'s title) on every post: it names your frame ' +
-					'while it is new or untitled, and never overwrites a title it already has.',
+					'while it is new or untitled, and never overwrites a title it already has. Posting to a frame people hid ' +
+					'works but doesn\'t unhide it.',
 				inputSchema: {
 					canvas: canvasArg,
 					sessionId: sessionIdArg,
@@ -548,7 +551,9 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				const sessionId = sessionOf(extra, args.sessionId)
 				const id = canvasId(args.canvas)
 				const { canvas: _, sessionId: __, ...body } = args
-				return ok(itemDetail(await deps.addItem(id, sessionId, body)))
+				const item = await deps.addItem(id, sessionId, body)
+				const hidden = deps.canvasData(id).sessions.some((s) => s.id === sessionId && s.hidden)
+				return ok(hidden ? { ...itemDetail(item), note: 'Your frame is hidden on this canvas: the item is saved, but people only see it once they show the frame again.' } : itemDetail(item))
 			}),
 		)
 

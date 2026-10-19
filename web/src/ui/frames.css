@@ -1,0 +1,281 @@
+/* The frames list (bottom left) and hiding / dragging session frames on the canvas. */
+
+.frames-status .counts {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	margin: -3px -6px;
+	padding: 3px 6px;
+	border: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	pointer-events: auto;
+	transition: background 120ms, color 120ms;
+}
+
+.frames-status .counts:hover,
+.frames-status .counts[aria-expanded='true'] {
+	background: rgba(255, 255, 255, 0.07);
+	color: #e4e4e7;
+}
+
+.frames-caret {
+	color: #71717a;
+	transition: transform 120ms;
+}
+
+.frames-caret.open {
+	transform: rotate(180deg);
+}
+
+.frames-panel {
+	position: absolute;
+	left: -1px;
+	bottom: calc(100% + 8px);
+	display: flex;
+	flex-direction: column;
+	width: min(340px, calc(100vw - 24px));
+	max-height: min(420px, 60vh);
+	padding: 6px;
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	border-radius: 12px;
+	background: rgba(28, 28, 32, 0.97);
+	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+	color: #e4e4e7;
+	font: 13px system-ui, sans-serif;
+	pointer-events: auto;
+	animation: toast-in-up 140ms ease-out;
+}
+
+@keyframes toast-in-up {
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+}
+
+.frames-panel-head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	padding: 4px 8px 6px;
+	font-weight: 600;
+	color: #a1a1aa;
+	font-size: 12px;
+}
+
+.frames-panel-hint {
+	font-weight: 400;
+	color: #71717a;
+}
+
+.frames-empty {
+	padding: 8px;
+	color: #71717a;
+}
+
+.frames-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	overflow-y: auto;
+}
+
+.frames-row {
+	position: relative;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 32px;
+	padding: 0 4px 0 8px;
+	border-radius: 8px;
+	cursor: pointer;
+	user-select: none;
+	outline: none;
+	transition: transform 150ms ease, background 120ms, box-shadow 120ms;
+}
+
+.frames-row:hover,
+.frames-row:focus-visible {
+	background: rgba(255, 255, 255, 0.06);
+}
+
+.frames-list.dragging .frames-row {
+	cursor: grabbing;
+}
+
+.frames-list.settling .frames-row,
+.frames-row.lifted {
+	transition: none;
+}
+
+.frames-row.lifted {
+	z-index: 1;
+	background: rgba(48, 48, 54, 0.98);
+	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.frames-grip {
+	display: inline-flex;
+	color: #52525b;
+	cursor: grab;
+}
+
+.frames-grip circle {
+	fill: currentColor;
+}
+
+.frames-row:hover .frames-grip {
+	color: #a1a1aa;
+}
+
+.frames-dot {
+	flex: none;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	background: var(--session-color);
+}
+
+.frames-title {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.frames-title.untitled {
+	color: #a1a1aa;
+}
+
+.frames-new {
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: rgb(120, 165, 255);
+}
+
+.frames-count {
+	flex: none;
+	min-width: 2ch;
+	text-align: right;
+	color: #71717a;
+	font-variant-numeric: tabular-nums;
+}
+
+.frames-eye {
+	flex: none;
+	display: inline-grid;
+	place-items: center;
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	border: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: #a1a1aa;
+	cursor: pointer;
+	transition: background 120ms, color 120ms;
+}
+
+.frames-eye:hover {
+	background: rgba(255, 255, 255, 0.08);
+	color: #f4f4f5;
+}
+
+.frames-eye.static {
+	cursor: default;
+}
+
+.frames-eye.nudge {
+	animation: frames-nudge 700ms ease;
+}
+
+@keyframes frames-nudge {
+	0%,
+	100% {
+		background: transparent;
+	}
+	30%,
+	70% {
+		background: rgba(87, 143, 255, 0.25);
+		color: #f4f4f5;
+	}
+}
+
+.frames-row.is-hidden .frames-title,
+.frames-row.is-hidden .frames-dot,
+.frames-row.is-hidden .frames-count {
+	opacity: 0.45;
+}
+
+.frames-row.is-hidden .frames-eye {
+	color: #71717a;
+}
+
+.toast .toast-dismiss {
+	color: #71717a;
+	font-weight: 400;
+}
+
+.toast .toast-dismiss:hover {
+	background: rgba(255, 255, 255, 0.08);
+	color: #e4e4e7;
+}
+
+/* On the canvas: a small eye beside the close button on a hovered frame title (page-space, see .section-label .close). */
+.section-label .hide-frame {
+	flex: none;
+	display: inline-grid;
+	place-items: center;
+	box-sizing: border-box;
+	height: 1.636em;
+	min-width: 1.636em;
+	margin: 0.273em 0 0 auto;
+	padding: 0;
+	border: 0;
+	border-radius: 0.409em;
+	background: transparent;
+	color: #a1a1aa;
+	font: inherit;
+	font-size: 0.55em;
+	line-height: 1;
+	opacity: 0;
+	cursor: pointer;
+	pointer-events: none;
+	transition: opacity 120ms, background 120ms, color 120ms;
+}
+
+.section-label .hide-frame svg {
+	width: 0.8em;
+	height: 0.8em;
+}
+
+.section-label.hovered .hide-frame {
+	opacity: 0.6;
+	pointer-events: auto;
+}
+
+.section-label .hide-frame:hover {
+	opacity: 1;
+	background: rgba(255, 255, 255, 0.08);
+	color: #e4e4e7;
+}
+
+.section-label .hide-frame + .close {
+	margin-left: 0.15em;
+}
+
+.section-label.lifted {
+	z-index: 1;
+}
+
+.attention-row-hidden {
+	font-weight: 400;
+	color: #71717a;
+}

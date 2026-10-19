@@ -93,7 +93,9 @@ export class PeerCursors {
 
 		// Conjured worms nobody runs right now sleep where they were put.
 		if (this.conjure) agents.push(...this.conjure.sleepers.get())
-		this.worms.update(now, elapsed, agents)
+		// Creatures of hidden frames hide with them.
+		const sessions = this.editor.sessions.peek()
+		this.worms.update(now, elapsed, agents.filter((p) => !p.user.sessionId || !sessions[p.user.sessionId]?.hidden))
 	}
 
 	destroy() {

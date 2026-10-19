@@ -35,6 +35,10 @@ const SECTION_FILL: RGBA = [1, 1, 1, 0.035]
 const SECTION_STROKE: RGBA = [1, 1, 1, 0.06]
 const PLACEHOLDER: RGBA = [1, 1, 1, 0.06]
 const NONE: RGBA = [0, 0, 0, 0]
+/** A frame picked up by its title: opaque (so nothing shows through it), over a soft shadow */
+const LIFTED_FILL: RGBA = [0.1, 0.1, 0.11, 1]
+const LIFTED_STROKE: RGBA = [1, 1, 1, 0.14]
+const SHADOW: RGBA = [0, 0, 0, 0.14]
 
 export interface RendererOptions {
 	/** Hide editing controls (view-only links) */
@@ -206,7 +210,11 @@ export class Renderer {
 		this.html = new HtmlItems(overlay)
 		this.linkHover = new LinkHover(this.html.host)
 		editor.linkAt = (point) => this.html.linkAt(point)
-		this.labels = new SectionLabels(overlay, options.readOnly ? null : (id) => options.onCloseSection?.(id))
+		this.labels = new SectionLabels(
+			overlay,
+			options.readOnly ? null : (id) => options.onCloseSection?.(id),
+			options.readOnly ? null : (id) => editor.setFrameHidden(id, true),
+		)
 		this.titles = new ItemTitles(overlay)
 		this.videoControls = new VideoControls(overlay, this.videos, editor, !!options.readOnly)
 		this.actions = new ItemActions(overlay, options.readOnly ? null : this.videoControls)
@@ -320,9 +328,11 @@ export class Renderer {
 			for (const id of ids) if (!remoteSelected.has(id)) remoteSelected.set(id, rgba)
 		}
 
+		// A dragged frame and its items are drawn last, over everything else (see the draw calls below).
+		const liftedId = editor.frameDrag.get()?.sessionId ?? null
 		for (const section of layout.sections) {
 			const d = this.displayedSections.get(section.id)
-			if (!d || !Box.intersects(d, cull)) continue
+			if (!d || !Box.intersects(d, cull) || section.id === liftedId) continue
 			pushRect(d, withAlpha(SECTION_FILL, d.opacity), withAlpha(SECTION_STROKE, d.opacity), 1, SECTION_RADIUS, false)
 			const key = frameKey(section.id)
 			const remote = remoteSelected.get(key)
@@ -375,10 +385,10 @@ export class Renderer {
 		const link = editor.hoveredLink.get()
 		this.linkHover.update(link, link && this.html.transform(link.itemId), editor.viewport.get())
 
-		for (const [id, d] of this.displayedItems) {
-			if (!Box.intersects(d, cull)) continue
+		const pushItem = (id: string, d: Displayed) => {
+			if (!Box.intersects(d, cull)) return
 			const item = items[id]
-			if (!item) continue
+			if (!item) return
 
 			const video = item.kind === 'video' ? this.videos.getReady(id) : undefined
 			const videoDraw = video ? this.videoBindGroup(id, video) : null
@@ -401,12 +411,29 @@ export class Renderer {
 			}
 			if (texAlpha < 1) pushRect(d, withAlpha(PLACEHOLDER, d.opacity * (1 - texAlpha)), NONE, 0, ITEM_RADIUS, false)
 
-			if (htmlMounted.has(id)) continue
+			if (htmlMounted.has(id)) return
 			// Someone else's selection sits outside ours, so both stay visible.
 			const remote = remoteSelected.get(id)
 			if (remote) overlays.push(() => pushRect(Box.expand(d, 3 / camera.z), NONE, remote, 2.5, ITEM_RADIUS + 3 / camera.z, false))
 			if (selected.has(id)) overlays.push(() => pushRect(d, NONE, ACCENT, 2, ITEM_RADIUS, false))
 			else if (hovered === id) overlays.push(() => pushRect(d, NONE, withAlpha(ACCENT, 0.7), 1.5, ITEM_RADIUS, false))
+		}
+		for (const [id, d] of this.displayedItems) if (!liftedId || layout.sectionOf.get(id) !== liftedId) pushItem(id, d)
+
+		// The lifted frame: a soft shadow (stacked translucent rects), the frame, then its items.
+		const liftedRects = rects
+		const liftedImages = images
+		const lifted = liftedId ? this.displayedSections.get(liftedId) : undefined
+		if (lifted) {
+			const unit = 1 / camera.z
+			for (let i = 4; i >= 1; i--) {
+				const spread = i * 6 * unit
+				const b = { x: lifted.x - spread, y: lifted.y - spread + 10 * unit, w: lifted.w + spread * 2, h: lifted.h + spread * 2 }
+				pushRect(b, SHADOW, NONE, 0, SECTION_RADIUS + spread, false)
+			}
+			pushRect(lifted, LIFTED_FILL, LIFTED_STROKE, 1, SECTION_RADIUS, false)
+			if (selected.has(frameKey(liftedId!))) overlays.push(() => pushRect(lifted, NONE, ACCENT, 2, SECTION_RADIUS, false))
+			for (const [id, d] of this.displayedItems) if (layout.sectionOf.get(id) === liftedId) pushItem(id, d)
 		}
 
 		const backgroundRects = rects
@@ -436,16 +463,17 @@ export class Renderer {
 		})
 		pass.setBindGroup(0, this.globalsBindGroup)
 
-		if (backgroundRects) {
+		const drawRects = (from: number, to: number) => {
+			if (to <= from) return
 			pass.setPipeline(this.rectPipeline)
 			pass.setVertexBuffer(0, this.rectBuffer)
-			pass.draw(6, backgroundRects, 0, 0)
+			pass.draw(6, to - from, 0, from)
 		}
-
-		if (images) {
+		const drawImages = (from: number, to: number) => {
+			if (to <= from) return
 			pass.setVertexBuffer(0, this.imageBuffer)
 			let current: GPURenderPipeline | null = null
-			for (let i = 0; i < images; i++) {
+			for (let i = from; i < to; i++) {
 				const draw = imageDraws[i]
 				const pipeline = draw.video ? this.videoPipeline : this.imagePipeline
 				if (pipeline !== current) pass.setPipeline((current = pipeline))
@@ -453,22 +481,22 @@ export class Renderer {
 				pass.draw(6, 1, 0, i)
 			}
 		}
+		drawRects(0, liftedRects)
+		drawImages(0, liftedImages)
+		drawRects(liftedRects, backgroundRects)
+		drawImages(liftedImages, images)
 		for (const [id, copy] of this.videoCopies) {
 			if (drawnVideos.has(id)) continue
 			copy.texture.destroy()
 			this.videoCopies.delete(id)
 		}
 
-		if (rects > backgroundRects) {
-			pass.setPipeline(this.rectPipeline)
-			pass.setVertexBuffer(0, this.rectBuffer)
-			pass.draw(6, rects - backgroundRects, 0, backgroundRects)
-		}
+		drawRects(backgroundRects, rects)
 
 		pass.end()
 		this.device.queue.submit([encoder.finish()])
 
-		this.labels.update(layout.sections, this.displayedSections, editor)
+		this.labels.update(layout.sections, this.displayedSections, editor, liftedId)
 		this.titles.update(items, this.displayedItems, cull, editor)
 		this.videoControls.update(items, this.displayedItems, viewBounds)
 		const showDownload = hovered && editor.isShiftDown.get()
@@ -956,6 +984,11 @@ function downloadName(item: Item) {
 
 const MAX_ITEM_TITLE_PX = 15
 
+const EYE_OFF_ICON =
+	'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+	'<path d="M10.7 5.1a10.7 10.7 0 0 1 11.2 6.6 1 1 0 0 1 0 .7 10.7 10.7 0 0 1-1.4 2.5"/><path d="M14.1 14.2a3 3 0 0 1-4.2-4.2"/>' +
+	'<path d="M17.5 17.5a10.8 10.8 0 0 1-15.4-5.2 1 1 0 0 1 0-.7 10.8 10.8 0 0 1 4.4-5.1"/><path d="m2 2 20 20"/></svg>'
+
 /** Section titles as DOM text, positioned in screen space so they stay crisp and readable at any zoom. */
 class SectionLabels {
 	private els = new Map<string, HTMLDivElement>()
@@ -965,6 +998,8 @@ class SectionLabels {
 		parent: HTMLElement,
 		/** null hides the close buttons (read-only views) */
 		private onClose: ((sectionId: string) => void) | null,
+		/** null hides the hide buttons (read-only views) */
+		private onHide: ((sectionId: string) => void) | null,
 	) {
 		this.host = document.createElement('div')
 		this.host.className = 'section-labels'
@@ -975,6 +1010,20 @@ class SectionLabels {
 		const el = document.createElement('div')
 		el.className = 'section-label'
 		el.innerHTML = '<span class="title"></span>'
+		const onHide = this.onHide
+		if (onHide) {
+			const hide = document.createElement('button')
+			hide.className = 'hide-frame'
+			hide.title = 'Hide this frame (for everyone; show it again from the frames list, bottom left)'
+			hide.innerHTML = EYE_OFF_ICON
+			hide.addEventListener('pointerdown', (e) => e.stopPropagation())
+			hide.addEventListener('dblclick', (e) => e.stopPropagation())
+			hide.addEventListener('click', (e) => {
+				e.stopPropagation()
+				onHide(id)
+			})
+			el.appendChild(hide)
+		}
 		const onClose = this.onClose
 		if (!onClose) return el
 		const button = document.createElement('button')
@@ -1011,10 +1060,11 @@ class SectionLabels {
 	 * page-space text that scales with zoom like the images. Session titles never shrink below a
 	 * readable size; when zoomed far out they grow upward out of the frame instead.
 	 */
-	update(sections: SectionLayout[], displayed: Map<string, Displayed>, editor: Editor) {
+	update(sections: SectionLayout[], displayed: Map<string, Displayed>, editor: Editor, liftedId: string | null) {
 		const seen = new Set<string>()
 		const z = editor.camera.peek().z
 		const hoveredGroupId = editor.hoveredGroupId.peek()
+		const hoveredFrameId = editor.hoveredFrameId.peek()
 		const linkedGroupId = editor.linkedGroup.get()?.id
 		const place = (el: HTMLElement, box: Box, scale: number) => {
 			// Anchor at the bottom-left of the box, scaling up from there.
@@ -1050,6 +1100,8 @@ class SectionLabels {
 			}
 			place(el, shift(s.header), Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx))
 			el.style.opacity = String(d.opacity)
+			el.classList.toggle('hovered', s.id === hoveredFrameId && !liftedId)
+			el.classList.toggle('lifted', s.id === liftedId)
 
 			for (const g of s.groups) {
 				if (!g.heading) continue

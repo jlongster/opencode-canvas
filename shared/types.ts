@@ -10,6 +10,12 @@ export interface Canvas {
 	viewKey: string
 	/** when a browser claimed its one automatic seeding from OpenCode (POST /api/canvases/:cid/autoseed) */
 	autoSeededAt?: number
+	/**
+	 * The order of the session frames, left to right, as people arranged them (PUT
+	 * /api/canvases/:cid/order). Sessions not in it follow, oldest first; ids of sessions that are
+	 * gone are ignored. Missing until someone reorders.
+	 */
+	sessionOrder?: string[]
 }
 
 /** A canvas as the list page shows it. */
@@ -37,6 +43,13 @@ export interface Session {
 	canvasId: string
 	title: string
 	createdAt: number
+	/**
+	 * Hidden from the canvas (PATCH /api/canvases/:cid/sessions/:sid): not laid out or drawn, for
+	 * everyone. It still takes posts, which don't unhide it.
+	 */
+	hidden?: boolean
+	/** when it was hidden (ms): items posted since show as new in the frames list */
+	hiddenAt?: number
 }
 
 export interface Item {

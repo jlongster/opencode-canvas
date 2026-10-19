@@ -38,6 +38,14 @@ export const deleteCanvas = (id: string) =>
 export const deleteSession = (canvasId: string, id: string) =>
 	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
+/** Hides or shows a session's frame for everyone. */
+export const setSessionHidden = (canvasId: string, id: string, hidden: boolean) =>
+	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(id)}`, json('PATCH', { hidden }))
+
+/** Arranges the canvas's frames, left to right (every session id, hidden ones too). */
+export const setSessionOrder = (canvasId: string, sessionIds: string[]) =>
+	request<{ sessionIds: string[] }>(`/api/canvases/${encodeURIComponent(canvasId)}/order`, json('PUT', { sessionIds }))
+
 /** Moves an item to the trash; the server deletes its session too if it was the last item. */
 export const deleteItem = (id: string) => request<unknown>(`/api/items/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
@@ -241,6 +249,7 @@ export function connectCanvas(
 			if (closed) return
 			canvasId = data.canvas.id
 			editor.loadSnapshot(data.sessions, data.items)
+			editor.setSessionOrder(data.canvas.sessionOrder)
 			const first = !loaded
 			loaded = true
 			handlers.onConjured?.({ all: data.conjured ?? [] })
@@ -257,7 +266,9 @@ export function connectCanvas(
 	const apply = (event: ServerEvent) => {
 		switch (event.type) {
 			case 'canvas':
-				if (event.canvas.id === canvasId) handlers.onCanvas(event.canvas)
+				if (event.canvas.id !== canvasId) return
+				editor.setSessionOrder(event.canvas.sessionOrder)
+				handlers.onCanvas(event.canvas)
 				return
 			case 'canvas_deleted':
 				if (event.id === canvasId) gone()

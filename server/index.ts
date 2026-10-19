@@ -6,7 +6,7 @@ import type {
 	Annotation, AnnotationView, AttentionAction, Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, ServerEvent, Session,
 	SessionView,
 } from '../shared/types'
-import { computeLayout, LAYOUT } from '../web/src/editor/layout'
+import { computeLayout, LAYOUT, orderSessions } from '../web/src/editor/layout'
 import { AttentionError, createAttention } from './attention'
 import { ConjureError, createConjured } from './conjured'
 import { imageSize } from './imageSize'
@@ -176,7 +176,7 @@ const CREATURE_GAP = 90
 function creatureSpot(canvasId: string, sessionId: string) {
 	const sessions = Object.fromEntries(canvasSessions(canvasId).map((s) => [s.id, s]))
 	const items = Object.fromEntries([...db.items.values()].filter((i) => i.canvasId === canvasId).map((i) => [i.id, i]))
-	const layout = computeLayout(sessions, items)
+	const layout = computeLayout(sessions, items, db.canvases.get(canvasId)?.sessionOrder)
 	const section = layout.sections.find((s) => s.id === sessionId)
 	let x: number
 	let y: number
@@ -420,6 +420,34 @@ function canvasSummary(canvas: Canvas): CanvasSummary {
 
 function canvasSessions(canvasId: string): Session[] {
 	return [...db.sessions.values()].filter((s) => s.canvasId === canvasId)
+}
+
+/** The canvas's sessions in frame order, left to right (hidden ones included, where they'd be). */
+function orderedSessions(canvasId: string): Session[] {
+	return orderSessions(canvasSessions(canvasId), db.canvases.get(canvasId)?.sessionOrder)
+}
+
+/** Hides or shows a session's frame for everyone. */
+function setSessionHidden(session: Session, hidden: boolean): Session {
+	if (!!session.hidden === hidden) return session
+	const { hidden: _, hiddenAt: __, ...rest } = session
+	const next: Session = hidden ? { ...rest, hidden: true, hiddenAt: Date.now() } : rest
+	db.sessions.set(sessionKey(session.canvasId, session.id), next)
+	save()
+	broadcast({ type: 'session', session: next })
+	return next
+}
+
+/** Arranges the canvas's frames: these sessions first, in this order (unknown ids are dropped). */
+function setSessionOrder(canvas: Canvas, value: unknown): Canvas {
+	if (!Array.isArray(value) || value.some((id) => typeof id !== 'string')) throw new HttpError(400, 'send {"sessionIds": ["<sessionId>", ...]}, left to right')
+	const known = new Set(canvasSessions(canvas.id).map((s) => s.id))
+	const sessionOrder = [...new Set(value as string[])].filter((id) => known.has(id))
+	const next: Canvas = { ...canvas, sessionOrder }
+	db.canvases.set(next.id, next)
+	save()
+	broadcast({ type: 'canvas', canvas: next })
+	return next
 }
 
 function getSession(canvasId: string, id: string): Session {
@@ -1084,9 +1112,18 @@ const API_INDEX = {
 			'Claim the canvas\'s one automatic seeding (browsers do this before seeding a new canvas with their latest ' +
 			'OpenCode sessions): {"ok": true, "autoSeededAt"} for the first caller, 409 for anyone after',
 		'GET /api/view/:viewKey': 'A canvas by its view-only key (same body as GET /api/canvases/:cid)',
-		'GET /api/canvases/:cid/sessions': 'The canvas\'s sessions, each with its groups and their items, in canvas order',
+		'GET /api/canvases/:cid/sessions':
+			'The canvas\'s sessions, each with its groups and their items, in frame order (left to right; hidden ones ' +
+			'included where they\'d be, with "hidden": true)',
 		'GET /api/canvases/:cid/sessions/:sessionId': 'One session with its groups and items',
 		'PUT /api/canvases/:cid/sessions/:sessionId': 'Create or rename a session. Body: {"title"} (always replaces the title, unlike a post\'s "sessionTitle")',
+		'PATCH /api/canvases/:cid/sessions/:sessionId':
+			'Hide or show a session\'s frame for everyone: {"hidden": true|false} (and/or {"title"} to rename). A hidden ' +
+			'frame isn\'t drawn but keeps its items and still takes posts; posting doesn\'t unhide it',
+		'GET /api/canvases/:cid/order': 'The frames\' order, left to right: {"sessionIds"} (hidden sessions included)',
+		'PUT /api/canvases/:cid/order':
+			'Arrange the frames. Body: {"sessionIds": [...]} left to right; sessions left out follow, oldest first, and new ' +
+			'sessions appear on the right. Returns the resulting {"sessionIds"}',
 		'DELETE /api/canvases/:cid/sessions/:sessionId': 'Delete a session and all its items (restorable for an hour, see restore)',
 		'POST /api/canvases/:cid/sessions/:sessionId/items':
 			'Add an image, video or HTML page. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
@@ -1158,7 +1195,7 @@ const API_INDEX = {
 		'A fragment is wrapped in a minimal page (UTF-8, no margin, white background); send a full document to ' +
 		'control everything. Inline everything (styles, scripts, images as data: URLs).',
 	layout:
-		'Sessions sit side by side, newest on the right. In a session, the untitled group comes first, then named ' +
+		'Sessions sit side by side, newest on the right, unless people arranged them (see /order); hidden ones aren\'t shown. In a session, the untitled group comes first, then named ' +
 		'groups in the order they were first posted to; each group\'s items flow left to right in rows, in posting order.',
 }
 
@@ -1352,7 +1389,7 @@ async function handle(req: Request): Promise<Response> {
 	m = /^\/api\/canvases\/([^/]+)\/sessions$/.exec(p)
 	if (m && method === 'GET') {
 		const canvas = getCanvas(decodeURIComponent(m[1]))
-		return json(canvasSessions(canvas.id).sort((a, b) => a.createdAt - b.createdAt).map(sessionView))
+		return json(orderedSessions(canvas.id).map(sessionView))
 	}
 
 	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)$/.exec(p)
@@ -1366,9 +1403,30 @@ async function handle(req: Request): Promise<Response> {
 			const session = ensureSession(canvas.id, assertSessionId(id), textField(body?.title))
 			return json(sessionView(session), existed ? 200 : 201)
 		}
+		if (method === 'PATCH') {
+			const body = (await req.json().catch(() => ({}))) as { title?: unknown; hidden?: unknown }
+			if (body?.hidden !== undefined && typeof body.hidden !== 'boolean') throw new HttpError(400, '"hidden" must be true or false')
+			if (body?.hidden === undefined && body?.title === undefined) throw new HttpError(400, 'send {"hidden": true|false} and/or {"title"}')
+			let session = getSession(canvas.id, id)
+			const title = textField(body.title)
+			if (title !== undefined) session = ensureSession(canvas.id, id, title)
+			if (typeof body.hidden === 'boolean') session = setSessionHidden(session, body.hidden)
+			return json(sessionView(session))
+		}
 		if (method === 'DELETE') {
 			deleteSession(getSession(canvas.id, id))
 			return json({ ok: true })
+		}
+	}
+
+	m = /^\/api\/canvases\/([^/]+)\/order$/.exec(p)
+	if (m) {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		if (method === 'GET') return json({ sessionIds: orderedSessions(canvas.id).map((s) => s.id) })
+		if (method === 'PUT') {
+			const body = (await req.json().catch(() => ({}))) as { sessionIds?: unknown }
+			const next = setSessionOrder(canvas, body?.sessionIds)
+			return json({ sessionIds: orderedSessions(next.id).map((s) => s.id) })
 		}
 	}
 
@@ -1549,7 +1607,7 @@ const mcp = createCanvasMcp({
 		return canvas
 	},
 	canvasData: (id) => canvasData(getCanvas(id)),
-	sessionViews: (canvasId) => canvasSessions(canvasId).sort((a, b) => a.createdAt - b.createdAt).map(sessionView),
+	sessionViews: (canvasId) => orderedSessions(canvasId).map(sessionView),
 	notes: (canvasId) => readRoomDoc(`canvas-${canvasId}`, readNotes),
 	annotations: annotationViews,
 	presence,

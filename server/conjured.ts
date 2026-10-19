@@ -13,6 +13,7 @@
  * gets one without an owner (ownerId and serverKey ""): asleep for good, until someone conjures the
  * session from their browser, which adopts it.
  */
+import { sessionColor } from '../shared/sessionColor'
 import type { ConjuredAgent, ServerEvent } from '../shared/types'
 
 export class ConjureError extends Error {
@@ -31,16 +32,9 @@ export interface ConjuredDeps {
 const SESSION_ID = /^ses_[A-Za-z0-9]{26}$/
 const SERVER_KEY = /^[A-Za-z0-9_-]{1,64}$/
 const OWNER_ID = /^[A-Za-z0-9_-]{8,64}$/
-const COLORS = ['#f472b6', '#a78bfa', '#fb923c', '#4ade80', '#facc15', '#f87171', '#60a5fa', '#2dd4bf', '#e879f9', '#a3e635']
 const TITLE_MAX = 200
 
 const key = (canvasId: string, sessionId: string) => `${canvasId}/${sessionId}`
-
-export function colorFor(sessionId: string) {
-	let h = 0
-	for (const ch of sessionId) h = (h * 31 + ch.charCodeAt(0)) >>> 0
-	return COLORS[h % COLORS.length]
-}
 
 function position(x: unknown, y: unknown, hint: string) {
 	if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) throw new ConjureError(400, hint)
@@ -61,7 +55,7 @@ function clean(r: ConjuredAgent & { directory?: unknown; serverId?: unknown }): 
 		sessionId: r.sessionId,
 		serverKey: typeof r.serverKey === 'string' ? r.serverKey : '',
 		title: typeof r.title === 'string' ? r.title : '',
-		color: typeof r.color === 'string' ? r.color : colorFor(r.sessionId),
+		color: typeof r.color === 'string' ? r.color : sessionColor(r.sessionId),
 		x: Number(r.x) || 0,
 		y: Number(r.y) || 0,
 		createdAt: Number(r.createdAt) || Date.now(),
@@ -124,7 +118,7 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 				sessionId,
 				serverKey,
 				title: titleField(body?.title) ?? '',
-				color: colorFor(sessionId),
+				color: sessionColor(sessionId),
 				...at,
 				createdAt: Date.now(),
 				ownerId,
@@ -142,7 +136,7 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 			if (!SESSION_ID.test(sessionId)) throw new ConjureError(400, `"sessionId" must be an OpenCode session id ("ses_" + 26 characters)`)
 			if (!deps.canvasExists(canvasId)) throw new ConjureError(404, `no canvas ${canvasId}`)
 			const at = opts.at()
-			return put({ canvasId, sessionId, serverKey: '', title: title ?? '', color: colorFor(sessionId), x: Math.round(at.x), y: Math.round(at.y), createdAt: Date.now(), ownerId: '' })
+			return put({ canvasId, sessionId, serverKey: '', title: title ?? '', color: sessionColor(sessionId), x: Math.round(at.x), y: Math.round(at.y), createdAt: Date.now(), ownerId: '' })
 		},
 
 		/** Moves the worm (it was dragged) and/or renames it (its session's title changed). */

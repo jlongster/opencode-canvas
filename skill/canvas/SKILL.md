@@ -16,7 +16,8 @@ description: >
 
 There are many **canvases**. The user tells you which one to use by giving a canvas URL or
 id. On a canvas, each OpenCode **session** is one frame (title at the top); frames sit side
-by side, newest on the right. Inside a frame, items are organised into **groups** (named
+by side, newest on the right (people can reorder them, and hide frames: a hidden frame still
+takes your posts, which don't unhide it). Inside a frame, items are organised into **groups** (named
 sets like "v3: warmer light"), stacked top to bottom in the order each group was first
 posted to; each group's items run left to right in rows. Everything you post shows up live
 for everyone looking at the canvas.
@@ -89,9 +90,11 @@ All bodies are JSON. Paths below are relative to `$API`.
 | `GET` | `/canvases/$CID` | `{canvas, sessions, items}` |
 | `PATCH` / `DELETE` | `/canvases/$CID` | Rename `{"title"}` / delete everything on it (permanent) |
 | `GET` | `/view/<viewKey>` | Same as `GET /canvases/$CID`, looked up by view key |
-| `GET` | `/canvases/$CID/sessions` | Every session with `groups: [{name, items}]` in canvas order |
+| `GET` | `/canvases/$CID/sessions` | Every session with `groups: [{name, items}]` in frame order (`"hidden": true` on frames people hid) |
 | `PUT` | `/canvases/$CID/sessions/$SID` | Create or rename your session: `{"title"}` (replaces any title) |
 | `GET` / `DELETE` | `/canvases/$CID/sessions/$SID` | Your session with its groups / delete it |
+| `PATCH` | `/canvases/$CID/sessions/$SID` | Hide or show a frame for everyone: `{"hidden": true\|false}` (only when the user asks) |
+| `GET` / `PUT` | `/canvases/$CID/order` | The frames' order `{"sessionIds"}` / rearrange them (only when the user asks) |
 | `POST` | `/canvases/$CID/sessions/$SID/items` | Add an image/video/HTML: `{"path"}` or `{"url"}`, or multipart `file`, or `{"html", "width", "height"}`; plus `sessionTitle` (always) and optional `group`, `title`, `caption`, `name` |
 | `GET` / `PATCH` / `DELETE` | `/items/<itemId>` | Get / change `group`, `title`, `caption` (`null` clears), `name` / delete (`{"sessionDeleted": true}` if it was the session's last item) |
 | `PATCH` / `DELETE` | `/canvases/$CID/sessions/$SID/groups/<name>` | Rename a group `{"name"}` (`null` ungroups) / delete it and its items |

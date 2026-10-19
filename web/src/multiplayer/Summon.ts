@@ -52,7 +52,7 @@ export class Summon {
 		for (const peer of this.conjure.worms()) {
 			const at = peer.cursor
 			const sessionId = peer.user.sessionId
-			if (!at || !sessionId) continue
+			if (!at || !sessionId || this.editor.isSessionHidden(sessionId)) continue
 			const d = Math.hypot(at.x - point.x, at.y - point.y) * z
 			if (d <= CREATURE_REACH && (!best || d < best.d)) best = { sessionId, d }
 		}

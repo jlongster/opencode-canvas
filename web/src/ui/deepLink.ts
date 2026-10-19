@@ -95,7 +95,12 @@ export class DeepLink {
 		const { kind, id } = parseSelectionId(key)
 		// A renamed or removed group: show its session instead, if that's still here.
 		if (kind === 'group' && editor.focusMissingGroup(id, { animate: false })) return this.settle()
-		if (kind !== 'note') return onMissing()
+		if (kind !== 'note') {
+			// In a hidden frame: say so (edit links can show it from the toast).
+			const hidden = editor.hiddenSessionOf(key)
+			editor.hiddenLink.set(hidden ? { key, sessionId: hidden } : null)
+			return onMissing()
+		}
 
 		// Show the normal view meanwhile; give up if the person starts looking around themselves.
 		if (!this.ready) editor.goToInitialView()

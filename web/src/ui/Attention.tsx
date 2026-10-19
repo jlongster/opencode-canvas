@@ -3,6 +3,7 @@ import type { AttentionAction } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import type { Attention } from '../multiplayer/Attention'
 import type { Conjure } from '../multiplayer/Conjure'
+import { framesPanelOpen } from './FramesPanel'
 import { markdownToHtml } from './markdown'
 import { useValue } from './useValue'
 
@@ -20,6 +21,8 @@ const CREATURE_MARGIN = 24
  */
 export function AttentionTray({ attention }: { attention: Attention }) {
 	const callers = useValue(() => attention.callers.get(), [attention])
+	// creatures of hidden frames are hidden too: their rows open the frames list instead
+	const hidden = useValue(() => callers.filter((c) => attention.editor.isSessionHidden(c.sessionId)).map((c) => c.sessionId).join(' '), [attention, callers])
 	const [open, setOpen] = useState(false)
 	useEffect(() => {
 		if (!callers.length) setOpen(false)
@@ -52,14 +55,19 @@ export function AttentionTray({ attention }: { attention: Attention }) {
 							key={c.sessionId}
 							className="attention-row"
 							style={{ ['--agent-color' as string]: c.color }}
+							title={hidden.includes(c.sessionId) ? 'Its frame is hidden: show it from the frames list' : undefined}
 							onClick={() => {
 								setOpen(false)
-								attention.open(c.sessionId, { fromTray: true })
+								if (hidden.includes(c.sessionId)) framesPanelOpen.set(true)
+								else attention.open(c.sessionId, { fromTray: true })
 							}}
 						>
 							<i className="attention-row-dot" />
 							<span className="attention-row-main">
-								<span className="attention-row-name">{c.name}</span>
+								<span className="attention-row-name">
+									{c.name}
+									{hidden.includes(c.sessionId) && <span className="attention-row-hidden"> (hidden)</span>}
+								</span>
 								<span className="attention-row-preview">{preview(attention, c.actions[0])}</span>
 							</span>
 							<span className="attention-row-count">{c.actions.length}</span>

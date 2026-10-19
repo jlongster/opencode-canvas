@@ -6,11 +6,12 @@ import type { EventOf } from '../types'
 export class SelectTool extends StateNode {
 	static override id = 'select'
 	static override initial = 'idle'
-	static override children = () => [Idle, PointingItem, PointingGroup, PointingCanvas, Brushing]
+	static override children = () => [Idle, PointingItem, PointingGroup, PointingCanvas, Brushing, DraggingFrame]
 
 	override onExit() {
 		this.editor.setHovered(null)
 		this.editor.setHoveredGroup(null)
+		this.editor.hoveredFrameId.set(null)
 	}
 }
 
@@ -20,6 +21,7 @@ class Idle extends StateNode {
 	override onEnter() {
 		this.editor.setCursor('default')
 		this.editor.setHoveredGroup(null)
+		this.editor.hoveredFrameId.set(null)
 		this.updateHover()
 	}
 
@@ -56,20 +58,24 @@ class Idle extends StateNode {
 		const target = editor.inputs.isPointerInside ? editor.getTargetAt(editor.inputs.currentPagePoint) : null
 		editor.setHovered(target?.type === 'item' ? target.id : null)
 		const group = target?.type === 'group_heading' ? target.id : null
-		if (group === editor.hoveredGroupId.peek()) return
+		const frame = target?.type === 'frame_title' ? target.id : null
+		if (group === editor.hoveredGroupId.peek() && frame === editor.hoveredFrameId.peek()) return
 		editor.setHoveredGroup(group)
-		if (!editor.inputs.isSpaceDown) editor.setCursor(group ? 'pointer' : 'default')
+		editor.hoveredFrameId.set(frame)
+		if (!editor.inputs.isSpaceDown) editor.setCursor(group ? 'pointer' : frame && editor.frames ? 'grab' : 'default')
 	}
 }
 
 /**
  * Pointer is down on an item (or a session frame's title, which selects the whole frame) but
- * hasn't moved far enough to count as a drag.
+ * hasn't moved far enough to count as a drag. Dragging a frame's title picks the frame up (edit
+ * links, without shift); dragging anything else brushes.
  */
 class PointingItem extends StateNode {
 	static override id = 'pointing_item'
 	private key = ''
 	private deselectOnUp = false
+	private frameId: string | null = null
 
 	override onEnter(info: unknown) {
 		const e = info as EventOf<'pointer_down'>
@@ -77,6 +83,7 @@ class PointingItem extends StateNode {
 		const { editor } = this
 		const id = e.target.type === 'item' ? e.target.id : frameKey(e.target.id)
 		this.key = id
+		this.frameId = e.target.type === 'frame_title' ? e.target.id : null
 		const selected = editor.isSelected(id)
 		this.deselectOnUp = e.shiftKey && selected
 		if (e.shiftKey && !selected) editor.select([...editor.getSelectedIds(), id])
@@ -84,7 +91,10 @@ class PointingItem extends StateNode {
 	}
 
 	override onPointerMove() {
-		if (this.editor.inputs.isDragging) this.parent!.transition('brushing')
+		const { editor } = this
+		if (!editor.inputs.isDragging) return
+		if (this.frameId && editor.frames && !editor.inputs.shiftKey) this.parent!.transition('dragging_frame', { sessionId: this.frameId })
+		else this.parent!.transition('brushing')
 	}
 
 	override onPointerUp(e: EventOf<'pointer_up'>) {
@@ -214,5 +224,86 @@ class Brushing extends StateNode {
 		editor.setBrush(brush)
 		const hits = editor.getSelectableInBox(brush)
 		editor.select(shiftKey ? [...new Set([...this.initialSelection, ...hits])] : hits)
+	}
+}
+
+/** Screen px from the left or right edge where dragging a frame pans the canvas, and how fast (px/ms at the edge) */
+const EDGE_PAN = { zone: 56, speed: 1.2 }
+
+/**
+ * A session frame picked up by its title: it follows the pointer while the other frames slide
+ * apart to show where it would drop. Releasing saves the new order for everyone; Escape puts it back.
+ */
+class DraggingFrame extends StateNode {
+	static override id = 'dragging_frame'
+	private sessionId = ''
+
+	override onEnter(info: unknown) {
+		const { editor } = this
+		this.sessionId = (info as { sessionId: string }).sessionId
+		const section = editor.layout.get().sections.find((s) => s.id === this.sessionId)
+		if (!section) return this.parent!.transition('idle')
+		editor.setHovered(null)
+		editor.hoveredFrameId.set(null)
+		editor.setCursor('grabbing')
+		editor.frameDrag.set({
+			sessionId: this.sessionId,
+			order: editor.orderedSessions.get().map((s) => s.id),
+			from: { x: section.box.x, y: section.box.y },
+			origin: editor.inputs.originPagePoint,
+			point: editor.inputs.currentPagePoint,
+		})
+		this.update()
+	}
+
+	override onExit() {
+		this.editor.frameDrag.set(null)
+	}
+
+	override onPointerMove() {
+		this.update()
+	}
+
+	override onTick(e: EventOf<'tick'>) {
+		const { editor } = this
+		const x = editor.inputs.currentScreenPoint.x
+		const { w } = editor.viewport.peek()
+		const edge = x < EDGE_PAN.zone ? (EDGE_PAN.zone - x) / EDGE_PAN.zone : x > w - EDGE_PAN.zone ? -(x - (w - EDGE_PAN.zone)) / EDGE_PAN.zone : 0
+		if (edge) editor.panBy(Math.max(-1, Math.min(1, edge)) * EDGE_PAN.speed * e.elapsed, 0)
+		this.update()
+	}
+
+	override onPointerUp() {
+		const { editor } = this
+		const drag = editor.frameDrag.peek()
+		if (drag) editor.setFrameOrder(drag.order)
+		this.parent!.transition('idle')
+	}
+
+	override onKeyDown(e: EventOf<'key_down'>) {
+		if (e.key === 'Escape') this.parent!.transition('idle')
+	}
+
+	override onCancel() {
+		this.parent!.transition('idle')
+	}
+
+	/** Follow the pointer, then pick the slot: after every other visible frame whose middle it's past. */
+	private update() {
+		const { editor } = this
+		const drag = editor.frameDrag.peek()
+		if (!drag) return
+		const point = editor.inputs.currentPagePoint
+		if (!Vec.equals(point, drag.point)) editor.frameDrag.set({ ...drag, point })
+		const layout = editor.layout.get()
+		const dragged = layout.sections.find((s) => s.id === drag.sessionId)
+		if (!dragged) return
+		const middle = dragged.box.x + dragged.box.w / 2
+		const others = layout.sections.filter((s) => s.id !== drag.sessionId)
+		const before = others.filter((s) => s.box.x + s.box.w / 2 < middle).length
+		const order = drag.order.filter((id) => id !== drag.sessionId)
+		const index = before === 0 ? (others.length ? order.indexOf(others[0].id) : 0) : order.indexOf(others[before - 1].id) + 1
+		order.splice(index, 0, drag.sessionId)
+		if (order.some((id, i) => id !== drag.order[i])) editor.frameDrag.set({ ...editor.frameDrag.peek()!, order })
 	}
 }

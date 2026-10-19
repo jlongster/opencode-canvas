@@ -83,13 +83,27 @@ export function frameTitleBox(section: SectionLayout, z: number): Box {
 }
 
 /**
- * Positions are a pure function of the data. Each session is a frame; frames sit side by side,
- * oldest on the left, so new sessions appear on the far right. Inside a frame, groups stack top to
+ * Sessions in frame order, left to right: those in `order` (the canvas's sessionOrder) first, as
+ * arranged, then the rest oldest first, so new sessions appear on the far right.
+ */
+export function orderSessions<S extends Session>(sessions: Iterable<S>, order?: readonly string[]): S[] {
+	const rank = new Map(order?.map((id, i) => [id, i]))
+	return [...sessions].sort((a, b) => {
+		const ra = rank.get(a.id) ?? Infinity
+		const rb = rank.get(b.id) ?? Infinity
+		if (ra !== rb) return ra - rb
+		return a.createdAt - b.createdAt || a.id.localeCompare(b.id)
+	})
+}
+
+/**
+ * Positions are a pure function of the data. Each session is a frame; frames sit side by side in
+ * frame order (see orderSessions), and hidden sessions take no space. Inside a frame, groups stack top to
  * bottom: the untitled group first, then named groups in the order they first appeared. Each group's
  * items flow left to right into justified rows that keep every item's aspect ratio. A frame is as
  * wide as its widest group, so a wider row pushes every frame to its right further out.
  */
-export function computeLayout(sessions: Record<string, Session>, items: Record<string, Item>): Layout {
+export function computeLayout(sessions: Record<string, Session>, items: Record<string, Item>, order?: readonly string[]): Layout {
 	const L = LAYOUT
 	const bySession = new Map<string, Item[]>()
 	for (const item of Object.values(items)) {
@@ -98,7 +112,7 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 		list.push(item)
 	}
 
-	const ordered = Object.values(sessions).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+	const ordered = orderSessions(Object.values(sessions), order).filter((s) => !s.hidden)
 	const layout: Layout = { sections: [], groups: [], items: new Map(), sectionOf: new Map(), groupOf: new Map(), bounds: null }
 	let frameX = 0
 
@@ -163,6 +177,26 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 
 	layout.bounds = Box.union(layout.sections.map((s) => s.box))
 	return layout
+}
+
+/** The layout with one frame (and everything in it) moved by (dx, dy), e.g. while it's dragged. */
+export function shiftSection(layout: Layout, id: string, dx: number, dy: number): Layout {
+	const shift = (b: Box): Box => ({ x: b.x + dx, y: b.y + dy, w: b.w, h: b.h })
+	const index = layout.sections.findIndex((s) => s.id === id)
+	if (index < 0 || (dx === 0 && dy === 0)) return layout
+	const old = layout.sections[index]
+	const groups = old.groups.map((g) => ({ ...g, box: shift(g.box), heading: g.heading && shift(g.heading) }))
+	const section: SectionLayout = { ...old, box: shift(old.box), header: shift(old.header), groups }
+	const sections = layout.sections.map((s, i) => (i === index ? section : s))
+	const items = new Map(layout.items)
+	for (const itemId of old.itemIds) items.set(itemId, shift(items.get(itemId)!))
+	return {
+		...layout,
+		sections,
+		groups: sections.flatMap((s) => s.groups),
+		items,
+		bounds: Box.union(sections.map((s) => s.box)),
+	}
 }
 
 /**

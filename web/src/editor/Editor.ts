@@ -2,7 +2,7 @@ import type { Item, Session } from '../../../shared/types'
 import { atom, computed, getGlobalEpoch, react, transact } from '../state/signals'
 import { Box, clamp, easeInOutCubic, lerp, Vec } from './geometry'
 import { Deletions } from './Deletions'
-import { computeLayout, frameTitleBox, LAYOUT, type GroupLayout, type Layout } from './layout'
+import { computeLayout, frameTitleBox, LAYOUT, orderSessions, shiftSection, type GroupLayout, type Layout } from './layout'
 import { noteKey, parseSelectionId, type SelectionKind } from './selection'
 import { StateNode } from './StateNode'
 import { AnnotateTool } from './tools/AnnotateTool'
@@ -38,6 +38,8 @@ const INITIAL_FIRST_ROW = 0.3
 const FOCUS_MAX_WIDTH = 1350
 /** The highest zoom focusing something (double-click, deep link, zoom-to-selection) goes to */
 const FOCUS_MAX_ZOOM = 2
+/** How much a dragged frame follows the pointer up and down (it follows it fully left and right) */
+const FRAME_DRAG_Y = 0.3
 /** Page px between a hovered or linked group and its outline */
 export const GROUP_OUTLINE_PADDING = 14
 
@@ -59,6 +61,24 @@ export interface AnnotationDrafts {
 	/** release: the comment box opens at the line's end (page point) */
 	finish(point: Vec): void
 	cancel(): void
+}
+
+/** Arranging session frames (edit links): saved on the canvas server, for everyone. */
+export interface FrameBackend {
+	setHidden(sessionId: string, hidden: boolean): Promise<unknown>
+	setOrder(sessionIds: string[]): Promise<unknown>
+}
+
+/** A session frame picked up by its title (see SelectTool's DraggingFrame). */
+export interface FrameDrag {
+	sessionId: string
+	/** every session (hidden ones too), left to right, with the dragged one in the slot it would drop into */
+	order: string[]
+	/** the frame's position at the start, and where the pointer took hold of it then (page) */
+	from: Vec
+	origin: Vec
+	/** where the pointer is now (page) */
+	point: Vec
 }
 
 /** A link in an HTML item: its URL and rects in the item's document px (see render/HtmlLinks.ts). */
@@ -97,6 +117,8 @@ export class Editor {
 	// --- records ---
 	readonly sessions = atom<Record<string, Session>>('sessions', {})
 	readonly items = atom<Record<string, Item>>('items', {})
+	/** The canvas's arranged frame order (Canvas.sessionOrder). */
+	readonly sessionOrder = atom<string[]>('sessionOrder', [], arrayEquals)
 	/** Sticky notes' page boxes (ignoring their slight tilt), kept up to date by SharedNotes. */
 	readonly noteBoxes = atom<Record<string, Box>>('noteBoxes', {}, boxRecordEquals)
 
@@ -108,6 +130,8 @@ export class Editor {
 	readonly hoveredId = atom<string | null>('hoveredId', null)
 	/** The group whose heading is under the pointer. */
 	readonly hoveredGroupId = atom<string | null>('hoveredGroupId', null)
+	/** The session frame whose title is under the pointer. */
+	readonly hoveredFrameId = atom<string | null>('hoveredFrameId', null)
 	/**
 	 * The group focused by clicking its heading or opening its link, without selecting anything.
 	 * The URL links to it until the selection changes (see select).
@@ -125,9 +149,32 @@ export class Editor {
 	/** The link in an HTML item under the pointer, which a click opens. */
 	readonly hoveredLink = atom<HtmlLink | null>('hoveredLink', null, linkEquals)
 	readonly connection = atom<'connecting' | 'open' | 'closed'>('connection', 'connecting')
+	/** The frame being dragged by its title, if any. */
+	readonly frameDrag = atom<FrameDrag | null>('frameDrag', null)
+	/** A deep link that pointed into a hidden frame (see DeepLink), until dismissed. */
+	readonly hiddenLink = atom<{ key: string; sessionId: string } | null>('hiddenLink', null)
 
 	// --- derived ---
-	readonly layout = computed<Layout>('layout', () => computeLayout(this.sessions.get(), this.items.get()))
+	/** Every session (hidden ones too) left to right, as arranged; while a frame is dragged, as it would drop. */
+	readonly orderedSessions = computed<Session[]>('orderedSessions', () =>
+		orderSessions(Object.values(this.sessions.get()), this.frameDrag.get()?.order ?? this.sessionOrder.get()),
+	)
+	private readonly baseLayout = computed<Layout>('baseLayout', () =>
+		computeLayout(this.sessions.get(), this.items.get(), this.frameDrag.get()?.order ?? this.sessionOrder.get()),
+	)
+	/**
+	 * Where everything is. A dragged frame follows the pointer (loosely up and down) while the others
+	 * make room for it in the slot it would drop into.
+	 */
+	readonly layout = computed<Layout>('layout', () => {
+		const base = this.baseLayout.get()
+		const drag = this.frameDrag.get()
+		const section = drag && base.sections.find((s) => s.id === drag.sessionId)
+		if (!drag || !section) return base
+		const x = drag.from.x + drag.point.x - drag.origin.x
+		const y = drag.from.y + (drag.point.y - drag.origin.y) * FRAME_DRAG_Y
+		return shiftSection(base, drag.sessionId, x - section.box.x, y - section.box.y)
+	})
 	readonly selectedSet = computed('selectedSet', () => new Set(this.selectedIds.get()))
 	/** The linked group (see linkedGroupId), while it still exists. */
 	readonly linkedGroup = computed<GroupLayout | null>('linkedGroup', () => {
@@ -149,6 +196,10 @@ export class Editor {
 	/** Set by the renderer: the link in an HTML item at a screen point, if any (ignoring what's on top). */
 	linkAt: ((point: Vec) => HtmlLink | null) | null = null
 	readonly deletions = new Deletions(this)
+	/** Set on edit links: hiding, showing and reordering frames. */
+	frames: FrameBackend | null = null
+	/** Called after this editor hid, showed or reordered frames, with where they were and are now. */
+	onFramesMoved: ((before: Layout, after: Layout) => void) | null = null
 	readonly root: Root
 
 	private cameraAnimation: { from: Camera; to: Camera; start: number; duration: number } | null = null
@@ -192,7 +243,14 @@ export class Editor {
 	}
 
 	putSession(session: Session) {
-		this.sessions.update((s) => ({ ...s, [session.id]: session }))
+		transact(() => {
+			this.sessions.update((s) => ({ ...s, [session.id]: session }))
+			if (session.hidden) this.pruneSelection(['item', 'frame'])
+		})
+	}
+
+	setSessionOrder(order: string[] | undefined) {
+		this.sessionOrder.set(order ?? [])
 	}
 
 	putItem(item: Item) {
@@ -230,9 +288,67 @@ export class Editor {
 			ids.filter((key) => {
 				const { kind, id } = parseSelectionId(key)
 				if (!kinds.includes(kind)) return true
-				return kind === 'frame' ? id in sessions : kind === 'note' ? id in notes : id in items
+				if (kind === 'note') return id in notes
+				const session = sessions[kind === 'frame' ? id : items[id]?.sessionId]
+				return !!session && !session.hidden
 			}),
 		)
+	}
+
+	// ---------- arranging frames ----------
+
+	isSessionHidden(sessionId: string | undefined) {
+		return !!sessionId && !!this.sessions.get()[sessionId]?.hidden
+	}
+
+	/** The hidden session a selection key (item, frame or group) is in, if it is in one. */
+	hiddenSessionOf(key: string): string | null {
+		const { kind, id } = parseSelectionId(key)
+		const sessionId = kind === 'frame' ? id : kind === 'group' ? id.slice(0, id.indexOf('/')) : kind === 'item' ? this.items.peek()[id]?.sessionId : undefined
+		return sessionId && this.sessions.peek()[sessionId]?.hidden ? sessionId : null
+	}
+
+	/** Hides or shows a frame for everyone (edit links), straight away here. */
+	setFrameHidden(sessionId: string, hidden: boolean) {
+		const session = this.sessions.peek()[sessionId]
+		if (!this.frames || !session || !!session.hidden === hidden) return
+		const { hidden: _, hiddenAt: __, ...rest } = session
+		const before = this.committedLayout()
+		this.putSession(hidden ? { ...rest, hidden: true, hiddenAt: Date.now() } : rest)
+		this.onFramesMoved?.(before, this.committedLayout())
+		if (!hidden && this.hiddenLink.peek()?.sessionId === sessionId) this.hiddenLink.set(null)
+		this.frames.setHidden(sessionId, hidden).catch((e) => {
+			console.error('could not change whether the frame is hidden', e)
+			const now = this.sessions.peek()[sessionId]
+			if (now) this.putSession({ ...now, hidden: session.hidden, hiddenAt: session.hiddenAt })
+		})
+	}
+
+	/** Arranges the frames for everyone (edit links): every session id, left to right. */
+	setFrameOrder(sessionIds: string[]) {
+		if (!this.frames) return
+		const before = this.sessionOrder.peek()
+		const current = orderSessions(Object.values(this.sessions.peek()), before).map((s) => s.id)
+		if (arrayEquals(current, sessionIds)) return
+		const layoutBefore = this.committedLayout()
+		this.sessionOrder.set(sessionIds)
+		this.onFramesMoved?.(layoutBefore, this.committedLayout())
+		this.frames.setOrder(sessionIds).catch((e) => {
+			console.error('could not save the frame order', e)
+			this.sessionOrder.set(before)
+		})
+	}
+
+	/** The layout as saved: without a drag in progress. */
+	private committedLayout() {
+		return computeLayout(this.sessions.peek(), this.items.peek(), this.sessionOrder.peek())
+	}
+
+	/** Moves a session to an index of the full order (hidden sessions included). */
+	moveFrame(sessionId: string, index: number) {
+		const ids = this.orderedSessions.get().map((s) => s.id).filter((id) => id !== sessionId)
+		ids.splice(clamp(index, 0, ids.length), 0, sessionId)
+		this.setFrameOrder(ids)
 	}
 
 	// ---------- selection & hover ----------
@@ -625,7 +741,7 @@ export class Editor {
 	/** A group link to a group that's gone: show its session if that's still here. */
 	focusMissingGroup(groupId: string, opts: { animate?: boolean } = {}): boolean {
 		const sessionId = groupId.slice(0, groupId.indexOf('/'))
-		if (!this.sessions.get()[sessionId]) return false
+		if (!this.layout.get().sections.some((s) => s.id === sessionId)) return false
 		this.stopCameraMotion()
 		this.selectNone()
 		this.zoomToSection(sessionId, opts)

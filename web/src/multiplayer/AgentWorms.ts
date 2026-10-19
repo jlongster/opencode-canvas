@@ -10,7 +10,7 @@ import './farAway.css'
 import type { Peer, SubagentInfo } from './Presence'
 import { LIFT, NATIVE, SIZE, TIP_REACH, drawPointer, edgeSpot, hits, openEye, palette, place, standOff, turn, wobble, type EyeState, type Palette, type Shape } from './Pointer'
 
-/** Where it sits, relative to the top-right corner of what the agent is working on. */
+/** Where it sits, relative to the top-right corner of what the agent is working on (page px). */
 const PERCH: Vec = { x: 30, y: -10 }
 /** Trips longer than this (screen px), or entirely off-screen, blink out and pop up there instead of gliding. */
 const GLIDE_MAX = 1600
@@ -336,7 +336,9 @@ export class AgentWorms {
 				if (!rush || this.mayRush(worm)) {
 					if (rush) {
 						worm.rushSeen = rush.at
-						worm.rushNext = !worm.listening
+						// (already there, as when its item is replaced in place: nothing to rush to)
+						const d = worm.dest
+						worm.rushNext = !worm.listening && !(d && Math.hypot(target.point.x - d.x, target.point.y - d.y) <= 1)
 					}
 					worm.goal = pinned ?? target.point
 					worm.focus = target.box
@@ -541,24 +543,24 @@ export class AgentWorms {
 
 	/**
 	 * A cursor if the agent sends one, else a perch just outside the first selected thing. Where it
-	 * rushed to a new item, just outside that item's edge for this zoom, pointing at it.
+	 * rushed to a new item, the spot the server put it at, pointing at it. All page space: zooming
+	 * never moves where it rests.
 	 */
 	private targetFor(peer: Peer): { point: Vec; box: Box | null; rush?: { itemId: string; at: number } } | null {
-		const z = this.editor.camera.peek().z
-		if (peer.cursor) return this.rushed(peer.cursor, peer.user.sessionId, z) ?? { point: { ...peer.cursor }, box: null }
+		if (peer.cursor) return this.rushed(peer.cursor, peer.user.sessionId) ?? { point: { ...peer.cursor }, box: null }
 		for (const key of peer.selection ?? []) {
 			const box = this.editor.getSelectionBounds(key)
 			if (!box) continue
-			return { point: { x: box.x + box.w + PERCH.x / z, y: box.y + PERCH.y / z }, box }
+			return { point: { x: box.x + box.w + PERCH.x, y: box.y + PERCH.y }, box }
 		}
 		return null
 	}
 
 	/**
-	 * Its record rushed to an item (see ConjuredAgent.rush) and it's still there: the same edge of the
-	 * item, as far off it on screen as at 100% zoom.
+	 * Its record rushed to an item (see ConjuredAgent.rush) and it's still there: right where the
+	 * record says (rushSpot, worked out once by the server), facing the item.
 	 */
-	private rushed(cursor: Vec, sessionId: string | undefined, z: number) {
+	private rushed(cursor: Vec, sessionId: string | undefined) {
 		const r = sessionId ? this.conjure?.record(sessionId) : undefined
 		if (!r?.rush || Math.abs(r.x - cursor.x) > 1 || Math.abs(r.y - cursor.y) > 1) return null
 		const box = this.editor.getSelectionBounds(r.rush.itemId)
@@ -567,7 +569,7 @@ export class AgentWorms {
 		// (Unless the item moved without it, as when another one is posted before it: then it stays put.)
 		const there = standOff(at, out, 1)
 		if (Math.abs(there.x - r.x) > 2 || Math.abs(there.y - r.y) > 2) return null
-		return { point: standOff(at, out, z), box, rush: r.rush }
+		return { point: { x: r.x, y: r.y }, box, rush: r.rush }
 	}
 
 	/** Whether it may set off on a rush now: not while its walkthrough is open, or while it's held. */
@@ -754,13 +756,13 @@ export class AgentWorms {
 			worm.pointAt = null
 			return
 		}
-		const z = this.editor.camera.peek().z
+		// (page space, as at 100% zoom, so zooming never moves it)
 		const home = worm.goal ?? worm.root
-		const from = { x: home.x, y: home.y - LIFT / z }
+		const from = { x: home.x, y: home.y - LIFT }
 		const { at, out } = edgeNear(from, box)
-		const reach = (VISIT_PX + TIP_REACH * SIZE) / z
+		const reach = VISIT_PX + TIP_REACH * SIZE
 		worm.pointAt = at
-		worm.visit = { x: at.x + out.x * reach, y: at.y + out.y * reach + LIFT / z }
+		worm.visit = { x: at.x + out.x * reach, y: at.y + out.y * reach + LIFT }
 	}
 
 	private creatureAt(sessionId: string): Vec | null {
@@ -920,7 +922,7 @@ export class AgentWorms {
 			return
 		}
 		const dest = worm.dest
-		if (!dest || Math.hypot(goal.x - dest.x, goal.y - dest.y) * z > 1.5) {
+		if (!dest || Math.hypot(goal.x - dest.x, goal.y - dest.y) > 1) {
 			// Somewhere new.
 			worm.dest = { ...goal }
 			const rush = worm.rushNext

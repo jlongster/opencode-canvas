@@ -240,11 +240,45 @@
 }
 
 .html-drawer-body iframe {
+	border: 0;
+	display: block;
+	color-scheme: normal;
+}
+
+.html-drawer-body.fit iframe {
 	position: absolute;
 	inset: 0;
 	width: 100%;
 	height: 100%;
-	border: 0;
-	display: block;
-	color-scheme: normal;
+}
+
+/* At its design size (set inline); the drawer scrolls it both ways, wheel included (the page
+   itself can't scroll, so the browser hands its wheel to this box). */
+.html-drawer-body.original {
+	overflow: auto;
+	overscroll-behavior: contain;
+}
+
+.html-drawer-mode {
+	flex: none;
+	display: flex;
+	padding: 2px;
+	border-radius: 8px;
+	background: rgba(255, 255, 255, 0.06);
+}
+
+.html-drawer-head .html-drawer-mode button {
+	width: auto;
+	height: 26px;
+	padding: 0 9px;
+	border-radius: 6px;
+	color: #a1a1aa;
+	font: inherit;
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+.html-drawer-head .html-drawer-mode button[aria-pressed='true'] {
+	background: rgba(255, 255, 255, 0.12);
+	color: #f4f4f5;
 }

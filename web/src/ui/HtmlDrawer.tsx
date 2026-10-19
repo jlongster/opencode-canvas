@@ -9,6 +9,7 @@ import { useValue } from './useValue'
 import './htmlDrawer.css'
 
 const WIDTH_KEY = 'canvas.htmlDrawerWidth'
+const MODE_KEY = 'canvas.htmlDrawerMode'
 const MIN_WIDTH = 360
 /** The canvas always shows at least this much to the left of a resized drawer. */
 const MIN_GAP = 48
@@ -21,7 +22,13 @@ const COPIED_MS = 1400
  */
 const SANDBOX = 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads'
 
-type Doc = { srcdoc: string } | { src: string }
+/** For the page it was made for: an iframe's srcdoc is never changed in place (Chrome can leave it blank). */
+type Doc = { key: string; srcdoc?: string; src?: string }
+/**
+ * "fit": scrolls and fits the drawer's width (see forDrawer). "original": exactly as authored, at
+ * its design size like on the canvas, 1:1 in a box the drawer scrolls both ways.
+ */
+type Mode = 'fit' | 'original'
 
 /**
  * An HTML item in a large panel over the right of the canvas, where the page takes input (on the
@@ -56,6 +63,7 @@ function Drawer({ editor, item, closing, onClosed }: { editor: Editor; item: Ite
 	const [resizing, setResizing] = useState(false)
 	const [copied, setCopied] = useState(false)
 	const [doc, setDoc] = useState<Doc | null>(null)
+	const [mode, setMode] = useState(loadMode)
 	const session = useValue(() => editor.sessions.get()[item.sessionId], [item.sessionId])
 	const siblings = useValue(() => htmlSiblings(editor, item.id), [item.id])
 	const src = withBase(item.src)
@@ -69,16 +77,16 @@ function Drawer({ editor, item, closing, onClosed }: { editor: Editor; item: Ite
 	const stepRef = useRef(step)
 	stepRef.current = step
 
+	const docKey = `${item.id}:${mode}`
 	useEffect(() => {
-		setDoc(null)
 		let live = true
 		loadHtml(src).then((html) => {
-			if (live) setDoc(html === null ? { src } : { srcdoc: forDrawer(html, src) })
+			if (live) setDoc(html === null ? { key: docKey, src } : { key: docKey, srcdoc: forDrawer(html, src, mode === 'fit') })
 		})
 		return () => {
 			live = false
 		}
-	}, [src])
+	}, [src, mode, docKey])
 
 	// The rest of the app takes no input (pointer, focus or keys) while the drawer is open.
 	useLayoutEffect(() => {
@@ -200,6 +208,21 @@ function Drawer({ editor, item, closing, onClosed }: { editor: Editor; item: Ite
 							</button>
 						</div>
 					)}
+					<div className="html-drawer-mode" role="group" aria-label="Page size">
+						{(['fit', 'original'] as const).map((m) => (
+							<button
+								key={m}
+								aria-pressed={mode === m}
+								title={m === 'fit' ? 'Reflow the page to the panel’s width, scrolling down' : 'The page exactly as on the canvas, at its design size'}
+								onClick={() => {
+									setMode(m)
+									saveMode(m)
+								}}
+							>
+								{m === 'fit' ? 'Fit width' : 'Original size'}
+							</button>
+						))}
+					</div>
 					<div className="html-drawer-actions">
 						<a href={href} target="_blank" rel="noreferrer" title="Open in a new tab">
 							<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -225,8 +248,17 @@ function Drawer({ editor, item, closing, onClosed }: { editor: Editor; item: Ite
 						</button>
 					</div>
 				</div>
-				<div className="html-drawer-body">
-					{doc && <iframe key={item.id} title={title} sandbox={SANDBOX} {...doc} />}
+				<div className={`html-drawer-body ${mode}`}>
+					{doc?.key === docKey && (
+						<iframe
+							key={doc.key}
+							title={title}
+							sandbox={SANDBOX}
+							style={mode === 'original' ? { width: item.width, height: item.height } : undefined}
+							srcDoc={doc.srcdoc}
+							src={doc.src}
+						/>
+					)}
 				</div>
 			</div>
 		</div>
@@ -255,6 +287,20 @@ function loadWidth(): number | null {
 	} catch {
 		return null
 	}
+}
+
+function loadMode(): Mode {
+	try {
+		return localStorage.getItem(MODE_KEY) === 'original' ? 'original' : 'fit'
+	} catch {
+		return 'fit'
+	}
+}
+
+function saveMode(mode: Mode) {
+	try {
+		localStorage.setItem(MODE_KEY, mode)
+	} catch {}
 }
 
 function saveWidth(w: number | null) {

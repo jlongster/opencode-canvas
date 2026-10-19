@@ -132,15 +132,21 @@ Not for screenshots of real UI: those are images.
 - A fragment is wrapped in a minimal page (UTF-8, no margin, white background, system font).
   A full document (`<!doctype`/`<html>`/`<head>`) is stored as-is.
 - Runs in a sandboxed iframe: scripts allowed, no same-origin, no cookies or access to the
-  site, and no interaction (the canvas takes all input). Make it static.
+  site. On the canvas it takes no input (the canvas takes it all), so design it to read well
+  static. The user can also open it in a side drawer (full height, scrolling, fully
+  interactive), where forms and scripts work and links open in new tabs.
 - Links are the exception: the canvas opens them on click. Use real `<a href="https://…">`
   for anything clickable (plain-text URLs are auto-detected, but anchors are reliable and can
   have nice labels).
 
 Design tips:
 
-- Set `width`/`height` to the size you designed for, and make the root element exactly that
-  size; nothing should scroll or overflow.
+- Set `width`/`height` to the size you designed for: the canvas renders the item at exactly
+  that size, so the page doesn't need to pin itself to it.
+- Design it responsively. Don't hard-code `body{width:…;height:…;overflow:hidden}` (or the same
+  on a full-page wrapper): in the drawer the page is shown at the drawer's width and full
+  height, and scrolls. Use `max-width` containers, fluid grids (`repeat(auto-fit, minmax(…))`,
+  `fr`, `%`) and let the height follow the content.
 - Self-contained: inline styles, inline SVG, images as `data:` URLs; no external resources.
 - Readable at the default size: big enough text (14px+), clear contrast. Dark or light is fine.
 

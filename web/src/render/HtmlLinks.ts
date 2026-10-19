@@ -167,11 +167,63 @@ function fragmentLinks() {
 }
 
 /**
- * The item's HTML for the side drawer, where it takes input: relative URLs resolve as before, and
- * links and forms without a target open in a new tab (most sites refuse to be framed).
+ * Runs inside a drawer document in "fit width" mode: whatever is still wider than the drawer
+ * after FIT_WIDTH_CSS (fixed-width grids and wrappers) is zoomed out to fit, down to minZoom
+ * (past that it scrolls sideways).
  */
-export function forDrawer(html: string, baseHref: string): string {
-	return injectHead(html, `${baseTag(html, baseHref)}<base target="_blank"><script>(${fragmentLinks.toString()})()</script>`)
+function fitWidth(minZoom: number) {
+	document.currentScript?.remove()
+	const root = document.documentElement
+	let timer = 0
+	let width = -1
+	const fit = () => {
+		timer = 0
+		// Measured at full size; both changes land before the next paint.
+		root.style.removeProperty('zoom')
+		const vw = root.clientWidth
+		const sw = root.scrollWidth
+		width = vw
+		if (!vw) return
+		const zoom = sw > vw + 1 ? String(Math.max(minZoom, Math.floor((vw / sw) * 1000) / 1000)) : ''
+		if (zoom) root.style.setProperty('zoom', zoom, 'important')
+	}
+	const schedule = (ms: number) => {
+		if (!timer) timer = setTimeout(fit, ms) as unknown as number
+	}
+	// The frame can start out 0 wide; it fits again once it has a size, and whenever that changes.
+	const resized = () => root.clientWidth !== width && schedule(16)
+	addEventListener('resize', resized)
+	new ResizeObserver(resized).observe(root)
+	addEventListener('load', () => schedule(0))
+	document.fonts?.ready.then(() => schedule(0))
+	// Content added later (scripts rendering the page) can widen it; style changes don't count, ours included.
+	new MutationObserver(() => schedule(200)).observe(document, { subtree: true, childList: true })
+	if (document.readyState === 'loading') addEventListener('DOMContentLoaded', () => schedule(0))
+	else schedule(0)
+}
+
+/**
+ * Pages made for the canvas often pin html/body to the item's size with overflow hidden
+ * (body{width:1440px;height:1020px;overflow:hidden}). In the drawer that stops them scrolling and
+ * reflowing, so only html's and body's own size and overflow are undone; everything inside is left
+ * as authored. Body overflow is visible (not auto) so anything wider spills into the document's
+ * scroller instead of making body a second one. Selectors and !important outrank the page's own.
+ */
+const FIT_WIDTH_CSS =
+	'html:root{overflow:auto!important;width:auto!important;min-width:0!important;max-width:none!important;height:100%!important;min-height:0!important;max-height:none!important}' +
+	'html:root>body{overflow:visible!important;width:auto!important;min-width:0!important;max-width:100%!important;height:auto!important;min-height:100%!important;max-height:none!important}'
+const MIN_FIT_ZOOM = 0.5
+
+/**
+ * The item's HTML for the side drawer, where it takes input: relative URLs resolve as before, and
+ * links and forms without a target open in a new tab (most sites refuse to be framed). With
+ * `fit`, it scrolls and fits the drawer's width (see FIT_WIDTH_CSS and fitWidth); without, it's
+ * exactly as authored, at its design size.
+ */
+export function forDrawer(html: string, baseHref: string, fit: boolean): string {
+	const doc = injectHead(html, `${baseTag(html, baseHref)}<base target="_blank"><script>(${fragmentLinks.toString()})()</script>`)
+	// At the very end, after the page's own styles (the parser puts it in body).
+	return fit ? `${doc}<style>${FIT_WIDTH_CSS}</style><script>(${fitWidth.toString()})(${MIN_FIT_ZOOM})</script>` : doc
 }
 
 function baseTag(html: string, href: string) {

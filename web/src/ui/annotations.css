@@ -244,3 +244,9 @@
 	color: var(--ann-faint);
 	white-space: nowrap;
 }
+
+/* Going away (an agent read it, or it was removed elsewhere): animating out, not interactive. */
+.annotation-card.leaving,
+.annotation-badge.leaving {
+	pointer-events: none;
+}

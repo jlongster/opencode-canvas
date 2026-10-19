@@ -24,7 +24,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { LATEST_PROTOCOL_VERSION, type CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import type {
-	AnnotationView, AttentionAction, Canvas, CanvasData, CanvasSummary, Item, Note, PresenceEntry, ResolvedSelection, Session, SessionView,
+	Annotation, AnnotationView, AttentionAction, Canvas, CanvasData, CanvasSummary, Item, Note, PresenceEntry, ResolvedSelection, Session, SessionView,
 } from '../shared/types'
 import { ATTENTION_TEXT_MAX } from './attention'
 
@@ -36,8 +36,14 @@ export interface CanvasMcpDeps {
 	canvasData(id: string): CanvasData
 	sessionViews(canvasId: string): SessionView[]
 	notes(canvasId: string): Promise<Note[]>
-	/** annotations resolved against their items (see GET /api/canvases/:cid/annotations) */
-	annotations(canvasId: string, filter?: { sessionId?: string; itemId?: string }): Promise<AnnotationView[]>
+	/**
+	 * annotations resolved against their items (see GET /api/canvases/:cid/annotations). Unless `keep`,
+	 * the ones returned are consumed: taken off the canvas (into readerSessionId's creature) and trashed.
+	 */
+	annotations(
+		canvasId: string,
+		filter?: { sessionId?: string; itemId?: string; keep?: boolean; readerSessionId?: string },
+	): Promise<AnnotationView[]>
 	presence(canvasId: string): PresenceEntry[]
 	selections(canvasId: string): Promise<ResolvedSelection[]>
 	createCanvas(title?: string): Canvas
@@ -47,7 +53,12 @@ export interface CanvasMcpDeps {
 	/** same JSON body and validation as PATCH /api/items/:itemId: metadata changes and/or a new file */
 	updateItem(id: string, body: Record<string, unknown>): Promise<Item>
 	deleteItem(id: string): { sessionDeleted: boolean }
-	restore(canvasId: string, sessionIds: string[], itemIds: string[]): { sessions: Session[]; items: Item[] }
+	restore(
+		canvasId: string,
+		sessionIds: string[],
+		itemIds: string[],
+		annotationIds?: string[],
+	): Promise<{ sessions: Session[]; items: Item[]; annotations: Annotation[] }>
 	/** same body and validation as POST /api/canvases/:cid/sessions/:sessionId/actions */
 	queueAction(canvasId: string, sessionId: string, body: Record<string, unknown>): Promise<{ action: AttentionAction; position: number; queued: number }>
 	/** a /media/… path as a file */
@@ -250,7 +261,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'queue them in the order they should be read. Pass sessionId and sessionTitle (your OpenCode session\'s ' +
 					'title) on every post_item, say and highlight. The user gives feedback on a specific spot of an image with ' +
 					'annotations: check list_annotations (filter by your sessionId) for comments on what you posted; their ' +
-					'px/py are pixel coordinates in the original image. To show a new version of something you posted, replace ' +
+					'px/py are pixel coordinates in the original image. Reading annotations consumes them: they disappear from ' +
+					'the canvas once you\'ve read them (pass keep: true to peek; restore brings them back). To show a new version of something you posted, replace ' +
 					'it in place with update_item (path, url or html) rather than posting it again: it keeps its place and comments.',
 			},
 		)
@@ -283,7 +295,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			tool(async ({ canvas }: { canvas: string }) => {
 				const id = canvasId(canvas)
 				const data = deps.canvasData(id)
-				const [sessions, notes, annotations] = [deps.sessionViews(id), await deps.notes(id), await deps.annotations(id)]
+				const [sessions, notes, annotations] = [deps.sessionViews(id), await deps.notes(id), await deps.annotations(id, { keep: true })]
 				return ok({
 					id,
 					title: data.canvas.title,
@@ -441,16 +453,21 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'of the original file, canvas link; sourceItemId and sourceTime in seconds when it is a frame extracted from a ' +
 					'video) and the anchor: x/y normalized to the item (0..1) and px/py, pixel ' +
 					'coordinates in the original image (x × width, y × height). Filter by sessionId (yours, for feedback on what ' +
-					'you posted) or itemId. markedImageUrl is the image with the spot circled.',
+					'you posted) or itemId. markedImageUrl is the image with the spot circled. Reading consumes them: the ' +
+					'annotations returned are taken off the canvas (people see them fly into your creature) and come back with ' +
+					'consumed: true, so act on them now; they wait in the trash for an hour (restore with annotationIds brings ' +
+					'them back). Pass keep: true to just peek.',
 				inputSchema: {
 					canvas: canvasArg,
-					sessionId: z.string().optional().describe('Only annotations on this session\'s items'),
+					sessionId: z.string().optional().describe('Only annotations on this session\'s items (pass yours: your creature picks them up)'),
 					itemId: z.string().optional().describe('Only annotations on this item'),
+					keep: z.boolean().optional().describe('Leave them on the canvas instead of consuming them (default false)'),
 				},
 			},
-			tool(async ({ canvas, sessionId, itemId }: { canvas: string; sessionId?: string; itemId?: string }) => {
+			tool(async ({ canvas, sessionId, itemId, keep }: { canvas: string; sessionId?: string; itemId?: string; keep?: boolean }) => {
 				const id = canvasId(canvas)
-				const list = await deps.annotations(id, { sessionId: sessionId?.trim() || undefined, itemId: itemId?.trim() || undefined })
+				const sid = sessionId?.trim() || undefined
+				const list = await deps.annotations(id, { sessionId: sid, itemId: itemId?.trim() || undefined, keep: !!keep, readerSessionId: sid })
 				return ok(list.map((a) => ({ ...a, ...(a.item.kind !== 'html' ? { markedImageUrl: `${deps.mediaOrigin}/api/canvases/${id}/annotations/${a.id}/image` } : {}) })))
 			}),
 		)
@@ -622,18 +639,24 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			'restore',
 			{
 				description:
-					'Undo deletes made within the last hour: items by id and/or whole sessions by session id. Returns what was restored.',
+					'Undo deletes made within the last hour: items by id and/or whole sessions by session id, and annotations ' +
+					'consumed by list_annotations by annotation id (they go back on the canvas). Returns what was restored.',
 				inputSchema: {
 					canvas: canvasArg,
 					itemIds: z.array(z.string()).optional(),
 					sessionIds: z.array(z.string()).optional(),
+					annotationIds: z.array(z.string()).optional().describe('Annotations consumed by reading them'),
 				},
 			},
-			tool(async ({ canvas, itemIds, sessionIds }: { canvas: string; itemIds?: string[]; sessionIds?: string[] }) => {
+			tool(async ({ canvas, itemIds, sessionIds, annotationIds }: { canvas: string; itemIds?: string[]; sessionIds?: string[]; annotationIds?: string[] }) => {
 				const id = canvasId(canvas)
-				if (!itemIds?.length && !sessionIds?.length) throw new ToolError('give itemIds and/or sessionIds')
-				const restored = deps.restore(id, sessionIds ?? [], itemIds ?? [])
-				return ok({ sessions: restored.sessions.map((s) => ({ id: s.id, title: s.title })), items: restored.items.map(itemSummary) })
+				if (!itemIds?.length && !sessionIds?.length && !annotationIds?.length) throw new ToolError('give itemIds, sessionIds and/or annotationIds')
+				const restored = await deps.restore(id, sessionIds ?? [], itemIds ?? [], annotationIds ?? [])
+				return ok({
+					sessions: restored.sessions.map((s) => ({ id: s.id, title: s.title })),
+					items: restored.items.map(itemSummary),
+					annotations: restored.annotations.map((a) => ({ id: a.id, itemId: a.itemId, text: a.text })),
+				})
 			}),
 		)
 

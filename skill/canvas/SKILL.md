@@ -100,7 +100,7 @@ All bodies are JSON. Paths below are relative to `$API`.
 | `POST` | `/canvases/$CID/sessions/$SID/items` | Add an image/video/HTML: `{"path"}` or `{"url"}`, or multipart `file`, or `{"html", "width", "height"}`; plus `sessionTitle` (always) and optional `group`, `title`, `caption`, `name` |
 | `GET` / `PATCH` / `DELETE` | `/items/<itemId>` | Get / change `group`, `title`, `caption` (`null` clears), `name`, and/or **replace its file** (same `{"path"}`, `{"url"}`, `{"html"}` or multipart `file` as posting; see "Updating an item") / delete (`{"sessionDeleted": true}` if it was the session's last item) |
 | `PATCH` / `DELETE` | `/canvases/$CID/sessions/$SID/groups/<name>` | Rename a group `{"name"}` (`null` ungroups) / delete it and its items |
-| `POST` | `/canvases/$CID/restore` | Undo deletes: `{"itemIds": [...], "sessionIds": [...]}` (either or both) → `{sessions, items}` restored |
+| `POST` | `/canvases/$CID/restore` | Undo deletes: `{"itemIds": [...], "sessionIds": [...], "annotationIds": [...]}` (any of them; annotationIds: annotations consumed by reading them) → `{sessions, items, annotations}` restored |
 | `GET` | `/canvases/$CID/notes` | Sticky notes: `[{id, text, author, color, x, y, createdAt}]` |
 | `GET` | `/canvases/$CID/selection` | What each person on the canvas has selected, resolved to items/sessions/notes |
 | `GET` | `/canvases/$CID/presence` | Who has the canvas open right now |
@@ -285,7 +285,16 @@ item, a line, and a comment. Check them for feedback on what you posted, e.g. wh
 `anchor`: `x`/`y` normalized to the item (0..1) and `px`/`py`, **pixel coordinates in the original
 image** (`x × width`, `y × height`; CSS px for HTML items). `GET $API/canvases/$CID/annotations/<id>/image`
 (`markedImageUrl` in MCP results) returns the image with that spot circled in red, handy to see
-what the comment points at. `get_canvas` lists annotations too.
+what the comment points at.
+
+**Reading annotations consumes them**: once you've read them they disappear from the canvas (people
+see them fly into your session's creature), so read them when you're about to act on them, and
+act on all you got. `list_annotations` consumes what it returns (results have `"consumed": true`);
+pass `keep: true` to just peek. Over HTTP, `GET …/annotations?sessionId=$SID` consumes too
+(`&keep=true` peeks); without `sessionId` it only peeks unless you add `&keep=false`. Consumed
+annotations wait in the trash for an hour (their `markedImageUrl` keeps working): `restore
+{canvas, annotationIds}` (or `POST $API/canvases/$CID/restore {"annotationIds": [...]}`) puts them
+back. `get_canvas` lists annotations too, without consuming them.
 
 ## MCP server
 
@@ -301,9 +310,9 @@ session take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
 - `update_item {itemId, path | url | html, width?, height?, name?, title?, caption?, group?}`: replace an
   item's file in place (a new version of the same visual; see "Updating an item") and/or change its
   metadata (`null` clears title, caption, group).
-- `delete_item`, `restore`: soft-delete, undo deletes.
+- `delete_item`, `restore`: soft-delete, undo deletes (and bring back consumed annotations with `annotationIds`).
 - `list_canvases`, `create_canvas`, `get_canvas` (sessions, groups, items, notes, annotations), `find_items`, `list_notes`.
-- `list_annotations {canvas, sessionId?, itemId?}`: the user's comments pinned to spots on items, with pixel coordinates (see above).
+- `list_annotations {canvas, sessionId?, itemId?, keep?}`: the user's comments pinned to spots on items, with pixel coordinates; reading consumes them unless `keep: true` (see above).
 - `get_item {itemId, includeImage?, fullSize?}`: see an image (or an HTML item's source).
 - `get_selection`: what people on the canvas have selected ("look at this"); `get_presence`: who's there.
 

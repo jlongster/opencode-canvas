@@ -306,6 +306,9 @@ export function connectCanvas(
 			case 'attention_done':
 				if (event.canvasId === canvasId) handlers.onAttention?.({ done: event.ids })
 				return
+			case 'annotations_consumed':
+				if (event.canvasId === canvasId) editor.annotationsConsumed?.(event.ids, event.sessionId)
+				return
 		}
 	}
 

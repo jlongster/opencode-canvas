@@ -154,6 +154,8 @@ export interface AnnotationView {
 	}
 	/** the spot it points at: normalized (0..1) and in pixels of the original image (px = x × width) */
 	anchor: { x: number; y: number; px: number; py: number }
+	/** reading it took it off the canvas (into the trash for an hour: restore brings it back) */
+	consumed?: true
 }
 
 /** Someone on a canvas right now, from the room's Yjs awareness (GET /api/canvases/:cid/presence). */
@@ -270,3 +272,8 @@ export type ServerEvent =
 	| { type: 'conjured_deleted'; canvasId: string; sessionId: string }
 	| { type: 'attention'; action: AttentionAction }
 	| { type: 'attention_done'; canvasId: string; ids: string[] }
+	/**
+	 * Annotations an agent just read, sent right before they're removed from the room document, so
+	 * open canvases can animate them away (into the reading session's creature, if it has one).
+	 */
+	| { type: 'annotations_consumed'; canvasId: string; sessionId?: string; ids: string[] }

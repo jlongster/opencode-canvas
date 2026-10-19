@@ -312,6 +312,8 @@ export class AgentWorms {
 	private carry: Carry
 	/** markers at the edges of the view for creatures out of it */
 	private offscreen: Offscreen
+	/** spots creatures are sent to point at for a moment (see Creatures in Editor.ts) */
+	private reaching = new Map<string, Vec>()
 
 	constructor(
 		parent: HTMLElement,
@@ -336,6 +338,7 @@ export class AgentWorms {
 		this.labels.appendChild(this.tip)
 		// for poking at from the console, like window.editor
 		;(window as any).creatures = this
+		editor.creatures = { at: (sessionId) => this.creatureAt(sessionId), reaching: this.reaching }
 		const track = (e: PointerEvent) => {
 			this.pointer = e.pointerType !== 'touch' && this.overCanvas(e) ? this.local(e) : null
 			this.pointerOver = e.target as Element | null
@@ -442,6 +445,7 @@ export class AgentWorms {
 
 	destroy() {
 		for (const d of this.disposers.splice(0)) d()
+		if (this.editor.creatures?.reaching === this.reaching) this.editor.creatures = null
 		this.slaps.destroy()
 		this.carry.clear()
 		this.offscreen.destroy()
@@ -814,6 +818,8 @@ export class AgentWorms {
 			const step = walk?.steps[walk.index]
 			if (step?.kind === 'highlight' && step.target) box = a.targetBox(step.target)
 		}
+		const spot = sid ? this.reaching.get(sid) : undefined
+		if (!box && spot) box = { x: spot.x, y: spot.y, w: 0, h: 0 }
 		if (!box) {
 			worm.visit = null
 			worm.pointAt = null
@@ -826,6 +832,13 @@ export class AgentWorms {
 		const reach = (VISIT_PX + TIP_REACH * SIZE) / z
 		worm.pointAt = at
 		worm.visit = { x: at.x + out.x * reach, y: at.y + out.y * reach + LIFT / z }
+	}
+
+	private creatureAt(sessionId: string): Vec | null {
+		for (const w of this.worms.values()) {
+			if (w.sessionId === sessionId && !w.gone && !w.leaving) return { x: w.root.x, y: w.root.y - LIFT / this.editor.camera.peek().z }
+		}
+		return null
 	}
 
 	private syncLabel(worm: Worm, peer: Peer, now: number) {

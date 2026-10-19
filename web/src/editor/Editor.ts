@@ -63,6 +63,14 @@ export interface AnnotationDrafts {
 	cancel(): void
 }
 
+/** Sessions' creatures (set by AgentWorms), so others can send one somewhere for a moment (see SharedAnnotations). */
+export interface Creatures {
+	/** where a session's creature is (page, its centre), or null when it isn't showing */
+	at(sessionId: string): Vec | null
+	/** spots (page) creatures go to point at, by session id, instead of where they'd be */
+	reaching: Map<string, Vec>
+}
+
 /** Arranging session frames (edit links): saved on the canvas server, for everyone. */
 export interface FrameBackend {
 	setHidden(sessionId: string, hidden: boolean): Promise<unknown>
@@ -200,6 +208,10 @@ export class Editor {
 	createNote: ((point: Vec) => void) | null = null
 	/** Set when annotations can be added (edit role); see AnnotationDrafts. */
 	annotationDrafts: AnnotationDrafts | null = null
+	/** Set by SharedAnnotations: an agent read these annotations (sessionId: its session, if known), animate them away. */
+	annotationsConsumed: ((ids: string[], sessionId?: string) => void) | null = null
+	/** Set by AgentWorms; see Creatures. */
+	creatures: Creatures | null = null
 	/** Set by the renderer: the link in an HTML item at a screen point, if any (ignoring what's on top). */
 	linkAt: ((point: Vec) => HtmlLink | null) | null = null
 	readonly deletions = new Deletions(this)

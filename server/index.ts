@@ -12,7 +12,7 @@ import { AttentionError, createAttention } from './attention'
 import { ConjureError, createConjured } from './conjured'
 import { imageSize } from './imageSize'
 import { createCanvasMcp } from './mcp'
-import { discardRoom, getRoomSnapshot, readRoomDoc, roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
+import { changeRoomDoc, discardRoom, getRoomSnapshot, readRoomDoc, roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
 import type { Server, ServerWebSocket } from 'bun'
 
 const PORT = Number(process.env.PORT ?? 4410)
@@ -63,13 +63,16 @@ interface StoredIndex {
 }
 
 /**
- * Deleted items and sessions wait in the trash for TRASH_MS (their files stay on disk), so they can
- * be restored with POST /api/canvases/:cid/restore. They're hidden from every API response.
+ * Deleted items and sessions, and annotations agents have read, wait in the trash for TRASH_MS
+ * (their files stay on disk), so they can be restored with POST /api/canvases/:cid/restore.
+ * They're hidden from every API response.
  */
 type TrashEntry =
 	| { kind: 'item'; item: Item; deletedAt: number }
 	/** itemIds: the items that were deleted along with the session */
 	| { kind: 'session'; session: Session; itemIds: string[]; deletedAt: number }
+	/** fields: the annotation's Y.Map entries in the room document, as they were */
+	| { kind: 'annotation'; canvasId: string; id: string; fields: Record<string, unknown>; deletedAt: number }
 
 const TRASH_MS = 60 * 60 * 1000
 const TRASH_SWEEP_MS = 5 * 60 * 1000
@@ -82,12 +85,18 @@ const db: { canvases: Map<string, Canvas>; sessions: Map<string, Session>; items
 	sessions: new Map(),
 	items: new Map(),
 }
-/** keyed "item:<id>" and "session:<canvasId>/<sessionId>" */
+/** keyed "item:<id>", "session:<canvasId>/<sessionId>" and "annotation:<id>" */
 const trash = new Map<string, TrashEntry>()
 let storedConjured: ConjuredAgent[] = []
 let storedAttention: AttentionAction[] = []
 const trashKey = (entry: TrashEntry) =>
-	entry.kind === 'item' ? `item:${entry.item.id}` : `session:${sessionKey(entry.session.canvasId, entry.session.id)}`
+	entry.kind === 'item'
+		? `item:${entry.item.id}`
+		: entry.kind === 'session'
+			? `session:${sessionKey(entry.session.canvasId, entry.session.id)}`
+			: `annotation:${entry.id}`
+const trashCanvas = (entry: TrashEntry) =>
+	entry.kind === 'item' ? entry.item.canvasId : entry.kind === 'session' ? entry.session.canvasId : entry.canvasId
 
 if (existsSync(INDEX_FILE)) {
 	const stored = (await Bun.file(INDEX_FILE).json()) as StoredIndex
@@ -927,10 +936,36 @@ function restoreItem(canvasId: string, id: string, restored: { sessions: Session
 	restored.items.push(item)
 }
 
-function restore(canvasId: string, sessionIds: string[], itemIds: string[]) {
-	const restored: { sessions: Session[]; items: Item[] } = { sessions: [], items: [] }
+async function restore(canvasId: string, sessionIds: string[], itemIds: string[], annotationIds: string[] = []) {
+	const restored: { sessions: Session[]; items: Item[]; annotations: Annotation[] } = { sessions: [], items: [], annotations: [] }
 	for (const id of sessionIds) restoreSession(canvasId, id, restored)
 	for (const id of itemIds) restoreItem(canvasId, id, restored)
+	if (annotationIds.length) restored.annotations = await restoreAnnotations(canvasId, annotationIds)
+	return restored
+}
+
+/** Puts annotations from the trash back into the canvas's room document (live for everyone there). */
+async function restoreAnnotations(canvasId: string, ids: string[]): Promise<Annotation[]> {
+	const entries = ids.flatMap((id) => {
+		const entry = trash.get(`annotation:${id}`)
+		return entry?.kind === 'annotation' && entry.canvasId === canvasId ? [entry] : []
+	})
+	if (!entries.length) return []
+	const restored = await changeRoomDoc(`canvas-${canvasId}`, (doc) => {
+		const map = doc.getMap<Y.Map<unknown>>('annotations')
+		const back: Annotation[] = []
+		for (const entry of entries) {
+			if (!map.has(entry.id)) {
+				const a = new Y.Map<unknown>()
+				for (const [key, value] of Object.entries(entry.fields)) a.set(key, value)
+				map.set(entry.id, a)
+			}
+			back.push(annotationFrom(entry.id, map.get(entry.id)!))
+		}
+		return back
+	})
+	for (const entry of entries) trash.delete(trashKey(entry))
+	save()
 	return restored
 }
 
@@ -939,7 +974,7 @@ async function purgeTrash(opts: { canvasId?: string } = {}) {
 	const cutoff = Date.now() - TRASH_MS
 	let changed = false
 	for (const [key, entry] of [...trash]) {
-		const canvasId = entry.kind === 'item' ? entry.item.canvasId : entry.session.canvasId
+		const canvasId = trashCanvas(entry)
 		if (opts.canvasId ? canvasId !== opts.canvasId : entry.deletedAt > cutoff) continue
 		trash.delete(key)
 		changed = true
@@ -1064,35 +1099,86 @@ function readNotes(doc: Y.Doc): Note[] {
 function readAnnotations(doc: Y.Doc): Annotation[] {
 	const list: Annotation[] = []
 	for (const [id, a] of doc.getMap<Y.Map<unknown>>('annotations')) {
-		if (!(a instanceof Y.Map)) continue
-		const num = (key: string) => Number(a.get(key) ?? 0) || 0
-		const updatedAt = num('updatedAt')
-		list.push({
-			id,
-			itemId: String(a.get('itemId') ?? ''),
-			x: num('x'),
-			y: num('y'),
-			ox: num('ox'),
-			oy: num('oy'),
-			...(num('len') ? { len: num('len') } : {}),
-			text: String(a.get('text') ?? ''),
-			author: String(a.get('author') ?? ''),
-			color: String(a.get('color') ?? ''),
-			createdAt: num('createdAt'),
-			...(updatedAt ? { updatedAt } : {}),
-		})
+		if (a instanceof Y.Map) list.push(annotationFrom(id, a))
 	}
 	return list.sort((a, b) => a.createdAt - b.createdAt)
 }
+
+/** One annotation from its fields: a room document's Y.Map, or a trash entry's copy of one. */
+function annotationFrom(id: string, a: Y.Map<unknown> | Record<string, unknown>): Annotation {
+	const get = (key: string) => (a instanceof Y.Map ? a.get(key) : a[key])
+	const num = (key: string) => Number(get(key) ?? 0) || 0
+	const updatedAt = num('updatedAt')
+	return {
+		id,
+		itemId: String(get('itemId') ?? ''),
+		x: num('x'),
+		y: num('y'),
+		ox: num('ox'),
+		oy: num('oy'),
+		...(num('len') ? { len: num('len') } : {}),
+		text: String(get('text') ?? ''),
+		author: String(get('author') ?? ''),
+		color: String(get('color') ?? ''),
+		createdAt: num('createdAt'),
+		...(updatedAt ? { updatedAt } : {}),
+	}
+}
+
+type AnnotationFilter = { sessionId?: string; itemId?: string }
 
 /**
  * A canvas's annotations resolved against their items, oldest first, optionally only those on one
  * session's items or one item. Annotations on deleted items are left out (they come back with an undo).
  */
-async function annotationViews(canvasId: string, filter: { sessionId?: string; itemId?: string } = {}): Promise<AnnotationView[]> {
+async function annotationViews(canvasId: string, filter: AnnotationFilter = {}): Promise<AnnotationView[]> {
 	const canvas = getCanvas(canvasId)
+	return resolveAnnotations(canvas, await readRoomDoc(`canvas-${canvas.id}`, readAnnotations), filter)
+}
+
+/**
+ * Reads annotations the way an agent does: like annotationViews, but unless `keep`, the ones
+ * returned are taken off the canvas (live for everyone looking, who first get an
+ * annotations_consumed event to animate them away, into `readerSessionId`'s creature if it has one)
+ * and wait in the trash for an hour (see restore). Read and removal are one step, so two readers
+ * never both get the same annotation.
+ */
+async function readAnnotationsAsAgent(
+	canvasId: string,
+	filter: AnnotationFilter & { keep?: boolean; readerSessionId?: string } = {},
+): Promise<AnnotationView[]> {
+	const canvas = getCanvas(canvasId)
+	if (filter.keep) return annotationViews(canvas.id, filter)
+	const deletedAt = Date.now()
+	const taken = await changeRoomDoc(`canvas-${canvas.id}`, (doc) => {
+		const map = doc.getMap<Y.Map<unknown>>('annotations')
+		const views = resolveAnnotations(canvas, readAnnotations(doc), filter)
+		if (!views.length) return null
+		broadcast({
+			type: 'annotations_consumed',
+			canvasId: canvas.id,
+			...(filter.readerSessionId ? { sessionId: filter.readerSessionId } : {}),
+			ids: views.map((v) => v.id),
+		})
+		const entries: TrashEntry[] = []
+		for (const v of views) {
+			const a = map.get(v.id)
+			if (!(a instanceof Y.Map)) continue
+			entries.push({ kind: 'annotation', canvasId: canvas.id, id: v.id, fields: a.toJSON(), deletedAt })
+			map.delete(v.id)
+		}
+		return { views, entries }
+	})
+	if (!taken) return []
+	for (const entry of taken.entries) trash.set(trashKey(entry), entry)
+	save()
+	return taken.views.map((v) => ({ ...v, consumed: true as const }))
+}
+
+/** Annotations resolved against their items (see annotationViews). */
+function resolveAnnotations(canvas: Canvas, list: Annotation[], filter: AnnotationFilter): AnnotationView[] {
 	const views: AnnotationView[] = []
-	for (const a of await readRoomDoc(`canvas-${canvas.id}`, readAnnotations)) {
+	for (const a of list) {
 		const item = db.items.get(a.itemId)
 		if (!item || item.canvasId !== canvas.id) continue
 		if (filter.itemId && item.id !== filter.itemId) continue
@@ -1141,7 +1227,11 @@ function findMarkFont() {
  */
 async function markedImage(canvasId: string, annotationId: string): Promise<Response> {
 	if (!HAS_FFMPEG) throw new HttpError(501, 'marking images needs ffmpeg on the canvas server')
-	const all = await annotationViews(canvasId)
+	// Annotations an agent has read are in the trash, but the image it was handed still works.
+	const canvas = getCanvas(canvasId)
+	const trashed = [...trash.values()].flatMap((t) => (t.kind === 'annotation' && t.canvasId === canvas.id ? [annotationFrom(t.id, t.fields)] : []))
+	const live = await readRoomDoc(`canvas-${canvas.id}`, readAnnotations)
+	const all = resolveAnnotations(canvas, [...live, ...trashed].sort((a, b) => a.createdAt - b.createdAt), {})
 	const a = all.find((v) => v.id === annotationId)
 	if (!a) throw new HttpError(404, `no annotation ${annotationId} on this canvas`)
 	const item = getItem(a.item.id)
@@ -1286,9 +1376,10 @@ const API_INDEX = {
 			'Delete an item (restorable for an hour). Deleting a session\'s last item deletes the session too ' +
 			'(the response says {"sessionDeleted": true})',
 		'POST /api/canvases/:cid/restore':
-			'Undo deletes within an hour of them. Body: {"itemIds": [...], "sessionIds": [...]} (either or both). ' +
-			'A session comes back with the items deleted along with it; an item brings back its session if that was ' +
-			'deleted too. Returns {"sessions", "items"}: what was restored',
+			'Undo deletes within an hour of them. Body: {"itemIds": [...], "sessionIds": [...], "annotationIds": [...]} ' +
+			'(any of them; annotationIds: annotations consumed by reading them). A session comes back with the items ' +
+			'deleted along with it; an item brings back its session if that was deleted too. Returns {"sessions", ' +
+			'"items", "annotations"}: what was restored',
 		'PATCH /api/canvases/:cid/sessions/:sessionId/groups/:group': 'Rename a group. Body: {"name"} (null ungroups its items)',
 		'DELETE /api/canvases/:cid/sessions/:sessionId/groups/:group': 'Delete a group and all its items (restorable for an hour)',
 		'GET /api/canvases/:cid/presence':
@@ -1298,7 +1389,10 @@ const API_INDEX = {
 		'GET /api/canvases/:cid/notes': 'The canvas\'s sticky notes: [{"id", "text", "author", "color", "x", "y", "createdAt"}]',
 		'GET /api/canvases/:cid/annotations':
 			'The user\'s annotations: comments pinned to a spot on an item, oldest first. Optional ?sessionId= (only that ' +
-			'session\'s items) and ?itemId=. Each: {"id", "text", "author", "createdAt", "item": {"id", "kind", "name", "title", ' +
+			'session\'s items) and ?itemId=. Reading with ?sessionId= consumes them: the ones returned are taken off the ' +
+			'canvas (they fly into your creature, and wait in the trash for an hour: restore them with ' +
+			'POST /api/canvases/:cid/restore {"annotationIds"}) and come back with "consumed": true. ?keep=true peeks ' +
+			'instead; without ?sessionId= nothing is consumed unless you send ?keep=false. Each: {"id", "text", "author", "createdAt", "item": {"id", "kind", "name", "title", ' +
 			'"group", "sessionId", "sessionTitle", "width", "height", "url" (the original file), "link", "sourceItemId" and ' +
 			'"sourceTime" (seconds) when the item is a frame extracted from a video}, "anchor": {"x", "y" ' +
 			'(0..1 across the item), "px", "py" (pixels in the original image: x × width, y × height)}}',
@@ -1591,11 +1685,14 @@ async function handle(req: Request): Promise<Response> {
 	m = /^\/api\/canvases\/([^/]+)\/restore$/.exec(p)
 	if (m && method === 'POST') {
 		const canvas = getCanvas(decodeURIComponent(m[1]))
-		const body = (await req.json().catch(() => ({}))) as { itemIds?: unknown; sessionIds?: unknown }
+		const body = (await req.json().catch(() => ({}))) as { itemIds?: unknown; sessionIds?: unknown; annotationIds?: unknown }
 		const sessionIds = idList(body?.sessionIds, 'sessionIds')
 		const itemIds = idList(body?.itemIds, 'itemIds')
-		if (!sessionIds.length && !itemIds.length) throw new HttpError(400, 'send {"itemIds": [...]} and/or {"sessionIds": [...]}')
-		return json(restore(canvas.id, sessionIds, itemIds))
+		const annotationIds = idList(body?.annotationIds, 'annotationIds')
+		if (!sessionIds.length && !itemIds.length && !annotationIds.length) {
+			throw new HttpError(400, 'send {"itemIds": [...]}, {"sessionIds": [...]} and/or {"annotationIds": [...]}')
+		}
+		return json(await restore(canvas.id, sessionIds, itemIds, annotationIds))
 	}
 
 	// ---- live room state: presence, notes, selections ----
@@ -1603,7 +1700,11 @@ async function handle(req: Request): Promise<Response> {
 	m = /^\/api\/canvases\/([^/]+)\/annotations$/.exec(p)
 	if (m && method === 'GET') {
 		const q = new URL(req.url).searchParams
-		return json(await annotationViews(decodeURIComponent(m[1]), { sessionId: q.get('sessionId') ?? undefined, itemId: q.get('itemId') ?? undefined }))
+		const sessionId = q.get('sessionId') || undefined
+		// Agents read their feedback with ?sessionId=, which consumes it; anything else peeks unless it asks.
+		const keepParam = q.get('keep')
+		const keep = keepParam === null ? !sessionId : !/^(0|false|no)$/i.test(keepParam)
+		return json(await readAnnotationsAsAgent(decodeURIComponent(m[1]), { sessionId, itemId: q.get('itemId') || undefined, keep, readerSessionId: sessionId }))
 	}
 
 	m = /^\/api\/canvases\/([^/]+)\/annotations\/([^/]+)\/image$/.exec(p)
@@ -1785,7 +1886,7 @@ const mcp = createCanvasMcp({
 	canvasData: (id) => canvasData(getCanvas(id)),
 	sessionViews: (canvasId) => orderedSessions(canvasId).map(sessionView),
 	notes: (canvasId) => readRoomDoc(`canvas-${canvasId}`, readNotes),
-	annotations: annotationViews,
+	annotations: readAnnotationsAsAgent,
 	presence,
 	selections: resolveSelections,
 	createCanvas: (title) => createCanvas(canvasTitle(title)),

@@ -30,7 +30,10 @@ On a canvas you can then:
   past one marks it done for everyone.
 - **Annotate** (toolbar → comment tool, or `A`): press on a spot of an image and drag, then type a
   comment. Everyone sees it live, and agents read it with the spot's pixel coordinates in the
-  original image (`list_annotations`), so you can give feedback on exactly that spot.
+  original image (`list_annotations`), so you can give feedback on exactly that spot. Reading
+  consumes them: once an agent has read your annotations they disappear from the canvas, flying
+  into its creature (agents can peek with `keep: true`, and `restore` brings them back within an
+  hour).
 - **Arrange frames**: drag a frame by its title to move it, or hide it with the eye on its title.
   The frame count at the bottom left opens a list of every frame, hidden ones included, to show,
   hide and reorder them. The arrangement is shared with everyone on the canvas.
@@ -97,7 +100,7 @@ ln -s "$PWD/skill/canvas" ~/.config/opencode/skills/canvas
 `http://localhost:4545/mcp`, with tools to list and create canvases, post, update and delete items
 (`update_item` replaces an item's image, video or HTML in place: same id, place and comments, moved
 to the top of its group, swapped live on open canvases), see what people have selected, read sticky notes and annotations (comments pinned to a spot of an
-image, with pixel coordinates: `list_annotations`), and `say` / `highlight` to queue things for you to
+image, with pixel coordinates: `list_annotations`, which consumes them unless `keep: true`), and `say` / `highlight` to queue things for you to
 look at on the session's creature. It's only a tool provider: agents using it don't appear on the
 canvas themselves. In your OpenCode config:
 

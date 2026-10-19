@@ -23,6 +23,19 @@ const SVG = 'http://www.w3.org/2000/svg'
 const RING_R = 6
 /** Gap (screen px) between the anchor and its collapsed number chip. */
 const BADGE_GAP = 9
+/**
+ * Annotations an agent read (consumed, see consume): its creature visits at most this many in turn,
+ * waiting up to VISIT_MS for it to get to each (close: within VISIT_NEAR_PX screen px of the anchor),
+ * then the annotation shrinks into it over PICKUP_MS. The rest fade out over FADE_MS.
+ */
+const MAX_VISITS = 6
+const VISIT_MS = 1300
+const VISIT_NEAR_PX = 110
+const VISIT_SETTLE_MS = 90
+const PICKUP_MS = 320
+const FADE_MS = 280
+/** a removal from elsewhere waits this long for the annotations_consumed event that may explain it */
+const ORPHAN_WAIT_MS = 400
 
 /** A comment being written: anchored on an item, its card at (ox, oy) item widths from the anchor. */
 interface Draft {
@@ -56,6 +69,10 @@ export class SharedAnnotations {
 	private pinned = new Set<string>()
 	private hovered: string | null = null
 	private hoverTimer = 0
+	/** views going away (consumed by an agent, or removed elsewhere), kept until their animation ends */
+	private leaving = new Set<string>()
+	/** removed elsewhere, waiting a moment in case it was consumed (see ORPHAN_WAIT_MS) */
+	private orphans = new Map<string, number>()
 	private disposers: (() => void)[] = []
 	readonly editable: boolean
 
@@ -75,10 +92,16 @@ export class SharedAnnotations {
 		this.host.appendChild(this.svg)
 		parent.appendChild(this.host)
 
-		const onChange = () => this.sync()
+		const onChange = (_: unknown, tx: Y.Transaction) => this.sync(!tx.local)
 		this.map.observeDeep(onChange)
 		this.disposers.push(() => this.map.unobserveDeep(onChange))
 		this.sync()
+
+		editor.annotationsConsumed = (ids, sessionId) => void this.consume(ids, sessionId)
+		this.disposers.push(() => {
+			editor.annotationsConsumed = null
+			for (const t of this.orphans.values()) clearTimeout(t)
+		})
 
 		if (this.editable) {
 			editor.annotationDrafts = {
@@ -241,8 +264,90 @@ export class SharedAnnotations {
 		this.editor.deletions.deleteAnnotations([id])
 	}
 
-	/** Create, update and remove views to match the document. */
-	private sync() {
+	/**
+	 * An agent read these annotations, and they're about to go from the document (or just went):
+	 * with its creature on the canvas, it glides over to each in turn and the annotation shrinks into
+	 * it; otherwise (or for ones off-screen, or too many) they fade out.
+	 */
+	private async consume(ids: string[], sessionId?: string) {
+		const views = ids
+			.filter((id) => this.views.has(id) && !this.leaving.has(id))
+			.map((id) => this.views.get(id)!)
+			.sort((a, b) => a.data!.createdAt - b.data!.createdAt)
+		for (const view of views) {
+			this.leaving.add(view.id!)
+			clearTimeout(this.orphans.get(view.id!))
+			this.orphans.delete(view.id!)
+			view.setLeaving()
+		}
+		const creatures = this.editor.creatures
+		const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+		const fade: CardView[] = []
+		let visits = 0
+		for (const view of views) {
+			const anchor = this.anchorOf(view)
+			const can = !still && sessionId && creatures?.at(sessionId) && anchor && visits < MAX_VISITS && this.onScreen(anchor)
+			if (!can) {
+				fade.push(view)
+				continue
+			}
+			visits++
+			creatures!.reaching.set(sessionId!, anchor!)
+			const reached = await this.until(() => {
+				const at = creatures!.at(sessionId!)
+				const a = this.anchorOf(view)
+				if (!at || !a) return true
+				const s = this.editor.pageToScreen(at)
+				const t = this.editor.pageToScreen(a)
+				return Math.hypot(s.x - t.x, s.y - t.y) < VISIT_NEAR_PX
+			}, VISIT_MS)
+			if (reached) await wait(VISIT_SETTLE_MS)
+			const at = creatures!.at(sessionId!)
+			if (at) await view.shrinkInto(this.editor.pageToScreen(at), PICKUP_MS)
+			else await view.fadeOut(FADE_MS)
+			this.finishLeaving(view)
+		}
+		if (sessionId && visits && creatures?.reaching.get(sessionId)) creatures.reaching.delete(sessionId)
+		await Promise.all(fade.map(async (view) => (await view.fadeOut(FADE_MS), this.finishLeaving(view))))
+	}
+
+	/** A view's animation ended: it goes, unless it came back into the document meanwhile (restored). */
+	private finishLeaving(view: CardView) {
+		const id = view.id!
+		if (!this.leaving.delete(id)) return
+		if (this.map.has(id)) return view.setLeaving(false)
+		view.destroy()
+		if (this.views.get(id) === view) this.views.delete(id)
+		this.pinned.delete(id)
+	}
+
+	private anchorOf(view: CardView): Vec | null {
+		const a = view.data
+		const box = a && this.itemBox(a.itemId)
+		return a && box ? { x: box.x + a.x * box.w, y: box.y + a.y * box.h } : null
+	}
+
+	private onScreen(page: Vec) {
+		const p = this.editor.pageToScreen(page)
+		const { w, h } = this.editor.viewport.peek()
+		return p.x >= 0 && p.y >= 0 && p.x <= w && p.y <= h
+	}
+
+	/** Resolves true once `done()` holds (checked every animation frame), or false after `ms`. */
+	private until(done: () => boolean, ms: number): Promise<boolean> {
+		const start = performance.now()
+		return new Promise((resolve) => {
+			const check = () => {
+				if (done()) return resolve(true)
+				if (performance.now() - start > ms) return resolve(false)
+				requestAnimationFrame(check)
+			}
+			check()
+		})
+	}
+
+	/** Create, update and remove views to match the document (`remote`: the change came from elsewhere). */
+	private sync(remote = false) {
 		const live = new Set<string>()
 		const byItem = new Map<string, CardView[]>()
 		for (const [id, a] of this.map.entries()) {
@@ -264,7 +369,22 @@ export class SharedAnnotations {
 			list.forEach((view, i) => view.setNumber(i + 1))
 		}
 		for (const [id, view] of this.views) {
-			if (live.has(id)) continue
+			if (live.has(id) || this.leaving.has(id) || this.orphans.has(id)) continue
+			// Gone from elsewhere: it may be an agent reading it, whose event (on another socket) can
+			// come a moment later; if it doesn't, it just fades out.
+			if (remote) {
+				view.setLeaving()
+				this.orphans.set(
+					id,
+					window.setTimeout(() => {
+						this.orphans.delete(id)
+						if (this.leaving.has(id)) return
+						this.leaving.add(id)
+						void view.fadeOut(FADE_MS).then(() => this.finishLeaving(view))
+					}, ORPHAN_WAIT_MS),
+				)
+				continue
+			}
 			view.destroy()
 			this.views.delete(id)
 			this.pinned.delete(id)
@@ -663,6 +783,36 @@ class CardView {
 		this.card.remove()
 	}
 
+	/** Going away: no longer interactive (or back to normal, when it came back). */
+	setLeaving(on = true) {
+		for (const el of [this.card, this.badge, this.lines]) {
+			el.classList.toggle('leaving', on)
+			if (!on) for (const anim of el.getAnimations()) anim.cancel()
+		}
+	}
+
+	/** Picked up: the card, chip and line shrink into a screen point (a creature) as they fade. */
+	shrinkInto(point: Vec, ms: number): Promise<unknown> {
+		const easing = 'cubic-bezier(0.5, 0, 0.75, 0)'
+		const origin = `${point.x}px ${point.y}px`
+		// Card and chip are placed with transform, so they shrink with scale (applied around the point:
+		// they sit at the layer's origin untransformed); the SVG line has no transform of its own.
+		const anims = [this.card, this.badge].map((el) => {
+			el.style.transformOrigin = origin
+			return el.animate([{ scale: '1', opacity: 1 }, { scale: '0.04', opacity: 0 }], { duration: ms, easing, fill: 'forwards' })
+		})
+		this.lines.style.transformOrigin = origin
+		anims.push(this.lines.animate([{ transform: 'scale(1)', opacity: 1 }, { transform: 'scale(0.04)', opacity: 0 }], { duration: ms, easing, fill: 'forwards' }))
+		return Promise.all(anims.map((a) => a.finished.catch(() => {})))
+	}
+
+	fadeOut(ms: number): Promise<unknown> {
+		const anims = [this.card, this.badge, this.lines].map((el) =>
+			el.animate([{ opacity: 1, scale: '1' }, { opacity: 0, scale: '0.92' }], { duration: ms, easing: 'ease-in', fill: 'forwards' }),
+		)
+		return Promise.all(anims.map((a) => a.finished.catch(() => {})))
+	}
+
 	/**
 	 * A press on the card or chip: the canvas underneath never sees it. Dragging moves the card
 	 * (edit links); a click on a collapsed chip keeps the card open.
@@ -716,6 +866,10 @@ function svgEl<K extends 'line' | 'circle'>(tag: K, className: string): SVGEleme
 	const el = document.createElementNS(SVG, tag)
 	el.classList.add(className)
 	return el
+}
+
+function wait(ms: number) {
+	return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /** "just now", "5m ago", "3h ago", "2d ago", then the date. */

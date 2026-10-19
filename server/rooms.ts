@@ -236,6 +236,57 @@ export async function readRoomDoc<T>(name: string, read: (doc: Y.Doc) => T): Pro
 	}
 }
 
+/**
+ * Changes a room's document in one transaction: the live one if the room is loaded (everyone in it
+ * sees the change at once, and it's saved as usual), otherwise the saved file, with the room held
+ * from loading until it's written back.
+ */
+export async function changeRoomDoc<T>(name: string, change: (doc: Y.Doc) => T): Promise<T> {
+	for (;;) {
+		const room = rooms.get(name) ?? (await loading.get(name)?.catch(() => undefined))
+		if (room && rooms.get(name) === room) {
+			let result!: T
+			room.doc.transact(() => {
+				result = change(room.doc)
+			})
+			return result
+		}
+		const pending = flushing.get(name)
+		if (pending) {
+			await pending
+			continue
+		}
+		if (loading.has(name)) continue
+		let result!: T
+		const write = (async () => {
+			const doc = new Y.Doc()
+			try {
+				const path = persistPath(name)
+				if (path) {
+					const file = Bun.file(path)
+					if (await file.exists()) Y.applyUpdate(doc, new Uint8Array(await file.arrayBuffer()))
+				}
+				doc.transact(() => {
+					result = change(doc)
+				})
+				await saveRoom(name, doc)
+			} finally {
+				doc.destroy()
+			}
+		})()
+		const done = write.then(
+			() => {},
+			() => {},
+		)
+		flushing.set(name, done)
+		done.finally(() => {
+			if (flushing.get(name) === done) flushing.delete(name)
+		})
+		await write
+		return result
+	}
+}
+
 function handleMessage(room: Room, ws: Socket, bytes: Uint8Array) {
 	try {
 		const decoder = decoding.createDecoder(bytes)

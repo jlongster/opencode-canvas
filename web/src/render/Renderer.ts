@@ -9,6 +9,7 @@ import { VideoPool } from './VideoPool'
 import { EXTRACT_ICON, VideoControls } from './VideoControls'
 import { LinkHover, loadHtml, makeNonce, parseLinkMessage, withLinkReporter, type FrameTransform } from './HtmlLinks'
 import { url as withBase } from '../base'
+import './frameButtons.css'
 
 const THUMB_SIZE = 512
 const ITEM_RADIUS = 6
@@ -1063,9 +1064,18 @@ const EYE_OFF_ICON =
 	'<path d="M10.7 5.1a10.7 10.7 0 0 1 11.2 6.6 1 1 0 0 1 0 .7 10.7 10.7 0 0 1-1.4 2.5"/><path d="M14.1 14.2a3 3 0 0 1-4.2-4.2"/>' +
 	'<path d="M17.5 17.5a10.8 10.8 0 0 1-15.4-5.2 1 1 0 0 1 0-.7 10.8 10.8 0 0 1 4.4-5.1"/><path d="m2 2 20 20"/></svg>'
 
+/** On-screen size of a frame title's hide and remove buttons (keep in step with frameButtons.css). */
+const BUTTON_PX = 24
+/** Page-space height of the title line: 1.2 × LAYOUT.frameTitlePx. */
+const TITLE_LINE_PX = 48
+const MIN_FRAME_PX_FOR_BUTTONS = 220
+/** How much of the title (on screen) must stay visible beside the buttons, if it is that long. */
+const MIN_TITLE_PX_BESIDE_BUTTONS = 96
+
 /** Section titles as DOM text, positioned in screen space so they stay crisp and readable at any zoom. */
 class SectionLabels {
 	private els = new Map<string, HTMLDivElement>()
+	private titleWidths = new Map<string, number>()
 	private host: HTMLDivElement
 
 	constructor(
@@ -1085,6 +1095,11 @@ class SectionLabels {
 		const el = document.createElement('div')
 		el.className = 'section-label'
 		el.innerHTML = '<span class="title"></span>'
+		if (!this.onHide && !this.onClose) return el
+		// Screen-space buttons at the end of the title row (see frameButtons.css and update's room rule).
+		const buttons = document.createElement('span')
+		buttons.className = 'frame-buttons'
+		el.appendChild(buttons)
 		const onHide = this.onHide
 		if (onHide) {
 			const hide = document.createElement('button')
@@ -1097,7 +1112,7 @@ class SectionLabels {
 				e.stopPropagation()
 				onHide(id)
 			})
-			el.appendChild(hide)
+			buttons.appendChild(hide)
 		}
 		const onClose = this.onClose
 		if (!onClose) return el
@@ -1105,7 +1120,7 @@ class SectionLabels {
 		button.className = 'close'
 		button.title = 'Remove this session'
 		button.textContent = '×'
-		el.appendChild(button)
+		buttons.appendChild(button)
 		let armTimer = 0
 		const disarm = () => {
 			clearTimeout(armTimer)
@@ -1189,8 +1204,24 @@ class SectionLabels {
 				title.textContent = label
 				title.title = untitled ? s.id : ''
 				title.style.opacity = untitled ? '0.6' : ''
+				// Page-space width of the whole title (its font size is fixed, so this only changes with the text).
+				this.titleWidths.set(s.id, title.scrollWidth)
 			}
-			place(el, shift(s.header), Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx))
+			const scale = Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx)
+			place(el, shift(s.header), scale)
+			if (this.onHide || this.onClose) {
+				// The buttons keep a constant screen size inside the scaled label, and only show when the
+				// frame is wide enough, the title line is tall enough, and the title keeps enough room.
+				el.style.setProperty('--u', String(1 / scale))
+				const width = s.header.w * z
+				const buttons = (this.onHide ? BUTTON_PX : 0) + (this.onClose ? BUTTON_PX : 0) + 2 + 16 * scale
+				const titleWidth = (this.titleWidths.get(s.id) ?? 0) * scale
+				const roomy =
+					s.box.w * z >= MIN_FRAME_PX_FOR_BUTTONS &&
+					TITLE_LINE_PX * scale >= BUTTON_PX &&
+					width - buttons >= Math.min(titleWidth, MIN_TITLE_PX_BESIDE_BUTTONS)
+				el.classList.toggle('roomy', roomy)
+			}
 			el.style.opacity = String(d.opacity)
 			el.classList.toggle('hovered', s.id === hoveredFrameId && !liftedId)
 			el.classList.toggle('lifted', s.id === liftedId)
@@ -1240,6 +1271,7 @@ class SectionLabels {
 			if (seen.has(id)) continue
 			el.remove()
 			this.els.delete(id)
+			this.titleWidths.delete(id)
 		}
 	}
 

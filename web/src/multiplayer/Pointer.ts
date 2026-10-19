@@ -255,6 +255,12 @@ export interface DrawOpts {
 
 /** Draws a placed pointer: shadow, flat fill, rim and bevel lit from the top left, and its eye. */
 export function drawPointer(ctx: CanvasRenderingContext2D, shape: Shape, pal: Palette, eye: EyeState, opts: DrawOpts) {
+	drawBody(ctx, shape, pal, opts)
+	drawEye(ctx, shape.eye, shape.eyeR, eye, pal, Math.cos(shape.heading) < 0 ? -1 : 1)
+}
+
+/** Draws a placed pointer without its eye (people's cursors use this too, see PeerCursors). */
+export function drawBody(ctx: CanvasRenderingContext2D, shape: Shape, pal: Palette, opts: DrawOpts) {
 	const { path, scale } = shape
 	const dpr = opts.dpr
 	ctx.save()
@@ -306,7 +312,6 @@ export function drawPointer(ctx: CanvasRenderingContext2D, shape: Shape, pal: Pa
 		}
 	}
 	ctx.restore()
-	drawEye(ctx, shape.eye, shape.eyeR, eye, pal, Math.cos(shape.heading) < 0 ? -1 : 1)
 }
 
 /** The eye: white, a black pupil with a catchlight (always up and to the right), its lid from the top. */

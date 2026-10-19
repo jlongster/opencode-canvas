@@ -3,9 +3,14 @@ import type { Vec } from '../editor/geometry'
 import { AgentWorms } from './AgentWorms'
 import type { Attention } from './Attention'
 import type { Conjure } from './Conjure'
+import { NATIVE, drawBody, palette, place } from './Pointer'
 import type { Peer, Presence } from './Presence'
 
 const EASE_MS = 45
+/** how tall a person's cursor is on screen, px: a normal cursor, a bit smaller than a creature */
+const CURSOR_H = 21
+/** room round it in its little canvas for the shadow, px */
+const PAD = 4
 
 /**
  * Other people's cursors, drawn as DOM in screen space. Positions are eased toward the latest
@@ -16,7 +21,17 @@ export class PeerCursors {
 	private host: HTMLDivElement
 	private cursors = new Map<
 		number,
-		{ el: HTMLDivElement; label: HTMLSpanElement; message: HTMLSpanElement; shown: Vec; color: string; name: string; chat: string | null }
+		{
+			el: HTMLDivElement
+			canvas: HTMLCanvasElement
+			label: HTMLSpanElement
+			message: HTMLSpanElement
+			shown: Vec
+			color: string
+			dpr: number
+			name: string
+			chat: string | null
+		}
 	>()
 	private worms: AgentWorms
 	private dispose: () => void
@@ -54,17 +69,23 @@ export class PeerCursors {
 				const el = document.createElement('div')
 				el.className = 'peer-cursor'
 				el.innerHTML =
-					'<svg width="18" height="18" viewBox="0 0 18 18"><path d="M2 1.5 L15.5 8.2 L9.2 9.6 L6.4 15.6 Z" stroke="white" stroke-width="1.3" stroke-linejoin="round"/></svg>' +
+					'<canvas></canvas>' +
 					'<span class="peer-cursor-label"><span class="peer-cursor-name"></span><span class="peer-cursor-message"></span></span>'
+				const canvas = el.querySelector('canvas')!
 				const label = el.querySelector<HTMLSpanElement>('.peer-cursor-label')!
 				const message = el.querySelector<HTMLSpanElement>('.peer-cursor-message')!
 				this.host.appendChild(el)
-				c = { el, label, message, shown: { ...peer.cursor }, color: '', name: '', chat: null }
+				const cursor = { el, canvas, label, message, shown: { ...peer.cursor }, color: '', dpr: 0, name: '', chat: null }
+				// (it's drawn once, so draw it again if the GPU resets and wipes it)
+				canvas.addEventListener('contextrestored', () => (cursor.dpr = 0))
+				c = cursor
 				this.cursors.set(peer.clientId, c)
 			}
-			if (c.color !== peer.user.color) {
+			const dpr = window.devicePixelRatio || 1
+			if (c.color !== peer.user.color || c.dpr !== dpr) {
 				c.color = peer.user.color
-				c.el.querySelector('path')!.setAttribute('fill', c.color)
+				c.dpr = dpr
+				drawCursor(c.canvas, c.color, dpr)
 				c.label.style.background = c.color
 			}
 			if (c.name !== peer.user.name) {
@@ -81,7 +102,8 @@ export class PeerCursors {
 			c.shown.x += (peer.cursor.x - c.shown.x) * k
 			c.shown.y += (peer.cursor.y - c.shown.y) * k
 			const p = this.editor.pageToScreen(c.shown)
-			c.el.style.transform = `translate(${p.x}px, ${p.y}px)`
+			// (on whole device pixels, so its bitmap stays crisp)
+			c.el.style.transform = `translate(${Math.round(p.x * dpr) / dpr}px, ${Math.round(p.y * dpr) / dpr}px)`
 			c.el.classList.toggle('followed', peer.clientId === followingId)
 		}
 
@@ -103,4 +125,48 @@ export class PeerCursors {
 		this.worms.destroy()
 		this.host.remove()
 	}
+}
+
+let cursorShape: { box: { x: number; y: number; w: number; h: number }; draw: (ctx: CanvasRenderingContext2D, dpr: number, color: string) => void } | null =
+	null
+
+/**
+ * A person's cursor: the creatures' wedge (see Pointer) without the eye, at its native heading (tip
+ * up-left, like a normal pointer), with the very tip of its rounded point on the hotspot (0, 0).
+ */
+function cursorGeometry() {
+	if (cursorShape) return cursorShape
+	const probe = place({ x: 0, y: 0 }, NATIVE, 1)
+	const ys = probe.ring.map((p) => p.y)
+	const scale = CURSOR_H / (Math.max(...ys) - Math.min(...ys))
+	const shape0 = place({ x: 0, y: 0 }, NATIVE, scale)
+	const dir = { x: Math.cos(NATIVE), y: Math.sin(NATIVE) }
+	const tip = shape0.ring.reduce((a, p) => (p.x * dir.x + p.y * dir.y > a.x * dir.x + a.y * dir.y ? p : a))
+	const shape = place({ x: -tip.x, y: -tip.y }, NATIVE, scale)
+	const xs = shape.ring.map((p) => p.x)
+	const ys2 = shape.ring.map((p) => p.y)
+	const x = Math.floor(Math.min(...xs)) - PAD
+	const y = Math.floor(Math.min(...ys2)) - PAD
+	const box = { x, y, w: Math.ceil(Math.max(...xs)) + PAD - x, h: Math.ceil(Math.max(...ys2)) + PAD + 1 - y }
+	cursorShape = {
+		box,
+		draw: (ctx, dpr, color) => {
+			ctx.setTransform(dpr, 0, 0, dpr, -box.x * dpr, -box.y * dpr)
+			drawBody(ctx, shape, palette(color), { dpr })
+		},
+	}
+	return cursorShape
+}
+
+function drawCursor(canvas: HTMLCanvasElement, color: string, dpr: number) {
+	const { box, draw } = cursorGeometry()
+	canvas.width = Math.round(box.w * dpr)
+	canvas.height = Math.round(box.h * dpr)
+	canvas.style.width = `${box.w}px`
+	canvas.style.height = `${box.h}px`
+	canvas.style.left = `${box.x}px`
+	canvas.style.top = `${box.y}px`
+	const ctx = canvas.getContext('2d')!
+	ctx.clearRect(0, 0, canvas.width, canvas.height)
+	draw(ctx, dpr, color)
 }

@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { sessionColor } from '../../../shared/sessionColor'
 import type { Editor } from '../editor/Editor'
 import { frameKey } from '../editor/selection'
+import type { Conjure } from '../multiplayer/Conjure'
 import { atom } from '../state/signals'
+import { RAIL_KIND, railWord } from './rail'
 import { useValue } from './useValue'
 import './frames.css'
 
-/** Whether the frames list is open (the attention tray opens it for creatures of hidden frames). */
+/** Whether the frames list is open (the attention tray opens it for hidden frames' sessions). */
 export const framesPanelOpen = atom('framesPanelOpen', false)
 
 /** Pointer travel (px) before pressing a row becomes dragging it */
@@ -21,14 +23,20 @@ interface Row {
 	hidden: boolean
 	/** hidden, with items posted since it was hidden */
 	fresh: boolean
+	/** its status rail's glyph kind and state word, for live frames */
+	live: { kind: string; word: string } | null
 }
+
+/** at most this many live frames' glyphs in the frames pill */
+const PILL_GLYPHS_MAX = 5
 
 /**
  * Bottom left: the connection dot and "6 frames · 2 hidden · 143 items", which opens the list of
  * every session frame in order. On edit links the list hides and shows frames and reorders them
- * by dragging; on view links it only shows them.
+ * by dragging; on view links it only shows them. Live frames (conjured sessions, sessions calling
+ * for attention) show their status glyph in both.
  */
-export function FramesStatus({ editor, canEdit }: { editor: Editor; canEdit: boolean }) {
+export function FramesStatus({ editor, canEdit, conjure }: { editor: Editor; canEdit: boolean; conjure: Conjure | null }) {
 	const connection = useValue(() => editor.connection.get())
 	const counts = useValue(() => {
 		const sessions = Object.values(editor.sessions.get())
@@ -43,6 +51,14 @@ export function FramesStatus({ editor, canEdit }: { editor: Editor; canEdit: boo
 		return `${text} — ${item.width}×${item.height}`
 	})
 	const open = useValue(() => framesPanelOpen.get())
+	const liveJson = useValue(() => {
+		const sessions = editor.sessions.get()
+		const list = [...(conjure?.statuses.get().values() ?? [])]
+			.filter((s) => sessions[s.sessionId] && !sessions[s.sessionId].hidden)
+			.map((s) => ({ id: s.sessionId, kind: RAIL_KIND[s.state], word: railWord(s), color: s.color }))
+		return JSON.stringify(list)
+	}, [conjure])
+	const live = useMemo(() => JSON.parse(liveJson) as { id: string; kind: string; word: string; color: string }[], [liveJson])
 	const rootRef = useRef<HTMLDivElement>(null)
 	const [visible, hidden, items, selected] = counts.split('·').map(Number)
 
@@ -73,6 +89,13 @@ export function FramesStatus({ editor, canEdit }: { editor: Editor; canEdit: boo
 				onPointerDown={(e) => e.stopPropagation()}
 				onClick={() => framesPanelOpen.set(!open)}
 			>
+				{live.length > 0 && (
+					<span className="frames-pill-live" title={live.map((l) => l.word).join(', ')}>
+						{live.slice(0, PILL_GLYPHS_MAX).map((l) => (
+							<i key={l.id} className={`rg rg-${l.kind}`} style={{ ['--c' as string]: l.color }} />
+						))}
+					</span>
+				)}
 				{plural(visible, 'frame')}
 				{hidden > 0 && ` · ${hidden} hidden`} · {plural(items, 'item')}
 				{selected > 0 && ` · ${selected} selected`}
@@ -81,12 +104,12 @@ export function FramesStatus({ editor, canEdit }: { editor: Editor; canEdit: boo
 				</svg>
 			</button>
 			{hovered && <span className="hovered">{hovered}</span>}
-			{open && <FramesPanel editor={editor} canEdit={canEdit} />}
+			{open && <FramesPanel editor={editor} canEdit={canEdit} conjure={conjure} />}
 		</div>
 	)
 }
 
-function FramesPanel({ editor, canEdit }: { editor: Editor; canEdit: boolean }) {
+function FramesPanel({ editor, canEdit, conjure }: { editor: Editor; canEdit: boolean; conjure: Conjure | null }) {
 	const json = useValue(() => {
 		const counts = new Map<string, number>()
 		const latest = new Map<string, number>()
@@ -94,8 +117,10 @@ function FramesPanel({ editor, canEdit }: { editor: Editor; canEdit: boolean }) 
 			counts.set(item.sessionId, (counts.get(item.sessionId) ?? 0) + 1)
 			latest.set(item.sessionId, Math.max(latest.get(item.sessionId) ?? 0, item.createdAt))
 		}
+		const statuses = conjure?.statuses.get()
 		const rows: Row[] = editor.orderedSessions.get().map((s) => {
 			const untitled = !s.title.trim() || s.title === s.id
+			const status = statuses?.get(s.id)
 			return {
 				id: s.id,
 				title: untitled ? 'Untitled session' : s.title,
@@ -104,6 +129,7 @@ function FramesPanel({ editor, canEdit }: { editor: Editor; canEdit: boolean }) 
 				items: counts.get(s.id) ?? 0,
 				hidden: !!s.hidden,
 				fresh: !!s.hidden && !!s.hiddenAt && (latest.get(s.id) ?? 0) > s.hiddenAt,
+				live: status ? { kind: RAIL_KIND[status.state], word: railWord(status) } : null,
 			}
 		})
 		return JSON.stringify(rows)
@@ -200,7 +226,7 @@ function FramesPanel({ editor, canEdit }: { editor: Editor; canEdit: boolean }) 
 								</svg>
 							</span>
 						)}
-						<i className="frames-dot" />
+						{row.live ? <i className={`frames-glyph rg rg-${row.live.kind}`} title={row.live.word} style={{ ['--c' as string]: row.color }} /> : <i className="frames-dot" />}
 						<span className={`frames-title${row.untitled ? ' untitled' : ''}`}>{row.title}</span>
 						{row.fresh && <span className="frames-new" title="New items since it was hidden" />}
 						<span className="frames-count">{row.items}</span>

@@ -31,9 +31,9 @@ export interface CanvasData {
 	canvas: Canvas
 	sessions: Session[]
 	items: Item[]
-	/** OpenCode sessions on it as creatures (conjured from a browser, or called up by an agent's say/highlight) */
+	/** OpenCode sessions conjured onto it from a browser: live frames (see ConjuredAgent) */
 	conjured: ConjuredAgent[]
-	/** what sessions' creatures want people to look at, oldest first (see AttentionAction) */
+	/** what sessions want people to look at, oldest first (see AttentionAction) */
 	attention: AttentionAction[]
 }
 
@@ -158,7 +158,7 @@ export interface AnnotationView {
 /** Someone on a canvas right now, from the room's Yjs awareness (GET /api/canvases/:cid/presence). */
 export interface PresenceEntry {
 	clientId: number
-	/** agent: not a person (no pointer); conjured: a creature for an OpenCode session you can talk to (see ConjuredAgent) */
+	/** agent: not a person (no pointer); conjured: the live status of a conjured OpenCode session (see ConjuredAgent), published by its owner's tab */
 	user: { name: string; color: string; agent?: boolean; conjured?: boolean; sessionId?: string; serverKey?: string }
 	/** item ids as they are, "frame:<sessionId>" for session frames, "note:<noteId>" for sticky notes */
 	selection: string[]
@@ -169,7 +169,7 @@ export interface PresenceEntry {
 	chat: string | null
 	/** false while the chat message is still being typed (or, for agents, streamed) */
 	chatSent?: boolean
-	/** conjured worms: their OpenCode session is working (on a canvas prompt or anything else) */
+	/** conjured sessions: working (on a canvas prompt or anything else) */
 	thinking?: boolean
 }
 
@@ -200,11 +200,10 @@ export interface SeedResult {
 }
 
 /**
- * An OpenCode session on a canvas as a creature (at most one per session per canvas). It sits at
- * (x, y) in page coordinates. The canvas server keeps only this record, with no credentials: the
- * owner's browser (ownerId) talks to OpenCode and publishes the creature's presence into the room
- * while its tab is open; otherwise it sleeps. Creatures the server made for an agent's say/highlight
- * have no owner (ownerId and serverKey ""), until someone conjures that session and adopts it.
+ * An OpenCode session conjured onto a canvas (at most one per session per canvas): its frame comes
+ * alive, with a status rail along its top. The canvas server keeps only this record, with no
+ * credentials: the owner's browser (ownerId) talks to OpenCode and publishes the session's live
+ * status into the room while its tab is open; otherwise it's asleep.
  */
 export interface ConjuredAgent {
 	canvasId: string
@@ -213,10 +212,8 @@ export interface ConjuredAgent {
 	serverKey: string
 	title: string
 	color: string
-	x: number
-	y: number
 	createdAt: number
-	/** random id kept in the owner browser's localStorage; only that browser can prompt it ("" for none) */
+	/** random id kept in the owner browser's localStorage; only that browser can prompt it */
 	ownerId: string
 	/** in list responses: an owner tab is publishing its presence right now */
 	awake?: boolean
@@ -237,7 +234,7 @@ export interface ResolvedSelection {
 }
 
 /**
- * One thing a session's creature wants people on the canvas to look at, queued with the MCP say /
+ * One thing a session wants people on the canvas to look at, queued with the MCP say /
  * highlight tools (or POST /api/canvases/:cid/sessions/:sid/actions). The queue plays in order;
  * stepping past an action on an edit link marks it done, which removes it for everyone.
  */

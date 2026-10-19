@@ -79,24 +79,22 @@ export function uploadItem(
 	return request<Item>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/items`, { method: 'POST', body: form })
 }
 
-// ---------- conjured worms (records; the owner's browser runs them, see multiplayer/WormHost.ts) ----------
+// ---------- conjured sessions (records; the owner's browser runs them, see multiplayer/SessionHost.ts) ----------
 
 const conjuredPath = (canvasId: string, sessionId?: string) =>
 	`/api/canvases/${encodeURIComponent(canvasId)}/conjured${sessionId ? `/${encodeURIComponent(sessionId)}` : ''}`
 
 export const listConjured = (canvasId: string) => request<ConjuredAgent[]>(conjuredPath(canvasId))
-/** Brings an OpenCode session onto the canvas as a worm at page position (x, y). Fails with status 409 if it's already here. */
-export const conjure = (
-	canvasId: string,
-	worm: { sessionId: string; serverKey: string; ownerId: string; title: string; x: number; y: number },
-) => request<ConjuredAgent>(conjuredPath(canvasId), json('POST', worm))
+/** Conjures an OpenCode session onto the canvas (its frame comes alive). Fails with status 409 if it's already here. */
+export const conjure = (canvasId: string, session: { sessionId: string; serverKey: string; ownerId: string; title: string }) =>
+	request<ConjuredAgent>(conjuredPath(canvasId), json('POST', session))
 export const banishConjured = (canvasId: string, sessionId: string) =>
 	request<unknown>(conjuredPath(canvasId, sessionId), { method: 'DELETE' })
-/** Moves the worm and/or renames it. */
-export const updateConjured = (canvasId: string, sessionId: string, changes: { x?: number; y?: number; title?: string }) =>
+/** Renames a conjured session (its session's title changed). */
+export const updateConjured = (canvasId: string, sessionId: string, changes: { title: string }) =>
 	request<ConjuredAgent>(conjuredPath(canvasId, sessionId), json('PATCH', changes))
 
-// ---------- attention (creatures' queued says and highlights, see server/attention.ts) ----------
+// ---------- attention (sessions' queued says and highlights, see server/attention.ts) ----------
 
 const actionsPath = (canvasId: string, sessionId: string, actionId?: string) =>
 	`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/actions${actionId ? `/${encodeURIComponent(actionId)}` : ''}`
@@ -222,7 +220,7 @@ export function connectCanvas(
 	handlers: {
 		onLoad: (canvas: Canvas, first: boolean) => void
 		onCanvas: (canvas: Canvas) => void
-		/** the canvas's conjured worms: all of them on every load, then each change */
+		/** the canvas's conjured sessions: all of them on every load, then each change */
 		onConjured?: (change: { all: ConjuredAgent[] } | { put: ConjuredAgent } | { deleted: string }) => void
 		/** the canvas's queued attention actions: all of them on every load, then each change */
 		onAttention?: (change: { all: AttentionAction[] } | { put: AttentionAction } | { done: string[] }) => void

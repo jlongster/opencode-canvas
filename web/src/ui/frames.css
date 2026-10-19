@@ -22,6 +22,14 @@
 	color: #e4e4e7;
 }
 
+/* live frames' status glyphs, in the pill */
+.frames-pill-live {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 10px;
+}
+
 .frames-caret {
 	color: #71717a;
 	transition: transform 120ms;
@@ -140,6 +148,11 @@
 	background: var(--session-color);
 }
 
+.frames-glyph {
+	font-size: 11px;
+	margin: 0 0.06em;
+}
+
 .frames-title {
 	flex: 1;
 	min-width: 0;
@@ -210,6 +223,7 @@
 
 .frames-row.is-hidden .frames-title,
 .frames-row.is-hidden .frames-dot,
+.frames-row.is-hidden .frames-glyph,
 .frames-row.is-hidden .frames-count {
 	opacity: 0.45;
 }

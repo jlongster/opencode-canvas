@@ -358,7 +358,7 @@ export function ServerList({ servers, errors }: { servers: Pairing[]; errors: Re
 						</span>
 						<button
 							className={`oc-unpair${confirming === s.key ? ' confirming' : ''}`}
-							title={confirming === s.key ? 'Click again to unpair: your loopers from it fall asleep' : 'Unpair this server (forget it in this browser)'}
+							title={confirming === s.key ? 'Click again to unpair: sessions you conjured from it fall asleep' : 'Unpair this server (forget it in this browser)'}
 							onClick={() => remove(s)}
 							onBlur={() => confirming === s.key && setConfirming(null)}
 						>

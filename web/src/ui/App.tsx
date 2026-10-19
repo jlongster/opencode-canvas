@@ -3,7 +3,6 @@ import { Editor, type ToolId } from '../editor/Editor'
 import { describeError, Renderer } from '../render/Renderer'
 import { atom, react } from '../state/signals'
 import type { AttentionAction, Canvas, ConjuredAgent } from '../../../shared/types'
-import { Box } from '../editor/geometry'
 import { frameKey } from '../editor/selection'
 import {
 	connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, setSessionHidden, setSessionOrder, viewUrl, type CanvasLink,
@@ -12,22 +11,21 @@ import { Attention } from '../multiplayer/Attention'
 import { Conjure } from '../multiplayer/Conjure'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
+import { Rails } from '../multiplayer/Rails'
 import { SharedAnnotations } from '../multiplayer/SharedAnnotations'
 import { SharedNotes } from '../multiplayer/SharedNotes'
 import { Summon } from '../multiplayer/Summon'
 import { AttentionTray, Walkthrough } from './Attention'
-import { ConjureButton, ConjurePicker, ConjurePrompt } from './Conjure'
+import { ConjureButton, ConjurePicker } from './Conjure'
 import { CursorChat } from './CursorChat'
 import { DeepLink } from './deepLink'
 import { FramesStatus, HiddenLinkToast } from './FramesPanel'
 import { NotFound } from './NotFound'
 import { SeedPicker } from './SeedPicker'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
+import { SessionDialog } from './SessionDialog'
 import { useValue } from './useValue'
 import { API_BASE } from '../base'
-
-/** How far above a frame (page px) a creature still counts as sitting on it, in its title */
-const CREATURE_REACH = 200
 
 /** The last used select/hand tool is remembered across reloads; the note and annotate tools never are. */
 const TOOL_KEY = 'canvas.tool'
@@ -71,6 +69,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 	const [presence, setPresence] = useState<Presence | null>(null)
 	const [conjure, setConjure] = useState<Conjure | null>(null)
 	const [attention, setAttention] = useState<Attention | null>(null)
+	const [rails, setRails] = useState<Rails | null>(null)
 	// the strip under the top bar where the attention tray and the auto-seed progress stack
 	const [topStack, setTopStack] = useState<HTMLDivElement | null>(null)
 	const role = link.role
@@ -84,7 +83,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 		let disposed = false
 		let loaded = false
 		const disposers: (() => void)[] = []
-		// The canvas's conjured worms, from the canvas server (loaded with the canvas, then live).
+		// The canvas's conjured sessions, from the canvas server (loaded with the canvas, then live).
 		const conjured = atom<ConjuredAgent[]>('conjured', [])
 		// What their sessions queued for attention (loaded with the canvas, then live).
 		const queued = atom<AttentionAction[]>('attention', [])
@@ -170,27 +169,28 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					const p = live
 					const notes = new SharedNotes(overlayRef.current!, editor, p, link.role)
 					const annotations = new SharedAnnotations(overlayRef.current!, editor, p, link.role)
-					// Edit links can talk to conjured worms; view links just watch them.
-					const spells = new Conjure(editor, p, c.id, link.role === 'edit', conjured, () => canvasTitle)
+					// Edit links can talk to their own conjured sessions; view links just watch them.
+					const spells = new Conjure(editor, p, c.id, link.role === 'edit', conjured, queued, () => canvasTitle)
 					// Edit links mark what they step through done; view links only look.
 					const calls = new Attention(editor, spells, c.id, link.role === 'edit', queued)
-					const cursors = new PeerCursors(overlayRef.current!, editor, p, spells, calls)
-					disposers.push(() => cursors.destroy(), () => calls.destroy(), () => spells.destroy(), () => notes.destroy(), () => annotations.destroy(), () => p.destroy())
-					if (link.role === 'edit') {
-						const summon = new Summon(editor, spells, container)
-						// Creatures sitting on a frame (or its title) move along when frames are hidden, shown or reordered here.
-						editor.onFramesMoved = (before, after) => {
-							for (const r of conjured.peek()) {
-								const from = before.sections.find((s) => Box.contains({ ...s.box, y: s.box.y - CREATURE_REACH, h: s.box.h + CREATURE_REACH }, r))
-								const to = from && after.sections.find((s) => s.id === from.id)
-								if (to && to.box.x !== from.box.x) void spells.move(r.sessionId, { x: Math.round(r.x + to.box.x - from.box.x), y: r.y }).catch(() => {})
-							}
-						}
-						disposers.push(() => summon.destroy(), () => (editor.onFramesMoved = null))
-					}
+					const cursors = new PeerCursors(overlayRef.current!, editor, p)
+					const statusRails = new Rails(overlayRef.current!, editor, spells, calls)
+					// C over a frame opens its dialog (read-only on view links); over empty canvas, the picker (edit links).
+					const summon = new Summon(editor, spells, container, link.role === 'edit')
+					disposers.push(
+						() => summon.destroy(),
+						() => statusRails.destroy(),
+						() => cursors.destroy(),
+						() => calls.destroy(),
+						() => spells.destroy(),
+						() => notes.destroy(),
+						() => annotations.destroy(),
+						() => p.destroy(),
+					)
 					setPresence(p)
 					setConjure(spells)
 					setAttention(calls)
+					setRails(statusRails)
 					;(window as any).presence = p
 					;(window as any).conjure = spells
 					;(window as any).attention = calls
@@ -229,9 +229,9 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			<ToolPicker editor={editor} withEditTools={!!presence && role === 'edit'} />
 			{presence && <FollowIndicator presence={presence} />}
 			{presence && <CursorChat editor={editor} presence={presence} />}
-			{conjure?.canPrompt && <ConjurePrompt editor={editor} conjure={conjure} />}
-			{conjure?.canPrompt && canvas && <ConjurePicker editor={editor} conjure={conjure} canvasId={canvas.id} />}
-			{attention && conjure && <Walkthrough editor={editor} attention={attention} conjure={conjure} />}
+			{conjure && attention && rails && <SessionDialog editor={editor} conjure={conjure} attention={attention} rails={rails} />}
+			{conjure?.canPrompt && <ConjurePicker editor={editor} conjure={conjure} />}
+			{attention && conjure && rails && <Walkthrough editor={editor} attention={attention} conjure={conjure} rails={rails} />}
 			<div className="top-stack" ref={setTopStack}>
 				{attention && <AttentionTray attention={attention} />}
 			</div>
@@ -254,7 +254,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					<Toolbar editor={editor} canvas={role === 'edit' ? canvas : null} conjure={conjure?.canPrompt ? conjure : null} />
 				</div>
 			</div>
-			<FramesStatus editor={editor} canEdit={role === 'edit'} />
+			<FramesStatus editor={editor} canEdit={role === 'edit'} conjure={conjure} />
 			<UndoToast editor={editor} />
 			<HiddenLinkToast editor={editor} canEdit={role === 'edit'} />
 			{canvas && <EmptyState editor={editor} canvas={canvas} role={role} topStack={topStack} />}
@@ -372,24 +372,13 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 			</svg>
 		),
 	},
-	{
-		id: 'slap',
-		label: "Slap a looper · interrupts it if it's yours and working",
-		key: 'S',
-		icon: (
-			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-				<path d="M9 12.5V6.2a1.5 1.5 0 0 1 3 0V11V4.6a1.5 1.5 0 0 1 3 0V11V5.6a1.5 1.5 0 0 1 3 0V12V8.6a1.5 1.5 0 0 1 3 0v5.4a7 7 0 0 1-7 7h-.8a6.5 6.5 0 0 1-5-2.4l-3.1-3.8a1.5 1.5 0 0 1 2.3-1.9z" />
-				<path d="M2 7.5h2.5M1.5 11h2.5" />
-			</svg>
-		),
-	},
 ]
 
 function ToolPicker({ editor, withEditTools }: { editor: Editor; withEditTools: boolean }) {
 	const current = useValue(() => editor.currentToolId.get())
 	return (
 		<div className="toolbar tools" onPointerDown={(e) => e.stopPropagation()}>
-			{TOOLS.filter((tool) => withEditTools || (tool.id !== 'note' && tool.id !== 'annotate' && tool.id !== 'slap')).map((tool) => (
+			{TOOLS.filter((tool) => withEditTools || (tool.id !== 'note' && tool.id !== 'annotate')).map((tool) => (
 				<button
 					key={tool.id}
 					title={`${tool.label} (${tool.key})`}
@@ -430,7 +419,6 @@ function Toolbar({ editor, canvas, conjure }: { editor: Editor; canvas: Canvas |
 						<ConjureButton
 							editor={editor}
 							conjure={conjure}
-							canvasId={canvas.id}
 							open={conjuring}
 							setOpen={(open) => {
 								setConjuring(open)

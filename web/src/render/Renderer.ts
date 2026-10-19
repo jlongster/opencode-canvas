@@ -1,7 +1,7 @@
 import type { Item } from '../../../shared/types'
 import { GROUP_OUTLINE_PADDING, type Editor, type HtmlLink } from '../editor/Editor'
 import { Box, clamp } from '../editor/geometry'
-import { LAYOUT, type SectionLayout } from '../editor/layout'
+import { frameTitlePlacement, LAYOUT, type SectionLayout } from '../editor/layout'
 import { frameKey } from '../editor/selection'
 import { imageShader, rectShader, videoShader } from './shaders'
 import { TextureCache } from './TextureCache'
@@ -1080,6 +1080,8 @@ class SectionLabels {
 			// Follow the frame's eased position while the layout animates.
 			const dx = d.x - s.box.x
 			const dy = d.y - s.box.y
+			if (dx || dy) editor.frameShift.set(s.id, { x: dx, y: dy })
+			else editor.frameShift.delete(s.id)
 			const shift = (b: Box): Box => ({ x: b.x + dx, y: b.y + dy, w: b.w, h: b.h })
 
 			seen.add(s.id)
@@ -1098,7 +1100,8 @@ class SectionLabels {
 				title.title = untitled ? s.id : ''
 				title.style.opacity = untitled ? '0.6' : ''
 			}
-			place(el, shift(s.header), Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx))
+			const { anchor, scale } = frameTitlePlacement(s, z)
+			place(el, shift(anchor), scale)
 			el.style.opacity = String(d.opacity)
 			el.classList.toggle('hovered', s.id === hoveredFrameId && !liftedId)
 			el.classList.toggle('lifted', s.id === liftedId)
@@ -1127,6 +1130,7 @@ class SectionLabels {
 			if (seen.has(id)) continue
 			el.remove()
 			this.els.delete(id)
+			editor.frameShift.delete(id)
 		}
 	}
 

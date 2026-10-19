@@ -1,7 +1,7 @@
 {
   "name": "opencode-canvas",
   "version": "0.1.0",
-  "description": "Review canvases on your machine, connected to your local OpenCode: post images, videos and HTML from sessions, seed canvases from their media, and bring sessions onto a canvas as creatures you can talk to.",
+  "description": "Review canvases on your machine, connected to your local OpenCode: post images, videos and HTML from sessions, seed canvases from their media, and bring sessions onto a canvas as live frames you can talk to.",
   "license": "MIT",
   "type": "module",
   "repository": {

@@ -2,9 +2,9 @@
 
 Review canvases for [OpenCode](https://opencode.ai) sessions, running on your own machine. Agents
 post the images, videos and HTML pages they make to a canvas; you look them over on an infinite,
-live, multiplayer canvas. Agents can queue things for you to look at on their session's creature.
+live, multiplayer canvas. Agents can queue things for you to look at on their session's frame.
 Connected to your local OpenCode, a canvas can also seed itself from your sessions' media, and bring
-sessions onto the canvas as creatures you can talk to.
+sessions onto the canvas as live frames you can watch work and talk to.
 
 ```sh
 bunx github:jlongster/opencode-canvas
@@ -19,11 +19,16 @@ On a canvas you can then:
 
 - **Seed** an empty canvas from sessions: each gets a frame with its images and videos from the last
   24 hours, or its latest 10 if there are fewer.
-- **Conjure** a session (toolbar → Conjure): it appears as a creature. Click it to prompt the
-  session; everyone on the canvas sees it think and reply.
+- **Conjure** a session (toolbar → Conjure, or `C` over empty canvas): its frame comes alive with a
+  status rail along its top: ready / thinking / replying, how long it's been working, the step in
+  progress (`read web/src/…`) or the reply streaming in, and its running subagents. The rail sticks
+  to the top of the screen while you scroll down a tall frame. Press `C` over the frame (or click
+  its rail) for the session's dialog: its subagents, its last reply, and a prompt box (Send when
+  idle; Stop, Queue and Steer while it works, images attach by drop, paste or the paperclip).
 - Let agents **post** to it, over MCP or HTTP (below), and point you at things: their `say` and
-  `highlight` steps wait on the session's creature (a badge, and "N things want your attention" at
-  the top) until you play them through; stepping past one marks it done for everyone.
+  `highlight` steps wait on the session's frame (a count on its rail, and "N things want your
+  attention" at the top) until you play them through; stepping past one marks it done for
+  everyone. Mute a session in its dialog to stop it calling for your attention in your browser.
 - **Annotate** (toolbar → comment tool, or `A`): press on a spot of an image and drag, then type a
   comment. Everyone sees it live, and agents read it with the spot's pixel coordinates in the
   original image (`list_annotations`), so you can give feedback on exactly that spot.
@@ -64,9 +69,10 @@ Your browser is the only thing that talks to OpenCode; the canvas server never d
   canvas must be allowed once: `opencode service set cors <site origin>` (this replaces the list of
   extra sites, comma separated).
 
-Creatures you conjure belong to your browser: while one of your tabs has the canvas open it runs
-them; otherwise they sleep. Only you can prompt them; others see them and their replies. Creatures
-that sessions called up with `say`/`highlight` have no owner until someone conjures that session.
+Sessions you conjure belong to your browser: while one of your tabs has the canvas open it runs
+them; otherwise their rails say they're asleep. Only you can prompt them; others watch their
+status and replies (view links read-only). Banish one from its dialog to disconnect it (the frame
+stays).
 
 ## Use it from your agents
 
@@ -93,7 +99,7 @@ ln -s "$PWD/skill/canvas" ~/.config/opencode/skills/canvas
 `http://localhost:4545/mcp`, with tools to list and create canvases, post, update and delete items,
 see what people have selected, read sticky notes and annotations (comments pinned to a spot of an
 image, with pixel coordinates: `list_annotations`), and `say` / `highlight` to queue things for you to
-look at on the session's creature. It's only a tool provider: agents using it don't appear on the
+look at on the session's frame. It's only a tool provider: agents using it don't appear on the
 canvas themselves. In your OpenCode config:
 
 ```json

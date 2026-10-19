@@ -6,7 +6,8 @@
  * It never talks to OpenCode and never sees credentials.
  *
  * A creature the server makes goes beside its session's frame (see creatureSpot in index.ts) and
- * moves along with its frame. Only its owner moves it from a browser (summoning it with C, picking it
+ * moves along with its frame, and rushes over to an item posted to its session (see rushTo in
+ * index.ts). Only its owner moves it from a browser (summoning it with C, picking it
  * in the Conjure menu, dragging it), through `move`, which checks the ownerId; the generic `update`
  * never takes a position.
  *
@@ -73,7 +74,13 @@ function clean(r: ConjuredAgent & { directory?: unknown; serverId?: unknown }): 
 		y: Number(r.y) || 0,
 		createdAt: Number(r.createdAt) || Date.now(),
 		ownerId: typeof r.ownerId === 'string' ? r.ownerId : '',
+		...(r.rush && typeof r.rush.itemId === 'string' && finite(r.rush.at) ? { rush: { itemId: r.rush.itemId, at: r.rush.at } } : {}),
 	}
+}
+
+/** The record somewhere else: no longer where it rushed to. */
+function moved({ rush: _, ...r }: ConjuredAgent, at: { x: number; y: number }): ConjuredAgent {
+	return { ...r, ...at }
 }
 
 export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
@@ -134,7 +141,7 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 			const existing = records.get(key(canvasId, sessionId))
 			// One without an owner (made for an agent's attention actions) is adopted.
 			if (existing?.ownerId) throw new ConjureError(409, 'that session is already conjured on this canvas')
-			if (existing) return put({ ...existing, ...given, serverKey, ownerId, title: titleField(body?.title) || existing.title })
+			if (existing) return put({ ...(given ? moved(existing, given) : existing), serverKey, ownerId, title: titleField(body?.title) || existing.title })
 			const spot = given ?? at()
 			return put({
 				canvasId,
@@ -200,9 +207,9 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 				if (typeof serverKey !== 'string' || !SERVER_KEY.test(serverKey)) {
 					throw new ConjureError(400, 'nobody owns this creature yet: send "serverKey" (its OpenCode) to adopt it as you move it')
 				}
-				return put({ ...r, ...at, serverKey, ownerId: owner, title: titleField(body?.title) || r.title })
+				return put({ ...moved(r, at), serverKey, ownerId: owner, title: titleField(body?.title) || r.title })
 			}
-			return at.x === r.x && at.y === r.y ? r : put({ ...r, ...at })
+			return at.x === r.x && at.y === r.y && !r.rush ? r : put(moved(r, at))
 		},
 
 		/** Renames the worm (its session's title changed). Moving it is its owner's, through `move`. */
@@ -212,6 +219,15 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 			const title = titleField(body?.title)
 			if (title === undefined) throw new ConjureError(400, 'send {"title"}')
 			return title === r.title ? r : put({ ...r, title })
+		},
+
+		/**
+		 * It rushes to point at an item just posted to (or replaced in) its session, at `at`: the
+		 * server's move, so no owner check. (Nothing happens without a creature.)
+		 */
+		rush(canvasId: string, sessionId: string, itemId: string, at: { x: number; y: number }) {
+			const r = records.get(key(canvasId, sessionId))
+			if (r) put({ ...r, x: Math.round(at.x), y: Math.round(at.y), rush: { itemId, at: Date.now() } })
 		},
 
 		/** Moves the worm by dx (page px): its frame moved along (server-side only). */

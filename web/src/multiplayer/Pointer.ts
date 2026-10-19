@@ -1,4 +1,4 @@
-import type { Vec } from '../editor/geometry'
+import type { Box, Vec } from '../editor/geometry'
 
 /**
  * The eye pointer: sessions' creatures (see AgentWorms). A wedge, like a mouse pointer that can
@@ -479,4 +479,47 @@ function parseColor(color: string): number[] | null {
 	if (!m) return null
 	const hex = m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1]
 	return [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16))
+}
+
+/** the gap (screen px) between an item's edge and the tip of a creature that rushed to point at it */
+export const RUSH_GAP = 16
+
+/**
+ * Where a creature at `from` (its centre, page) points in at a box: the point on the box's edge
+ * nearest it and that edge's outward normal, always an edge rather than a corner (kept a little in
+ * from the corners). From inside, the nearest edge.
+ */
+export function edgeSpot(from: Vec, b: Box): { at: Vec; out: Vec } {
+	const left = b.x - from.x
+	const right = from.x - (b.x + b.w)
+	const above = b.y - from.y
+	const below = from.y - (b.y + b.h)
+	const outX = Math.max(left, right, 0)
+	const outY = Math.max(above, below, 0)
+	const inX = Math.min(b.w / 2, 24)
+	const inY = Math.min(b.h / 2, 24)
+	const alongX = Math.min(Math.max(from.x, b.x + inX), b.x + b.w - inX)
+	const alongY = Math.min(Math.max(from.y, b.y + inY), b.y + b.h - inY)
+	let side: 'l' | 'r' | 't' | 'b'
+	if (outX || outY) side = outX >= outY ? (left > 0 ? 'l' : 'r') : above > 0 ? 't' : 'b'
+	else {
+		const d = { l: -left, r: -right, t: -above, b: -below }
+		side = (Object.keys(d) as (keyof typeof d)[]).reduce((a, k) => (d[k] < d[a] ? k : a))
+	}
+	if (side === 'l') return { at: { x: b.x, y: alongY }, out: { x: -1, y: 0 } }
+	if (side === 'r') return { at: { x: b.x + b.w, y: alongY }, out: { x: 1, y: 0 } }
+	if (side === 't') return { at: { x: alongX, y: b.y }, out: { x: 0, y: -1 } }
+	return { at: { x: alongX, y: b.y + b.h }, out: { x: 0, y: 1 } }
+}
+
+/** Where a creature sits (its root, page) to point in at `at` on an edge facing `out`, `gap` screen px off it, at zoom z. */
+export function standOff(at: Vec, out: Vec, z: number, gap = RUSH_GAP): Vec {
+	const reach = (gap + TIP_REACH * SIZE) / z
+	return { x: at.x + out.x * reach, y: at.y + out.y * reach + LIFT / z }
+}
+
+/** The spot (root, page) a creature at `root` rushes to, to point at a box: its nearest edge, as at 100% zoom (see ConjuredAgent.rush). */
+export function rushSpot(root: Vec, box: Box): Vec {
+	const { at, out } = edgeSpot({ x: root.x, y: root.y - LIFT }, box)
+	return standOff(at, out, 1)
 }

@@ -219,6 +219,11 @@ export interface ConjuredAgent {
 	createdAt: number
 	/** random id kept in the owner browser's localStorage; only that browser can prompt it ("" for none) */
 	ownerId: string
+	/**
+	 * It rushed (server-side) to point at an item just posted to (or replaced in) its session: the item
+	 * and when. x/y are then just outside that item's nearest edge (at 100% zoom); moving it clears this.
+	 */
+	rush?: { itemId: string; at: number }
 	/** in list responses: an owner tab is publishing its presence right now */
 	awake?: boolean
 }

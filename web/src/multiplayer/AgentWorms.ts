@@ -9,7 +9,7 @@ import { Slaps, type Pose } from './Slap'
 import { Carry } from './Carry'
 import './farAway.css'
 import type { Peer, SubagentInfo } from './Presence'
-import { LIFT, NATIVE, SIZE, TIP_REACH, drawPointer, hits, openEye, palette, place, turn, wobble, type EyeState, type Palette, type Shape } from './Pointer'
+import { LIFT, NATIVE, SIZE, TIP_REACH, drawPointer, edgeSpot, hits, openEye, palette, place, standOff, turn, wobble, type EyeState, type Palette, type Shape } from './Pointer'
 
 /** Where it sits, relative to the top-right corner of what the agent is working on. */
 const PERCH: Vec = { x: 30, y: -10 }
@@ -57,8 +57,6 @@ const DRAG_PX = 5
 const STARE_PX = 170
 /** a conjured creature's finished reply puts itself away (locally) after this long, unless it's pinned */
 const REPLY_HIDE_MS = 7000
-/** zoom at and above which speech bubbles are full size; below it they shrink with the canvas */
-const FULL_BUBBLE_ZOOM = 0.6
 /** below this zoom the creatures' name tags and attention badges hide; once hidden, they come back at FAR_ZOOM */
 const FAR_ZOOM = 0.1
 const FAR_SLACK = 0.002
@@ -72,6 +70,33 @@ const FRESH_MS = 15000
 const POINT_AT_PX = 420
 /** a highlight step: it goes this far (screen px) outside the target's edge to point in at it */
 const VISIT_PX = 36
+/**
+ * rushing to an item just posted to its session (see ConjuredAgent.rush): a crouch before it sets
+ * off, a quicker glide (a base plus so much per screen px, within bounds), its hop's height (screen
+ * px), and the glee on arrival: wide-eyed, with a wiggle
+ */
+const RUSH_WAIT_MS = 170
+const RUSH_MS = 260
+const RUSH_PER_PX = 0.45
+const RUSH_MIN_MS = 420
+const RUSH_MAX_MS = 1000
+const RUSH_HOP = 12
+const RUSH_GLEE_MS = 900
+const WIGGLE_MS = 750
+/**
+ * wandering about while it sits idle (here only: where it is doesn't change): how long between
+ * wanders, how far from where it sits it goes (screen px), its gap to an item it goes to look at
+ * (screen px), and how long it stays
+ */
+const WANDER_GAP_MIN_MS = 6000
+const WANDER_GAP_MAX_MS = 15000
+const WANDER_PX = 200
+const WANDER_ITEM_GAP = 24
+const WANDER_STAY_MS = 2600
+/** a glide while wandering takes this much longer than a glide */
+const WANDER_SLOW = 1.3
+/** the little wide-eyed peek on arriving to look at an item */
+const PEEK_MS = 700
 
 type Mode = 'here' | 'pop' | 'vanish'
 
@@ -83,6 +108,18 @@ interface Trip {
 	to: Vec
 	at: number
 	dur: number
+	/** a glide, a rush to a new item (crouching RUSH_WAIT_MS before `at`), or a slower wander */
+	kind: 'glide' | 'rush' | 'wander'
+}
+
+/** Somewhere it wanders off to while it sits idle, and what it looks at there. */
+interface Wander {
+	kind: 'item' | 'turn' | 'drift'
+	/** where it sat when it set off (a new spot ends the wander) */
+	home: Vec
+	to: Vec
+	look: Vec | null
+	until: number
 }
 
 /**
@@ -199,8 +236,15 @@ export interface Worm {
 	speechPinned: boolean
 	/** when the reply finished (typed out, nothing more coming), 0 while it isn't */
 	speechDoneAt: number
-	/** the speech bubbles' scale for the zoom, last set on el as --bubble-scale */
-	bubbleScale: number
+	/** the rush (ConjuredAgent.rush's time) it has gone on; one pending, to set off on with its next glide; and when it last got there */
+	rushSeen: number
+	rushNext: boolean
+	rushArriveAt: number
+	/** wandering about, idle (local only), and when it next may */
+	wander: Wander | null
+	nextWander: number
+	/** when it last peeked at something it wandered over to */
+	peekAt: number
 	/** its busy subagents, as babies drifting about near it */
 	colony: Colony
 	sessionId: string | null
@@ -331,14 +375,26 @@ export class AgentWorms {
 			if (!worm && !target) continue
 			if (!worm) {
 				worm = this.spawn(peer, target!.point, now)
+				worm.rushSeen = target?.rush?.at ?? 0
 				this.arrive(worm, peer, now)
 				this.worms.set(peer.clientId, worm)
 			}
 			if (worm.leaving) this.revive(worm, now)
 			this.syncCalls(worm)
 			if (target) {
-				worm.goal = this.carry.pinned(worm, peer.cursor, now) ?? target.point
-				worm.focus = target.box
+				const pinned = this.carry.pinned(worm, peer.cursor, now)
+				const rush = !pinned && target.rush && target.rush.at !== worm.rushSeen ? target.rush : null
+				// (A rush to a new item waits while its walkthrough is open or it's held. With its box open
+				// it just glides over calmly, staying with the box, which follows where it is.)
+				if (!rush || this.mayRush(worm)) {
+					if (rush) {
+						worm.rushSeen = rush.at
+						worm.rushNext = !worm.listening
+						worm.wander = null
+					}
+					worm.goal = pinned ?? target.point
+					worm.focus = target.box
+				}
 			} else {
 				worm.focus = null
 			}
@@ -536,16 +592,41 @@ export class AgentWorms {
 
 	// ---------- state ----------
 
-	/** A cursor if the agent sends one, else a perch just outside the first selected thing. */
-	private targetFor(peer: Peer): { point: Vec; box: Box | null } | null {
+	/**
+	 * A cursor if the agent sends one, else a perch just outside the first selected thing. Where it
+	 * rushed to a new item, just outside that item's edge for this zoom, pointing at it.
+	 */
+	private targetFor(peer: Peer): { point: Vec; box: Box | null; rush?: { itemId: string; at: number } } | null {
 		const z = this.editor.camera.peek().z
-		if (peer.cursor) return { point: { ...peer.cursor }, box: null }
+		if (peer.cursor) return this.rushed(peer.cursor, peer.user.sessionId, z) ?? { point: { ...peer.cursor }, box: null }
 		for (const key of peer.selection ?? []) {
 			const box = this.editor.getSelectionBounds(key)
 			if (!box) continue
 			return { point: { x: box.x + box.w + PERCH.x / z, y: box.y + PERCH.y / z }, box }
 		}
 		return null
+	}
+
+	/**
+	 * Its record rushed to an item (see ConjuredAgent.rush) and it's still there: the same edge of the
+	 * item, as far off it on screen as at 100% zoom.
+	 */
+	private rushed(cursor: Vec, sessionId: string | undefined, z: number) {
+		const r = sessionId ? this.conjure?.record(sessionId) : undefined
+		if (!r?.rush || Math.abs(r.x - cursor.x) > 1 || Math.abs(r.y - cursor.y) > 1) return null
+		const box = this.editor.getSelectionBounds(r.rush.itemId)
+		if (!box) return null
+		const { at, out } = edgeSpot({ x: r.x, y: r.y - LIFT }, box)
+		// (Unless the item moved without it, as when another one is posted before it: then it stays put.)
+		const there = standOff(at, out, 1)
+		if (Math.abs(there.x - r.x) > 2 || Math.abs(there.y - r.y) > 2) return null
+		return { point: standOff(at, out, z), box, rush: r.rush }
+	}
+
+	/** Whether it may set off on a rush now: not while its walkthrough is open, or while it's held. */
+	private mayRush(worm: Worm) {
+		const sid = worm.sessionId
+		return !this.carry.holds(worm) && this.press?.worm !== worm && !(sid && this.attention?.isOpen(sid))
 	}
 
 	private spawn(peer: Peer, at: Vec, now: number): Worm {
@@ -633,7 +714,12 @@ export class AgentWorms {
 			speechText: null,
 			speechPinned: false,
 			speechDoneAt: 0,
-			bubbleScale: 1,
+			rushSeen: 0,
+			rushNext: false,
+			rushArriveAt: -1e9,
+			wander: null,
+			nextWander: now + WANDER_GAP_MIN_MS + Math.random() * (WANDER_GAP_MAX_MS - WANDER_GAP_MIN_MS),
+			peekAt: -1e9,
 			colony: new Colony(),
 			calls: 0,
 			badge: null,
@@ -658,7 +744,7 @@ export class AgentWorms {
 		if (prev) {
 			// Leaving, it was blinking out: back as it was.
 			if (prev.leaving && prev.mode === 'vanish' && !prev.warpTo) prev.mode = 'here'
-			for (const key of ['root', 'vel', 'dest', 'trip', 'heading', 'spin', 'off', 'offV', 'mode', 'modeAt', 'warpTo', 'seed', 'eye', 'glance', 'squash', 'wakeAt', 'recoilAt', 'anchor', 'headAt', 'middleAt', 'shape', 'colony'] as const) {
+			for (const key of ['root', 'vel', 'dest', 'trip', 'heading', 'spin', 'off', 'offV', 'mode', 'modeAt', 'warpTo', 'seed', 'eye', 'glance', 'squash', 'wakeAt', 'recoilAt', 'anchor', 'headAt', 'middleAt', 'shape', 'colony', 'rushSeen', 'rushNext', 'rushArriveAt'] as const) {
 				;(worm as unknown as Record<string, unknown>)[key] = prev[key]
 			}
 			worm.startleSeen = prev.startleSeen
@@ -998,6 +1084,7 @@ export class AgentWorms {
 		worm.rest = this.restHeading(worm, this.centreOf(worm))
 		const carried = this.carry.holds(worm)
 		const held = carried || this.slaps.holds(worm, now)
+		this.roam(worm, now, z, held)
 		if (!held) {
 			this.locomote(worm, now, dt, z)
 			this.maybeFidget(worm, now)
@@ -1019,7 +1106,7 @@ export class AgentWorms {
 
 	/** Heads for its goal (or a highlight step's spot): gliding along a curve, sliding over a little, or blinking over when it's far. */
 	private locomote(worm: Worm, now: number, dt: number, z: number) {
-		const goal = worm.visit ?? worm.goal
+		const goal = worm.visit ?? worm.wander?.to ?? worm.goal
 		if (worm.mode !== 'here' || worm.leaving || !goal) return
 		if (this.reducedMotion.matches) {
 			worm.root = { ...goal }
@@ -1032,24 +1119,43 @@ export class AgentWorms {
 		if (!dest || Math.hypot(goal.x - dest.x, goal.y - dest.y) * z > 1.5) {
 			// Somewhere new.
 			worm.dest = { ...goal }
+			const rush = worm.rushNext
+			worm.rushNext = false
 			const d = Math.hypot(goal.x - worm.root.x, goal.y - worm.root.y) * z
 			if (d > GLIDE_MAX || (!this.onScreen(worm.root, 80) && !this.onScreen(goal, 80))) return this.vanish(worm, now, goal)
-			if (d > NUDGE_PX) this.plan(worm, goal, now, z)
-			else worm.trip = null
+			if (d > NUDGE_PX) this.plan(worm, goal, now, z, rush ? 'rush' : worm.wander && !worm.visit ? 'wander' : 'glide')
+			else {
+				worm.trip = null
+				if (rush) worm.rushArriveAt = now
+			}
 		}
 		let aim = goal
 		const trip = worm.trip
 		if (trip) {
 			const u = (now - trip.at) / trip.dur
-			if (u >= 1) worm.trip = null
-			else aim = bezier(trip, easeInOutSine(u))
+			if (u >= 1) {
+				worm.trip = null
+				if (trip.kind === 'rush') worm.rushArriveAt = now
+				// come to look at something: a quick blink and a peek
+				if (trip.kind === 'wander' && worm.wander?.kind === 'item') {
+					worm.peekAt = now
+					worm.nextBlink = Math.min(worm.nextBlink, now + 120)
+				}
+			} else if (u < 0) {
+				// crouching to set off: drawing back a little
+				const l = Math.hypot(trip.to.x - trip.from.x, trip.to.y - trip.from.y) || 1
+				const back = (8 * Math.sin((Math.PI / 2) * (1 + (u * trip.dur) / RUSH_WAIT_MS))) / z
+				aim = { x: trip.from.x - ((trip.to.x - trip.from.x) / l) * back, y: trip.from.y - ((trip.to.y - trip.from.y) / l) * back }
+			} else aim = bezier(trip, tripEase(trip, u))
 		}
-		// root follows its path on a spring, page space
-		const w = FOLLOW_W
+		// root follows its path on a spring, page space (livelier rushing, and arriving from a rush)
+		const lively = trip?.kind === 'rush' || now - worm.rushArriveAt < 600
+		const w = lively ? FOLLOW_W * 1.3 : FOLLOW_W
+		const zeta = lively ? 0.62 : FOLLOW_Z
 		for (let left = dt; left > 1e-6; left -= 1 / 120) {
 			const h = Math.min(left, 1 / 120)
-			worm.vel.x += (w * w * (aim.x - worm.root.x) - 2 * FOLLOW_Z * w * worm.vel.x) * h
-			worm.vel.y += (w * w * (aim.y - worm.root.y) - 2 * FOLLOW_Z * w * worm.vel.y) * h
+			worm.vel.x += (w * w * (aim.x - worm.root.x) - 2 * zeta * w * worm.vel.x) * h
+			worm.vel.y += (w * w * (aim.y - worm.root.y) - 2 * zeta * w * worm.vel.y) * h
 			worm.root.x += worm.vel.x * h
 			worm.root.y += worm.vel.y * h
 		}
@@ -1059,7 +1165,7 @@ export class AgentWorms {
 	 * A glide to `goal`: it sets off the way it's pointing (or already going) and comes in to the
 	 * goal on a smooth curve, so where it came from shapes the path.
 	 */
-	private plan(worm: Worm, goal: Vec, now: number, z: number) {
+	private plan(worm: Worm, goal: Vec, now: number, z: number, kind: Trip['kind']) {
 		const from = { ...worm.root }
 		const dx = goal.x - from.x
 		const dy = goal.y - from.y
@@ -1067,7 +1173,8 @@ export class AgentWorms {
 		const dir = { x: dx / (Math.hypot(dx, dy) || 1), y: dy / (Math.hypot(dx, dy) || 1) }
 		const speed = Math.hypot(worm.vel.x, worm.vel.y) * z
 		const h = speed > 60 ? Math.atan2(worm.vel.y, worm.vel.x) : worm.heading
-		const hv = { x: Math.cos(h), y: Math.sin(h) }
+		// (rushing, it turns to face the item as it crouches and makes straight for it)
+		const hv = kind === 'rush' ? dir : { x: Math.cos(h), y: Math.sin(h) }
 		const along = hv.x * dir.x + hv.y * dir.y
 		const lead = Math.min(150, d * (0.16 + 0.2 * (1 + along))) / z
 		const back = (d * 0.3) / z
@@ -1076,8 +1183,12 @@ export class AgentWorms {
 			c1: { x: from.x + hv.x * lead, y: from.y + hv.y * lead },
 			c2: { x: goal.x - dir.x * back, y: goal.y - dir.y * back },
 			to: { ...goal },
-			at: now,
-			dur: Math.min(GLIDE_MAX_MS, Math.max(GLIDE_MIN_MS, GLIDE_MS + d * GLIDE_PER_PX)),
+			at: kind === 'rush' ? now + RUSH_WAIT_MS : now,
+			dur:
+				kind === 'rush'
+					? Math.min(RUSH_MAX_MS, Math.max(RUSH_MIN_MS, RUSH_MS + d * RUSH_PER_PX))
+					: Math.min(GLIDE_MAX_MS, Math.max(GLIDE_MIN_MS, GLIDE_MS + d * GLIDE_PER_PX)) * (kind === 'wander' ? WANDER_SLOW : 1),
+			kind,
 		}
 	}
 
@@ -1157,7 +1268,7 @@ export class AgentWorms {
 		else if (calling) base = rest + 0.36 * Math.sin(t * 7.5)
 		else if (worm.fretting) base = rest + 0.07 * wobble(t * 0.5 + 3)
 		else if (worm.talk > 0.05) base = rest + 0.08 * Math.sin(worm.speechShown * 0.7) * worm.talk
-		else if (!worm.pointAt) {
+		else if (!worm.pointAt && !worm.wander?.look) {
 			base = rest + 0.07 * wobble(t * 0.25)
 			const fidget = (now - worm.fidgetAt) / FIDGET_MS
 			if (fidget >= 0 && fidget < 1) base += worm.fidgetTurn * Math.sin(Math.PI * fidget)
@@ -1170,13 +1281,16 @@ export class AgentWorms {
 		}
 		const recoil = (now - worm.recoilAt) / RECOIL_MS
 		if (recoil >= 0 && recoil < 1) base -= 0.35 * Math.sin(Math.PI * recoil)
+		// got to a new item: a happy wiggle
+		const wiggle = (now - worm.rushArriveAt) / WIGGLE_MS
+		if (wiggle >= 0 && wiggle < 1) base += 0.45 * Math.sin(wiggle * Math.PI * 5) * (1 - wiggle)
 		// moving: the tip facing where it's going, then turning to point where it should as it arrives
 		let travel = 0
 		let way = base
 		const trip = worm.trip
 		if (trip) {
 			const u = Math.min(1, Math.max(0, (now - trip.at) / trip.dur))
-			const tan = bezierTangent(trip, easeInOutSine(u))
+			const tan = bezierTangent(trip, tripEase(trip, u))
 			if (Math.hypot(tan.x, tan.y) > 1e-9) {
 				way = Math.atan2(tan.y, tan.x)
 				travel = 1 - smoothstep((u - 0.8) / 0.2)
@@ -1201,7 +1315,8 @@ export class AgentWorms {
 	 */
 	private restHeading(worm: Worm, centre: Vec): number {
 		const aim = (p: Vec) => Math.atan2(p.y - centre.y, p.x - centre.x)
-		if (worm.pointAt) return aim(this.editor.pageToScreen(worm.pointAt))
+		const look = worm.pointAt ?? worm.wander?.look
+		if (look) return aim(this.editor.pageToScreen(look))
 		const frame = worm.sessionId ? this.editor.getSelectionBounds(`frame:${worm.sessionId}`) : undefined
 		const z = this.editor.camera.peek().z
 		for (const box of [worm.focus, frame]) {
@@ -1241,6 +1356,87 @@ export class AgentWorms {
 		worm.fidgetTurn = (Math.random() < 0.5 ? -1 : 1) * (0.35 + Math.random() * 0.3)
 		worm.nextFidget = now + FIDGET_EVERY_MS * (0.7 + Math.random())
 		worm.nextGlance = now
+	}
+
+	/**
+	 * Sitting about idle and awake, now and then it wanders: over to look at one of its frame's items
+	 * (just outside its nearest edge, pointing at it), turning to look at one, or drifting to another
+	 * spot nearby; then back. Only here (each viewer's differ; where it is doesn't change), and never
+	 * while a prompt box or walkthrough is open, it's held, talking, thinking or calling.
+	 */
+	private roam(worm: Worm, now: number, z: number, held: boolean) {
+		const home = worm.goal
+		const sid = worm.sessionId
+		const free =
+			!held &&
+			!this.reducedMotion.matches &&
+			!!home &&
+			!!sid &&
+			worm.mode === 'here' &&
+			!worm.leaving &&
+			!worm.asleep &&
+			!worm.calls &&
+			!worm.listening &&
+			!worm.visit &&
+			!worm.bubble &&
+			!worm.rushNext &&
+			worm.think < 0.1 &&
+			worm.talk < 0.05 &&
+			this.press?.worm !== worm &&
+			!this.conjure?.prompting.peek() &&
+			!this.attention?.walk.peek() &&
+			now - worm.rushArriveAt > 3000 &&
+			this.onScreen(home, 0)
+		const w = worm.wander
+		if (w && (!free || Math.hypot(home!.x - w.home.x, home!.y - w.home.y) * z > 2 || now > w.until)) {
+			worm.wander = null
+			worm.nextWander = now + WANDER_GAP_MIN_MS + Math.random() * (WANDER_GAP_MAX_MS - WANDER_GAP_MIN_MS)
+		}
+		if (!free) {
+			worm.nextWander = Math.max(worm.nextWander, now + 3000)
+			return
+		}
+		if (worm.wander || worm.trip || now < worm.nextWander) return
+		worm.wander = this.pickWander(home!, sid!, now, z)
+		if (!worm.wander) worm.nextWander = now + 3000
+	}
+
+	private pickWander(home: Vec, sid: string, now: number, z: number): Wander | null {
+		const layout = this.editor.layout.get()
+		const section = layout.sections.find((s) => s.id === sid)
+		if (!section) return null
+		const centre = { x: home.x, y: home.y - LIFT / z }
+		const range = WANDER_PX / z
+		const near = (p: Vec) => Math.hypot(p.x - home.x, p.y - home.y) <= range
+		const frame = section.box
+		const pad = 120 / z
+		const byFrame = (p: Vec) => p.x > frame.x - pad && p.x < frame.x + frame.w + pad && p.y > frame.y - pad && p.y < frame.y + frame.h + pad
+		const spots = section.itemIds
+			.map((id) => layout.items.get(id))
+			.filter((b): b is Box => !!b)
+			.map((box) => ({ box, ...edgeSpot(centre, box) }))
+			.filter((s) => near(s.at))
+		const stay = WANDER_STAY_MS * (0.8 + Math.random() * 0.8)
+		const r = Math.random()
+		if (spots.length && r < 0.75) {
+			const s = spots[Math.floor(Math.random() * spots.length)]
+			if (r < 0.5) {
+				const to = standOff(s.at, s.out, z, WANDER_ITEM_GAP)
+				if (near(to) && byFrame(to) && Math.hypot(to.x - home.x, to.y - home.y) * z > 20) return { kind: 'item', home: { ...home }, to, look: s.at, until: now + GLIDE_MAX_MS * WANDER_SLOW + stay }
+			}
+			return { kind: 'turn', home: { ...home }, to: { ...home }, look: { x: s.box.x + s.box.w / 2, y: s.box.y + s.box.h / 2 }, until: now + stay * 0.7 }
+		}
+		const boxes = section.itemIds.map((id) => layout.items.get(id)).filter((b): b is Box => !!b)
+		for (let i = 0; i < 6; i++) {
+			const a = Math.random() * Math.PI * 2
+			const d = (50 + Math.random() * 90) / z
+			const to = { x: home.x + Math.cos(a) * d, y: home.y + Math.sin(a) * d }
+			const c = { x: to.x, y: to.y - LIFT / z }
+			const m = 24 / z
+			if (!byFrame(to) || boxes.some((b) => c.x > b.x - m && c.x < b.x + b.w + m && c.y > b.y - m && c.y < b.y + b.h + m)) continue
+			return { kind: 'drift', home: { ...home }, to, look: null, until: now + GLIDE_MAX_MS * WANDER_SLOW + stay * 1.5 }
+		}
+		return null
 	}
 
 	/** Clicked: it hops back from its tip. */
@@ -1284,6 +1480,11 @@ export class AgentWorms {
 		} else if (worm.asleep) {
 			look = { x: 0, y: 0.4 }
 			lid = 1
+		} else if (worm.trip?.kind === 'rush' || now - worm.rushArriveAt < RUSH_GLEE_MS) {
+			// excited: wide-eyed on the way, then at what it came to see
+			const box = worm.focus
+			look = worm.trip || !box ? { x: ahead.x * 1.2, y: ahead.y * 1.2 } : toward(this.editor.pageToScreen({ x: box.x + box.w / 2, y: box.y + box.h / 2 }))
+			wide = worm.trip ? 1 : 1 - (now - worm.rushArriveAt) / RUSH_GLEE_MS
 		} else if (worm.trip) {
 			look = { x: ahead.x * 1.2, y: ahead.y * 1.2 }
 		} else if (calling) {
@@ -1313,8 +1514,10 @@ export class AgentWorms {
 			look = { x: ahead.x * 0.5 + 0.25 * Math.sin(t * 3.1), y: -0.35 + 0.2 * Math.sin(t * 4.7) }
 		} else if (worm.listening) {
 			look = { x: -0.1, y: 0.95 }
-		} else if (worm.pointAt) {
-			look = toward(this.editor.pageToScreen(worm.pointAt))
+		} else if (worm.pointAt || worm.wander?.look) {
+			look = toward(this.editor.pageToScreen((worm.pointAt ?? worm.wander?.look)!))
+			const peek = (now - worm.peekAt) / PEEK_MS
+			if (peek >= 0 && peek < 1) wide = 0.55 * Math.sin(Math.PI * peek)
 		} else if (stare) {
 			look = toward(stare)
 		} else {
@@ -1475,6 +1678,18 @@ export class AgentWorms {
 			}
 			const wake = (now - worm.wakeAt) / WAKE_MS
 			if (wake >= 0 && wake < 1) scale *= 1 + 0.14 * Math.sin(Math.PI * wake)
+			// rushing: a crouch, a hop all the way there, and a little bounce on landing
+			const trip = worm.trip
+			if (trip?.kind === 'rush') {
+				const u = (now - trip.at) / trip.dur
+				if (u < 0) {
+					const a = 1 + (u * trip.dur) / RUSH_WAIT_MS
+					scale *= 1 - 0.12 * Math.sin(Math.PI * a)
+					c.y += 3 * Math.sin(Math.PI * a)
+				} else c.y -= RUSH_HOP * Math.sin(Math.PI * Math.min(1, u))
+			}
+			const land = (now - worm.rushArriveAt) / 360
+			if (land >= 0 && land < 1) scale *= 1 + 0.12 * Math.sin(Math.PI * land)
 		}
 		const shape = place(c, heading, Math.max(0.001, scale))
 		worm.shape = shape
@@ -1521,12 +1736,6 @@ export class AgentWorms {
 		el.style.setProperty('--hy', `${worm.headAt.y.toFixed(1)}px`)
 		el.style.setProperty('--mx', `${worm.middleAt.x.toFixed(1)}px`)
 		el.style.setProperty('--my', `${worm.middleAt.y.toFixed(1)}px`)
-		// Zoomed out, the bubbles shrink toward where they attach (the creature and its name tag don't).
-		const bubbleScale = Math.min(1, this.editor.camera.peek().z / FULL_BUBBLE_ZOOM)
-		if (bubbleScale !== worm.bubbleScale) {
-			worm.bubbleScale = bubbleScale
-			el.style.setProperty('--bubble-scale', String(bubbleScale))
-		}
 	}
 }
 
@@ -1590,6 +1799,11 @@ function bezierTangent(t: Trip, s: number): Vec {
 function smoothstep(t: number) {
 	const u = Math.min(1, Math.max(0, t))
 	return u * u * (3 - 2 * u)
+}
+
+/** How far along its path a trip is at u (0..1): rushes dash off and ease in. */
+function tripEase(trip: Trip, u: number) {
+	return trip.kind === 'rush' ? 1 - Math.pow(1 - Math.min(1, Math.max(0, u)), 2.4) : easeInOutSine(u)
 }
 
 function easeInOutSine(t: number) {

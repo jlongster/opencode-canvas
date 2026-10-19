@@ -7,6 +7,7 @@ import type {
 	SessionView,
 } from '../shared/types'
 import { computeLayout, LAYOUT, orderSessions } from '../web/src/editor/layout'
+import { rushSpot } from '../web/src/multiplayer/Pointer'
 import { AttentionError, createAttention } from './attention'
 import { ConjureError, createConjured } from './conjured'
 import { imageSize } from './imageSize'
@@ -190,6 +191,29 @@ function framesMoving<T>(canvasId: string, change: () => T): T {
 		if (to) conjured.shift(canvasId, r.sessionId, to.box.x - from.box.x)
 	}
 	return result
+}
+
+/** a burst of posts to one session: its creature rushes to the last, this long (ms) after it */
+const RUSH_SETTLE_MS = 400
+const rushes = new Map<string, ReturnType<typeof setTimeout>>()
+
+/**
+ * An item was posted to (or replaced in) its session: the session's creature, if it has one, rushes
+ * over to point at it, stopping just outside its edge nearest where it was (see rushSpot). The server
+ * moves it, for everyone; a burst only sends it to the last.
+ */
+function rushTo(item: Item) {
+	const k = sessionKey(item.canvasId, item.sessionId)
+	clearTimeout(rushes.get(k))
+	rushes.set(
+		k,
+		setTimeout(() => {
+			rushes.delete(k)
+			const r = conjured.list(item.canvasId).find((c) => c.sessionId === item.sessionId)
+			const box = db.items.get(item.id) && canvasLayout(item.canvasId).items.get(item.id)
+			if (r && box) conjured.rush(item.canvasId, item.sessionId, item.id, rushSpot(r, box))
+		}, RUSH_SETTLE_MS),
+	)
 }
 
 /**
@@ -675,6 +699,7 @@ async function addItem(canvasId: string, sessionId: string, source: MediaSource,
 	db.items.set(id, item)
 	save()
 	broadcast({ type: 'item', item })
+	rushTo(item)
 	return item
 }
 
@@ -777,6 +802,7 @@ async function patchItem(item: Item, body: Record<string, unknown>, source: Medi
 		changes,
 	)
 	commitItem(next)
+	rushTo(next)
 	await removeItemFiles(current)
 	return next
 }

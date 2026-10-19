@@ -188,6 +188,7 @@ export class Attention {
 		this.stepAt = performance.now()
 		const step = this.current()
 		if (step?.kind !== 'highlight' || !step.target) return false
+		this.editor.revealKey(step.target)
 		const box = this.targetBox(step.target)
 		if (!box) return false
 		this.reveal(box, REVEAL_PAD)

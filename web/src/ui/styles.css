@@ -101,6 +101,53 @@ body,
 	color: #9dbcff;
 }
 
+/* Under a frame's groups when it leaves older items out (see SectionLabels.createMore); page-space sizes. */
+.frame-more {
+	position: absolute;
+	left: 0;
+	top: 0;
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.6em;
+	border-top: 1px dashed rgba(255, 255, 255, 0.12);
+	font-size: 20px;
+	color: #71717a;
+	white-space: nowrap;
+	overflow: hidden;
+	transform-origin: 0 100%;
+	will-change: transform;
+	transition: opacity 120ms;
+}
+
+.frame-more button {
+	height: 1.9em;
+	padding: 0 0.9em;
+	border: 0;
+	border-radius: 0.95em;
+	background: rgba(255, 255, 255, 0.06);
+	color: #d4d4d8;
+	font: inherit;
+	cursor: pointer;
+	pointer-events: auto;
+	transition: background 120ms, color 120ms;
+}
+
+.frame-more button:hover {
+	background: rgba(87, 143, 255, 0.2);
+	color: #fafafa;
+}
+
+.frame-more .show-all {
+	background: transparent;
+	color: #a1a1aa;
+}
+
+.frame-more button[hidden] {
+	display: none;
+}
+
 .section-label .close {
 	/*
 	 * A 36px (page-space) square pinned to the frame's right edge and centred on the

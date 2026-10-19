@@ -21,8 +21,10 @@ export interface SectionLayout {
 	/** where the session title goes, inside the top of the frame */
 	header: Box
 	groups: GroupLayout[]
-	/** all items in display order (group by group) */
+	/** the items laid out, in display order (group by group) */
 	itemIds: string[]
+	/** the row under the groups saying how many older items are hidden, if any are */
+	more: { box: Box; hidden: number } | null
 }
 
 export interface Layout {
@@ -65,6 +67,13 @@ export const LAYOUT = {
 	groupGap: 56,
 	minFrameWidth: 480,
 	emptyFrameHeight: 160,
+	/** a frame shows only its newest items, this many unless the viewer asks for more... */
+	visibleItems: 50,
+	/** ...this many more at a time */
+	showMoreStep: 10,
+	/** the row under the groups that says how many older items are hidden */
+	moreHeight: 64,
+	moreGap: 40,
 	/** page-space font size of session titles (see .section-label in styles.css) */
 	frameTitlePx: 40,
 	/** session titles stay at least this big on screen; zoomed far out they grow upward out of the frame */
@@ -96,14 +105,26 @@ export function orderSessions<S extends Session>(sessions: Iterable<S>, order?: 
 	})
 }
 
+/** Newest first; ties broken by id so the order is stable. */
+export function newestFirst(a: Item, b: Item) {
+	return b.createdAt - a.createdAt || b.id.localeCompare(a.id)
+}
+
 /**
  * Positions are a pure function of the data. Each session is a frame; frames sit side by side in
- * frame order (see orderSessions), and hidden sessions take no space. Inside a frame, groups stack top to
- * bottom: the untitled group first, then named groups in the order they first appeared. Each group's
- * items flow left to right into justified rows that keep every item's aspect ratio. A frame is as
- * wide as its widest group, so a wider row pushes every frame to its right further out.
+ * frame order (see orderSessions), and hidden sessions take no space. A frame lays out only its
+ * newest `limits[sessionId]` items (LAYOUT.visibleItems by default) and says how many older ones
+ * it leaves out in a row at the bottom (`more`). Inside a frame, groups stack top to bottom, the
+ * one with the newest item first. Each group's items flow newest first, left to right, into
+ * justified rows that keep every item's aspect ratio (frames extracted from a video follow it). A
+ * frame is as wide as its widest group, so a wider row pushes every frame to its right further out.
  */
-export function computeLayout(sessions: Record<string, Session>, items: Record<string, Item>, order?: readonly string[]): Layout {
+export function computeLayout(
+	sessions: Record<string, Session>,
+	items: Record<string, Item>,
+	order?: readonly string[],
+	limits?: Readonly<Record<string, number>>,
+): Layout {
 	const L = LAYOUT
 	const bySession = new Map<string, Item[]>()
 	for (const item of Object.values(items)) {
@@ -117,16 +138,17 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 	let frameX = 0
 
 	for (const session of ordered) {
-		const list = (bySession.get(session.id) ?? []).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+		const all = (bySession.get(session.id) ?? []).sort(newestFirst)
+		const shown = all.slice(0, Math.max(0, limits?.[session.id] ?? L.visibleItems))
+		const hidden = all.length - shown.length
 
-		// Group in first-appearance order, with the untitled group first.
-		const named = new Map<string | null, Item[]>()
-		for (const item of list) {
+		// Group in first-appearance order of the newest-first list: the group with the newest item first.
+		const groups = new Map<string | null, Item[]>()
+		for (const item of shown) {
 			const key = item.group ?? null
-			if (!named.has(key)) named.set(key, [])
-			named.get(key)!.push(item)
+			if (!groups.has(key)) groups.set(key, [])
+			groups.get(key)!.push(item)
 		}
-		const groups = [...named.entries()].sort(([a], [b]) => (a === null ? -1 : b === null ? 1 : 0))
 
 		// Lay out each group relative to the frame's content origin, then shift into place.
 		const contentX = frameX + L.framePadding
@@ -135,7 +157,8 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 		let contentWidth = 0
 		const sectionGroups: GroupLayout[] = []
 
-		for (const [name, groupItems] of groups) {
+		for (const [name, list] of groups) {
+			const groupItems = framesAfterVideos(list)
 			const top = y
 			if (name !== null) y += L.groupHeadingHeight
 			const { boxes, width, height } = flowRows(groupItems, y)
@@ -158,7 +181,12 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 		}
 
 		const innerWidth = Math.max(contentWidth, L.minFrameWidth)
-		const contentHeight = sectionGroups.length ? y - L.groupGap - contentY : L.emptyFrameHeight
+		let contentHeight = sectionGroups.length ? y - L.groupGap - contentY : L.emptyFrameHeight
+		let more: SectionLayout['more'] = null
+		if (hidden > 0) {
+			more = { box: { x: contentX, y: contentY + contentHeight + L.moreGap, w: innerWidth, h: L.moreHeight }, hidden }
+			contentHeight += L.moreGap + L.moreHeight
+		}
 		const box = { x: frameX, y: 0, w: innerWidth + L.framePadding * 2, h: L.frameHeaderHeight + contentHeight + L.framePadding * 2 }
 		// Headings span the frame so long group names have room.
 		for (const g of sectionGroups) if (g.heading) g.heading.w = innerWidth
@@ -170,6 +198,7 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 			header: { x: contentX, y: L.framePadding, w: innerWidth, h: L.frameHeaderHeight },
 			groups: sectionGroups,
 			itemIds: sectionGroups.flatMap((g) => g.itemIds),
+			more,
 		})
 		layout.groups.push(...sectionGroups)
 		frameX += box.w + L.frameGap
@@ -179,6 +208,42 @@ export function computeLayout(sessions: Record<string, Session>, items: Record<s
 	return layout
 }
 
+/**
+ * How many of a session's newest items a frame has to lay out to include this one (its position,
+ * newest first, plus one), or 0 if the session doesn't have it.
+ */
+export function itemsToReveal(items: Record<string, Item>, itemId: string): number {
+	const item = items[itemId]
+	if (!item) return 0
+	let newer = 0
+	for (const other of Object.values(items)) if (other.sessionId === item.sessionId && newestFirst(other, item) < 0) newer++
+	return newer + 1
+}
+
+/**
+ * A group's items (newest first) with frames extracted from one of its videos moved right after
+ * that video, in the order they were taken, instead of up among the newest.
+ */
+function framesAfterVideos(items: Item[]): Item[] {
+	const videos = new Set(items.filter((i) => i.kind === 'video').map((i) => i.id))
+	const frames = new Map<string, Item[]>()
+	for (const item of items) {
+		if (!item.sourceItemId || !videos.has(item.sourceItemId)) continue
+		let list = frames.get(item.sourceItemId)
+		if (!list) frames.set(item.sourceItemId, (list = []))
+		list.unshift(item)
+	}
+	if (!frames.size) return items
+	const out: Item[] = []
+	for (const item of items) {
+		if (item.sourceItemId && videos.has(item.sourceItemId)) continue
+		out.push(item)
+		const taken = frames.get(item.id)
+		if (taken) out.push(...taken)
+	}
+	return out
+}
+
 /** The layout with one frame (and everything in it) moved by (dx, dy), e.g. while it's dragged. */
 export function shiftSection(layout: Layout, id: string, dx: number, dy: number): Layout {
 	const shift = (b: Box): Box => ({ x: b.x + dx, y: b.y + dy, w: b.w, h: b.h })
@@ -186,7 +251,8 @@ export function shiftSection(layout: Layout, id: string, dx: number, dy: number)
 	if (index < 0 || (dx === 0 && dy === 0)) return layout
 	const old = layout.sections[index]
 	const groups = old.groups.map((g) => ({ ...g, box: shift(g.box), heading: g.heading && shift(g.heading) }))
-	const section: SectionLayout = { ...old, box: shift(old.box), header: shift(old.header), groups }
+	const more = old.more && { ...old.more, box: shift(old.more.box) }
+	const section: SectionLayout = { ...old, box: shift(old.box), header: shift(old.header), groups, more }
 	const sections = layout.sections.map((s, i) => (i === index ? section : s))
 	const items = new Map(layout.items)
 	for (const itemId of old.itemIds) items.set(itemId, shift(items.get(itemId)!))

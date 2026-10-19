@@ -215,6 +215,7 @@ export class Renderer {
 			overlay,
 			options.readOnly ? null : (id) => options.onCloseSection?.(id),
 			options.readOnly ? null : (id) => editor.setFrameHidden(id, true),
+			(id, count) => editor.showMoreItems(id, count),
 		)
 		this.titles = new ItemTitles(overlay)
 		this.videoControls = new VideoControls(overlay, this.videos, editor, !!options.readOnly)
@@ -1058,6 +1059,7 @@ class SectionLabels {
 		private onClose: ((sectionId: string) => void) | null,
 		/** null hides the hide buttons (read-only views) */
 		private onHide: ((sectionId: string) => void) | null,
+		private onShowMore: (sectionId: string, count: number) => void,
 	) {
 		this.host = document.createElement('div')
 		this.host.className = 'section-labels'
@@ -1110,6 +1112,23 @@ class SectionLabels {
 			onClose(id)
 		})
 		button.addEventListener('pointerleave', disarm)
+		return el
+	}
+
+	/** The row under a frame's groups: how many older items it leaves out, and buttons to show them. */
+	private createMore(id: string) {
+		const el = document.createElement('div')
+		el.className = 'frame-more'
+		el.innerHTML = '<span class="count"></span><button class="show-more"></button><button class="show-all">Show all</button>'
+		const [, more, all] = el.children as unknown as [HTMLElement, HTMLButtonElement, HTMLButtonElement]
+		for (const [button, count] of [[more, LAYOUT.showMoreStep], [all, Infinity]] as const) {
+			button.addEventListener('pointerdown', (e) => e.stopPropagation())
+			button.addEventListener('dblclick', (e) => e.stopPropagation())
+			button.addEventListener('click', (e) => {
+				e.stopPropagation()
+				this.onShowMore(id, count)
+			})
+		}
 		return el
 	}
 
@@ -1179,6 +1198,27 @@ class SectionLabels {
 				h.style.opacity = String(d.opacity)
 				h.classList.toggle('hovered', g.id === hoveredGroupId)
 				h.classList.toggle('linked', g.id === linkedGroupId)
+			}
+
+			if (s.more) {
+				const key = `m:${s.id}`
+				seen.add(key)
+				let m = this.els.get(key)
+				if (!m) {
+					m = this.createMore(s.id)
+					this.host.appendChild(m)
+					this.els.set(key, m)
+				}
+				const { hidden } = s.more
+				const [count, more, all] = m.children as unknown as HTMLElement[]
+				const label = `${hidden} older ${hidden === 1 ? 'item' : 'items'} hidden`
+				if (count.textContent !== label) {
+					count.textContent = label
+					more.textContent = `Show ${Math.min(hidden, LAYOUT.showMoreStep)} more`
+					all.hidden = hidden <= LAYOUT.showMoreStep
+				}
+				place(m, shift(s.more.box), z)
+				m.style.opacity = String(d.opacity)
 			}
 		}
 		for (const [id, el] of this.els) {

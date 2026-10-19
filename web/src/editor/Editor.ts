@@ -2,8 +2,8 @@ import type { Item, Session } from '../../../shared/types'
 import { atom, computed, getGlobalEpoch, react, transact } from '../state/signals'
 import { Box, clamp, easeInOutCubic, lerp, Vec } from './geometry'
 import { Deletions } from './Deletions'
-import { computeLayout, frameTitleBox, LAYOUT, orderSessions, shiftSection, type GroupLayout, type Layout } from './layout'
-import { noteKey, parseSelectionId, type SelectionKind } from './selection'
+import { computeLayout, frameTitleBox, itemsToReveal, LAYOUT, newestFirst, orderSessions, shiftSection, type GroupLayout, type Layout } from './layout'
+import { groupKey, noteKey, parseSelectionId, type SelectionKind } from './selection'
 import { StateNode } from './StateNode'
 import { AnnotateTool } from './tools/AnnotateTool'
 import { HandTool } from './tools/HandTool'
@@ -155,6 +155,11 @@ export class Editor {
 	readonly hiddenLink = atom<{ key: string; sessionId: string } | null>('hiddenLink', null)
 	/** The HTML item open in the side drawer (see ui/HtmlDrawer.tsx); the canvas takes no input meanwhile. */
 	readonly htmlDrawer = atom<string | null>('htmlDrawer', null)
+	/**
+	 * How many of its newest items each frame shows, for frames this viewer has expanded (others
+	 * show LAYOUT.visibleItems). Only for this page: a reload goes back to the newest ones.
+	 */
+	readonly itemLimits = atom<Record<string, number>>('itemLimits', {})
 
 	// --- derived ---
 	/** Every session (hidden ones too) left to right, as arranged; while a frame is dragged, as it would drop. */
@@ -162,7 +167,7 @@ export class Editor {
 		orderSessions(Object.values(this.sessions.get()), this.frameDrag.get()?.order ?? this.sessionOrder.get()),
 	)
 	private readonly baseLayout = computed<Layout>('baseLayout', () =>
-		computeLayout(this.sessions.get(), this.items.get(), this.frameDrag.get()?.order ?? this.sessionOrder.get()),
+		computeLayout(this.sessions.get(), this.items.get(), this.frameDrag.get()?.order ?? this.sessionOrder.get(), this.itemLimits.get()),
 	)
 	/**
 	 * Where everything is. A dragged frame follows the pointer (loosely up and down) while the others
@@ -343,7 +348,7 @@ export class Editor {
 
 	/** The layout as saved: without a drag in progress. */
 	private committedLayout() {
-		return computeLayout(this.sessions.peek(), this.items.peek(), this.sessionOrder.peek())
+		return computeLayout(this.sessions.peek(), this.items.peek(), this.sessionOrder.peek(), this.itemLimits.peek())
 	}
 
 	/** Moves a session to an index of the full order (hidden sessions included). */
@@ -351,6 +356,45 @@ export class Editor {
 		const ids = this.orderedSessions.get().map((s) => s.id).filter((id) => id !== sessionId)
 		ids.splice(clamp(index, 0, ids.length), 0, sessionId)
 		this.setFrameOrder(ids)
+	}
+
+	// ---------- older items ----------
+
+	/** Shows `count` more of a frame's older items (all of them with Infinity). */
+	showMoreItems(sessionId: string, count: number) {
+		const current = this.itemLimits.peek()[sessionId] ?? LAYOUT.visibleItems
+		this.itemLimits.update((l) => ({ ...l, [sessionId]: current + count }))
+	}
+
+	/**
+	 * Lays out enough of a frame's older items to include this item, if it's left out. True if the
+	 * item exists in a shown frame (and so is now laid out).
+	 */
+	revealItem(itemId: string): boolean {
+		const item = this.items.peek()[itemId]
+		if (!item || this.isSessionHidden(item.sessionId)) return false
+		if (this.layout.get().items.has(itemId)) return true
+		const needed = itemsToReveal(this.items.peek(), itemId)
+		const current = this.itemLimits.peek()[item.sessionId] ?? LAYOUT.visibleItems
+		// Round up to whole steps past the default, like clicking "Show more" until it's there.
+		const limit = Math.max(current, LAYOUT.visibleItems + Math.ceil((needed - LAYOUT.visibleItems) / LAYOUT.showMoreStep) * LAYOUT.showMoreStep)
+		this.itemLimits.update((l) => ({ ...l, [item.sessionId]: limit }))
+		return true
+	}
+
+	/** Lays out whatever a selection key points at if it's among a frame's hidden older items. */
+	revealKey(key: string) {
+		const { kind, id } = parseSelectionId(key)
+		if (kind === 'item') this.revealItem(id)
+		if (kind !== 'group' || this.layout.get().groups.some((g) => g.id === id)) return
+		// A group whose items are all older than the frame shows: reveal its newest one.
+		const slash = id.indexOf('/')
+		const sessionId = id.slice(0, slash)
+		const name = id.slice(slash + 1)
+		const newest = Object.values(this.items.peek())
+			.filter((i) => i.sessionId === sessionId && (i.group ?? '') === name)
+			.sort(newestFirst)[0]
+		if (newest) this.revealItem(newest.id)
 	}
 
 	// ---------- selection & hover ----------
@@ -721,6 +765,7 @@ export class Editor {
 	focusSelectionKey(key: string, opts: { animate?: boolean } = {}): boolean {
 		const { kind, id } = parseSelectionId(key)
 		if (kind === 'group') return this.focusGroup(id, opts)
+		this.revealKey(key)
 		const box = this.getSelectionBounds(key)
 		if (!box) return false
 		this.stopCameraMotion()
@@ -735,6 +780,7 @@ export class Editor {
 	 * the selection. Returns false (and changes nothing) if there's no such group.
 	 */
 	focusGroup(groupId: string, opts: { animate?: boolean } = {}): boolean {
+		this.revealKey(groupKey(groupId))
 		if (!this.layout.get().groups.some((g) => g.id === groupId)) return false
 		transact(() => {
 			this.selectNone()

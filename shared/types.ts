@@ -73,8 +73,8 @@ export interface Item {
 	duration?: number
 	/**
 	 * Which group the item belongs to within its session. Groups are just names: items with the
-	 * same name are laid out together under that heading, groups in the order they first appeared.
-	 * Items without a group go in an untitled group at the top of the session.
+	 * same name are laid out together under that heading. On the canvas, the group with the newest
+	 * item comes first and items run newest first; items without a group form an untitled group.
 	 */
 	group?: string
 	/** Shown above the item on the canvas */

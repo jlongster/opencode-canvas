@@ -53,8 +53,9 @@ export async function extractFrame(video: HTMLVideoElement, item: Item, items: R
 }
 
 /**
- * A createdAt that orders a new item right after the video in its group, after frames already
- * extracted from it (1 ms after the last one, so a whole series fits before whatever came next).
+ * A createdAt just after the video's (and frames already extracted from it), rather than now, so
+ * taking a frame doesn't count as new media: its group doesn't jump to the top of the frame. The
+ * layout puts frames right after their video either way (see framesAfterVideos in layout.ts).
  */
 function createdAtAfter(video: Item, items: Record<string, Item>): number {
 	const siblings = Object.values(items)

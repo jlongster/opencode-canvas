@@ -1205,8 +1205,9 @@ const API_INDEX = {
 		'A fragment is wrapped in a minimal page (UTF-8, no margin, white background); send a full document to ' +
 		'control everything. Inline everything (styles, scripts, images as data: URLs).',
 	layout:
-		'Sessions sit side by side, newest on the right, unless people arranged them (see /order); hidden ones aren\'t shown. In a session, the untitled group comes first, then named ' +
-		'groups in the order they were first posted to; each group\'s items flow left to right in rows, in posting order.',
+		'Sessions sit side by side, newest on the right, unless people arranged them (see /order); hidden ones aren\'t shown. In a session, the group posted to most recently ' +
+		'comes first; each group\'s items flow left to right in rows, newest first (frames taken from a video follow it). A session shows ' +
+		'its newest 50 items; older ones stay stored and listed, and viewers can show more of them.',
 }
 
 class HttpError extends Error {

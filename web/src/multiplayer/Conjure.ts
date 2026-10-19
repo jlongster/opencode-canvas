@@ -3,7 +3,7 @@ import type { Editor } from '../editor/Editor'
 import type { Vec } from '../editor/geometry'
 import { ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { atom, computed, react, type Atom } from '../state/signals'
-import { banishConjured, conjure as conjureSession } from '../sync/client'
+import { banishConjured, conjure as conjureSession, moveConjured } from '../sync/client'
 import type { Peer, Presence } from './Presence'
 import { lastAssistantText, runsHere, WormHost, wormName } from './WormHost'
 
@@ -35,8 +35,9 @@ const STOP_WAIT_MS = 20_000
  * one of its tabs is open; everyone else sees its presence, or, with no owner tab, a sleeping worm
  * drawn from its record.
  *
- * Nobody moves a worm from here: the canvas server places it beside its frame (and moves it along
- * with the frame), and only its agent points it elsewhere (highlight steps). On edit links,
+ * Only its owner moves a worm from here (summon: C, a long press or picking it in a Conjure menu;
+ * or dragging it, see AgentWorms), through the server's owner-checked move; the server also moves
+ * it along with its frame, and its agent points it elsewhere (highlight steps). On edit links,
  * clicking one opens a box under it (see ConjurePrompt): the prompt box for its owner, a note about
  * whose it is for everyone else. View links (canEdit false) only watch.
  */
@@ -72,6 +73,9 @@ export class Conjure {
 	readonly stopping = atom<Record<string, number>>('conjureStopping', {})
 	private host: WormHost | null
 	private unwatchStopping: () => void
+	private unwatchPointer: () => void
+	/** where the pointer last was on the canvas (page space), for menus to conjure at */
+	private lastPointer: Vec | null = null
 
 	constructor(
 		readonly editor: Editor,
@@ -89,6 +93,28 @@ export class Conjure {
 			const still = Object.keys(stopping).filter((id) => peers.some((p) => p.user.conjured && p.user.sessionId === id && p.thinking))
 			if (still.length !== Object.keys(stopping).length) this.stopping.set(Object.fromEntries(still.map((id) => [id, stopping[id]])))
 		})
+		this.unwatchPointer = react(() => {
+			const at = this.editor.pointerPage.get()
+			if (at) this.lastPointer = at
+		})
+	}
+
+	/**
+	 * Where a session picked from a menu goes: where the pointer last was on the canvas, when that's
+	 * still in view, else the middle of the view.
+	 */
+	menuSpot(): Vec {
+		const view = this.editor.viewportPageBounds.get()
+		const at = this.lastPointer
+		if (at && at.x >= view.x && at.x <= view.x + view.w && at.y >= view.y && at.y <= view.y + view.h) return at
+		return { x: view.x + view.w / 2, y: view.y + view.h / 2 }
+	}
+
+	/** Whether this browser may move the worm: its own, or one nobody owns (moving it adopts it). */
+	canMove(sessionId: string): boolean {
+		if (!this.canEdit) return false
+		const r = this.record(sessionId)
+		return !!r && (r.ownerId === ownerId || (!r.ownerId && pairings.peek().length > 0))
 	}
 
 	get canPrompt() {
@@ -198,31 +224,86 @@ export class Conjure {
 	}
 
 	/**
-	 * C over a session frame (or a long press), or picking it in the Conjure picker: a session whose
-	 * worm is here already gets its box opened (the prompt for its owner, whose it is for anyone
-	 * else), where it is. Otherwise it's conjured (from whichever paired OpenCode has the session) and
-	 * the server puts it beside its frame; one nobody owns (an agent's attention actions made it) is
-	 * adopted where it sits. `found`: the session's server and title when the caller already knows
-	 * them. Resolves to a message for the user when it can't, else null.
+	 * C over a session frame (or a long press), or picking it in a Conjure menu: brings the session's
+	 * worm to `at` (page space) and opens its prompt box there. Ours glides over; one nobody owns (an
+	 * agent's attention actions made it) is adopted on the way; one that isn't here yet is conjured
+	 * there (from whichever paired OpenCode has the session). Someone else's stays put and gets its box
+	 * opened (whose it is), brought into view. `found`: the session's server and title when the
+	 * caller already knows them. Resolves to a message for the user when it can't, else null.
 	 */
-	async summon(sessionId: string, found?: { serverKey: string; title: string }): Promise<string | null> {
+	async summon(sessionId: string, at: Vec, found?: { serverKey: string; title: string }): Promise<string | null> {
 		if (!this.canEdit) return null
+		const spot = { x: Math.round(at.x), y: Math.round(at.y) }
 		const r = this.record(sessionId)
-		if (r?.ownerId) {
+		if (r?.ownerId && r.ownerId !== ownerId) {
 			const peer = this.worms().find((p) => p.user.sessionId === sessionId)
+			if (peer?.cursor && !this.inView(peer.cursor)) this.focus(sessionId)
 			if (peer) this.open(peer)
+			return null
+		}
+		if (r?.ownerId) {
+			this.close()
+			const moving = this.move(sessionId, spot)
+			this.openWhenHere(sessionId)
+			await moving
 			return null
 		}
 		found ??= (await findSession(sessionId)) ?? undefined
 		if (!found) return pairings.peek().length ? 'No paired OpenCode has this session' : 'Pair an OpenCode (Conjure) to summon its sessions'
+		this.close()
 		try {
-			await conjureSession(this.canvasId, { sessionId, serverKey: found.serverKey, ownerId, title: found.title })
+			if (r) await this.move(sessionId, spot, found)
+			else this.put(await conjureSession(this.canvasId, { sessionId, serverKey: found.serverKey, ownerId, title: found.title, ...spot }))
 		} catch (e) {
 			// Someone conjured it meanwhile.
-			if ((e as { status?: number }).status === 409) return this.record(sessionId)?.ownerId === ownerId ? null : 'Owned by someone else'
+			if ((e as { status?: number }).status === 409 || (e as { status?: number }).status === 403) {
+				if (this.record(sessionId)?.ownerId !== ownerId) return 'Owned by someone else'
+				await this.move(sessionId, spot)
+			} else throw e
+		}
+		this.openWhenHere(sessionId)
+		return null
+	}
+
+	/**
+	 * Moves our own worm to a page position for everyone (C, a menu, a drag), or adopts one nobody
+	 * owns there (`found`: its OpenCode, looked up when not given). It starts over right away; if the
+	 * server refuses, it goes back.
+	 */
+	async move(sessionId: string, at: Vec, found?: { serverKey: string; title: string }) {
+		if (!this.canEdit) return
+		const r = this.record(sessionId)
+		if (!r) throw new Error('that worm was banished')
+		const spot = { x: Math.round(at.x), y: Math.round(at.y) }
+		if (!r.ownerId) {
+			found ??= (await findSession(sessionId)) ?? undefined
+			if (!found) throw new Error(pairings.peek().length ? 'No paired OpenCode has this session' : 'Pair an OpenCode (Conjure) to move it')
+		}
+		this.put({ ...r, ...spot })
+		try {
+			this.put(await moveConjured(this.canvasId, sessionId, { ...spot, ownerId, ...(r.ownerId ? {} : { serverKey: found!.serverKey, title: found!.title }) }))
+		} catch (e) {
+			const now = this.record(sessionId)
+			if (now && now.x === spot.x && now.y === spot.y) this.put({ ...now, x: r.x, y: r.y })
 			throw e
 		}
-		return null
+	}
+
+	/** A record as the server has (or will have) it, without waiting for its event. */
+	private put(record: ConjuredAgent) {
+		this.records.set([...this.records.peek().filter((x) => x.sessionId !== record.sessionId), record])
+	}
+
+	/** Opens the worm's box as soon as it's here (a new one shows up asleep first, then wakes). */
+	private openWhenHere(sessionId: string, tries = 20) {
+		const peer = this.worms().find((p) => p.user.sessionId === sessionId)
+		if (peer) return this.open(peer)
+		if (tries > 0) window.setTimeout(() => this.openWhenHere(sessionId, tries - 1), 100)
+	}
+
+	private inView(p: Vec) {
+		const v = this.editor.viewportPageBounds.get()
+		return p.x >= v.x && p.x <= v.x + v.w && p.y >= v.y && p.y <= v.y + v.h
 	}
 
 	/**
@@ -268,6 +349,7 @@ export class Conjure {
 
 	destroy() {
 		this.unwatchStopping()
+		this.unwatchPointer()
 		this.host?.destroy()
 		this.host = null
 	}

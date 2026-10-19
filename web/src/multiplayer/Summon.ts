@@ -12,10 +12,10 @@ const CREATURE_REACH = 36
 /**
  * Calling up a session's worm (edit links): press C while the pointer is over anything of a session
  * frame (an item, a group, the frame's title or background) or its worm, or long-press it on touch.
- * A worm that's here already gets its box opened where it is; otherwise it's conjured beside its
- * frame (see Conjure.summon); when it can't, the reason shows in the toast. Nothing here moves a
- * worm. C anywhere else opens the session picker next to the pointer (Conjure.picking); C again
- * closes it.
+ * The session's worm comes to the pointer (conjured there if it isn't here yet) with its prompt
+ * box open; someone else's stays put and shows whose it is (see Conjure.summon). When it can't, the
+ * reason shows in the toast. C (or a long press) anywhere else opens the session picker next to the
+ * pointer (Conjure.picking), which conjures the one picked there; C again closes it.
  */
 export class Summon {
 	private disposers: (() => void)[] = []
@@ -64,11 +64,16 @@ export class Summon {
 		return null
 	}
 
+	/** The session's worm to `point`, or the picker there when it's over no session. */
 	private summonAt(point: Vec) {
 		const sessionId = this.sessionAt(point)
-		if (!sessionId) return
+		if (!sessionId) {
+			this.conjure.close()
+			this.conjure.picking.set({ screen: this.editor.pageToScreen(point), page: point })
+			return
+		}
 		this.conjure
-			.summon(sessionId)
+			.summon(sessionId, point)
 			.then((message) => message && this.editor.deletions.notify(message))
 			.catch((e: Error) => this.editor.deletions.notify(`Couldn't summon it: ${e.message}`))
 	}
@@ -80,11 +85,9 @@ export class Summon {
 		if (this.conjure.picking.peek()) return this.conjure.picking.set(null)
 		const point = this.editor.pointerPage.peek()
 		if (!point || this.editor.inputs.isPointing) return
-		if (this.sessionAt(point)) return this.summonAt(point)
-		// (so the C doesn't land in the picker's filter, focused as it opens)
+		// (so the C doesn't land in the prompt box or the picker's filter, focused as they open)
 		e.preventDefault()
-		this.conjure.close()
-		this.conjure.picking.set({ screen: this.editor.pageToScreen(point), page: point })
+		this.summonAt(point)
 	}
 
 	private onPointerDown = (e: PointerEvent) => {

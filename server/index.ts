@@ -1289,9 +1289,13 @@ const API_INDEX = {
 			'into the room while its tab is open ("awake"); otherwise it sleeps. Creatures made for attention actions have no owner ("")',
 		'POST /api/canvases/:cid/conjured':
 			'Conjure an OpenCode session as a creature. Body: {"sessionId", "serverKey" (non-secret id of its OpenCode), "ownerId" ' +
-			'(the owner browser\'s random id), "title"?}. The canvas places it beside its session\'s frame (creatures can\'t be moved by anyone: ' +
-			'they move with their frame, and their agent points them at things with highlight). Adopts an ownerless one where it is; 409 if that session is already here',
-		'PATCH /api/canvases/:cid/conjured/:sessionId': 'Rename a creature. Body: {"title"} (sending "x"/"y" is refused with 403: creatures can\'t be moved)',
+			'(the owner browser\'s random id), "title"?, "x"?, "y"?}. It goes at x/y (page position) when given, else beside its ' +
+			'session\'s frame. Adopts an ownerless one (moved to x/y if given, else where it is); 409 if that session is already here',
+		'POST /api/canvases/:cid/conjured/:sessionId/move':
+			'Its owner moves a creature (summoning it, dragging it). Body: {"x", "y" (page position), "ownerId"}. 403 unless ownerId is ' +
+			'its owner\'s; an ownerless one is adopted on the way when "serverKey" (and "title"?) is sent too',
+		'PATCH /api/canvases/:cid/conjured/:sessionId':
+			'Rename a creature. Body: {"title"} (sending "x"/"y" is refused with 403: only its owner moves it, with POST …/move)',
 		'DELETE /api/canvases/:cid/conjured/:sessionId': 'Banish a creature (and clear its attention queue)',
 		'GET /api/canvases/:cid/actions': 'Every queued attention action on the canvas, oldest first: [{"id", "sessionId", "kind", "text"?, "target"?, "createdAt"}]',
 		'GET /api/canvases/:cid/sessions/:sessionId/actions': 'The session\'s queued attention actions, in order',
@@ -1598,6 +1602,13 @@ async function handle(req: Request): Promise<Response> {
 			const sessionId = typeof body?.sessionId === 'string' ? body.sessionId : ''
 			return json(conjured.conjure(canvas.id, body, () => creatureSpot(canvas.id, sessionId)), 201)
 		}
+	}
+
+	m = /^\/api\/canvases\/([^/]+)\/conjured\/([^/]+)\/move$/.exec(p)
+	if (m && method === 'POST') {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		const body = (await req.json().catch(() => null)) as Record<string, unknown> | null
+		return json(conjured.move(canvas.id, decodeURIComponent(m[2]), body))
 	}
 
 	m = /^\/api\/canvases\/([^/]+)\/conjured\/([^/]+)$/.exec(p)

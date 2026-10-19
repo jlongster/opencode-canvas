@@ -6,6 +6,7 @@ import type { Conjure } from './Conjure'
 import { Colony, type Baby } from './Babies'
 import { Offscreen } from './Offscreen'
 import { Slaps, type Pose } from './Slap'
+import { Carry } from './Carry'
 import './farAway.css'
 import type { Peer, SubagentInfo } from './Presence'
 import { LIFT, NATIVE, SIZE, TIP_REACH, drawPointer, hits, openEye, palette, place, turn, wobble, type EyeState, type Palette, type Shape } from './Pointer'
@@ -50,7 +51,7 @@ const SPEECH_CLOSE_MS = 220
 const STARTLE_MS = 1100
 /** extra screen px around the shape that still counts as clicking it */
 const HIT_SLOP = 4
-/** a press that moves further than this (screen px) pans the canvas instead of clicking */
+/** a press that moves further than this (screen px) drags it (its owner) or pans the canvas instead of clicking */
 const DRAG_PX = 5
 /** the pointer this close to its eye (screen px) gets stared at */
 const STARE_PX = 170
@@ -211,7 +212,7 @@ export interface Worm {
 	badge: HTMLButtonElement | null
 }
 
-/** A pointer that went down on a creature: a click unless it moves, then it pans the canvas. */
+/** A pointer that went down on a creature: a click unless it moves, then a drag (its owner) or a pan. */
 interface Press {
 	pointerId: number
 	worm: Worm
@@ -219,6 +220,7 @@ interface Press {
 	/** where it was last, while it pans */
 	last: Vec
 	panning: boolean
+	dragging: boolean
 }
 
 /**
@@ -262,6 +264,8 @@ export class AgentWorms {
 	private bornAt = Date.now()
 	/** the slap tool's blows (see Slap) */
 	private slaps: Slaps
+	/** creatures their owner is dragging (see Carry) */
+	private carry: Carry
 	/** markers at the edges of the view for creatures out of it */
 	private offscreen: Offscreen
 
@@ -283,6 +287,7 @@ export class AgentWorms {
 		this.tip.className = 'agent-worm-tiny-tip'
 		this.tip.hidden = true
 		this.slaps = new Slaps(editor, conjure, this.reducedMotion)
+		this.carry = new Carry(editor, this.reducedMotion)
 		this.offscreen = new Offscreen(parent, editor, conjure, this.reducedMotion, (worm) => this.startle(worm))
 		this.labels.appendChild(this.tip)
 		// for poking at from the console, like window.editor
@@ -332,7 +337,7 @@ export class AgentWorms {
 			if (worm.leaving) this.revive(worm, now)
 			this.syncCalls(worm)
 			if (target) {
-				worm.goal = target.point
+				worm.goal = this.carry.pinned(worm, peer.cursor, now) ?? target.point
 				worm.focus = target.box
 			} else {
 				worm.focus = null
@@ -382,8 +387,9 @@ export class AgentWorms {
 	destroy() {
 		for (const d of this.disposers.splice(0)) d()
 		this.slaps.destroy()
+		this.carry.clear()
 		this.offscreen.destroy()
-		this.container?.classList.remove('conjure-hover', 'conjure-panning')
+		this.container?.classList.remove('conjure-hover', 'conjure-panning', 'conjure-dragging')
 		this.canvas.remove()
 		this.labels.remove()
 		this.worms.clear()
@@ -415,7 +421,7 @@ export class AgentWorms {
 		this.peeked = over
 	}
 
-	// ---------- clicking creatures (nobody here moves them: dragging one pans the canvas) ----------
+	// ---------- clicking and dragging creatures (only their owner moves them: on anyone else's a drag pans) ----------
 
 	/** The topmost creature under a point in client coordinates. */
 	private hitTest(clientX: number, clientY: number): Worm | null {
@@ -454,7 +460,7 @@ export class AgentWorms {
 		this.swallowed.add(e.pointerId)
 		const at = this.local(e)
 		if (this.slaps.active) return this.slaps.hit(worm, at)
-		this.press = { pointerId: e.pointerId, worm, start: at, last: at, panning: false }
+		this.press = { pointerId: e.pointerId, worm, start: at, last: at, panning: false, dragging: false }
 		try {
 			;(e.target as Element).setPointerCapture?.(e.pointerId)
 		} catch {}
@@ -466,9 +472,10 @@ export class AgentWorms {
 		const press = this.press
 		if (press?.pointerId !== e.pointerId) return
 		this.press = null
-		this.container?.classList.remove('conjure-panning')
+		this.container?.classList.remove('conjure-panning', 'conjure-dragging')
 		const worm = press.worm
 		const peer = this.conjure?.peer(worm.id)
+		if (press.dragging) return this.drop(worm, peer?.user.sessionId ?? null, e.type === 'pointerup')
 		if (press.panning || !peer || e.type !== 'pointerup') return
 		// Calling for attention: a click opens its walkthrough, and another one (or a click while it
 		// isn't calling) the prompt box.
@@ -488,13 +495,23 @@ export class AgentWorms {
 		if (press?.pointerId === e.pointerId) {
 			e.stopPropagation()
 			const at = this.local(e)
-			if (!press.panning) {
+			if (!press.panning && !press.dragging) {
 				if (Math.hypot(at.x - press.start.x, at.y - press.start.y) < DRAG_PX) return
-				press.panning = true
 				this.container?.classList.remove('conjure-hover')
-				this.container?.classList.add('conjure-panning')
+				// Its owner (or anyone, for one nobody owns) picks it up; on anyone else's the canvas pans.
+				const sessionId = press.worm.sessionId
+				if (sessionId && this.conjure?.canMove(sessionId) && press.worm.mode !== 'vanish') {
+					press.dragging = true
+					if (this.conjure.prompting.peek()?.sessionId === sessionId) this.conjure.close()
+					this.container?.classList.add('conjure-dragging')
+					this.carry.pickUp(press.worm, press.start, press.worm.shape?.centre ?? this.centreOf(press.worm))
+				} else {
+					press.panning = true
+					this.container?.classList.add('conjure-panning')
+				}
 			}
-			// Pressed on a creature and dragged: the canvas pans, as from anywhere empty.
+			if (press.dragging) return this.carry.move(press.worm, at)
+			// Pressed on someone else's creature and dragged: the canvas pans, as from anywhere empty.
 			const cam = this.editor.camera.peek()
 			this.editor.stopCameraMotion()
 			this.editor.setCamera({ x: cam.x + (at.x - press.last.x) / cam.z, y: cam.y + (at.y - press.last.y) / cam.z, z: cam.z })
@@ -505,6 +522,16 @@ export class AgentWorms {
 		const over = e.buttons === 0 && this.overCanvas(e) ? this.hitTest(e.clientX, e.clientY) : null
 		this.slaps.hovered = this.slaps.active ? over : null
 		this.container?.classList.toggle('conjure-hover', !!over && !this.slaps.active)
+	}
+
+	/** Let go of a dragged creature: put down there for everyone, or back where it was if that's refused. */
+	private drop(worm: Worm, sessionId: string | null, ok: boolean) {
+		const at = this.carry.letGo(worm, ok && !!sessionId)
+		if (!at || !ok || !sessionId) return
+		this.conjure!.move(sessionId, at).catch((err: Error) => {
+			this.carry.unpin(sessionId)
+			this.editor.deletions.notify(`Couldn't move it: ${err.message}`)
+		})
 	}
 
 	// ---------- state ----------
@@ -639,6 +666,7 @@ export class AgentWorms {
 			prev.el.remove()
 			this.worms.delete(prev.id)
 			if (this.press?.worm === prev) this.press.worm = worm
+			this.carry.replace(prev, worm)
 			return
 		}
 		if (this.reducedMotion.matches) return
@@ -673,8 +701,9 @@ export class AgentWorms {
 		worm.el.classList.add('leaving')
 		if (this.press?.worm === worm) {
 			this.press = null
-			this.container?.classList.remove('conjure-panning')
+			this.container?.classList.remove('conjure-panning', 'conjure-dragging')
 		}
+		this.carry.letGo(worm, false)
 		if (this.reducedMotion.matches) worm.gone = true
 		else this.vanish(worm, now, null)
 	}
@@ -967,7 +996,8 @@ export class AgentWorms {
 		}
 
 		worm.rest = this.restHeading(worm, this.centreOf(worm))
-		const held = this.slaps.holds(worm, now)
+		const carried = this.carry.holds(worm)
+		const held = carried || this.slaps.holds(worm, now)
 		if (!held) {
 			this.locomote(worm, now, dt, z)
 			this.maybeFidget(worm, now)
@@ -978,8 +1008,11 @@ export class AgentWorms {
 		if (worm.mode === 'pop' || worm.mode === 'vanish') this.popping(worm, now)
 		this.slaps.step(worm, now)
 		const pose = this.slaps.pose(worm, now, z)
-		this.knock(worm, pose, dt)
-		this.steer(worm, pose, now, dt, z)
+		if (carried) this.carry.dangle(worm, dt)
+		else {
+			this.knock(worm, pose, dt)
+			this.steer(worm, pose, now, dt, z)
+		}
 		worm.squash *= 1 - ease(140)
 		this.eyes(worm, now, elapsed)
 	}
@@ -1240,7 +1273,7 @@ export class AgentWorms {
 		let squeeze = 0
 		let lower = 0
 		let dizzy = 0
-		const slapped = this.slaps.eye(worm, now)
+		const slapped = this.carry.eye(worm, now) ?? this.slaps.eye(worm, now)
 		if (slapped) ({ look, lid, wide, slant, squeeze, lower, dizzy } = slapped)
 		else if (startle > 0) {
 			look = { x: 0, y: 0 }

@@ -329,29 +329,6 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 		),
 	},
 	{
-		id: 'note',
-		label: 'Sticky note',
-		key: 'N',
-		icon: (
-			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" style={{ transform: 'translateX(3px)' }}>
-				<path d="M4 4h16v10l-6 6H4z" />
-				<path d="M14 20v-6h6" />
-			</svg>
-		),
-	},
-	{
-		id: 'annotate',
-		label: 'Comment on a spot',
-		key: 'A',
-		icon: (
-			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-				<circle cx="5" cy="19" r="2" fill="currentColor" />
-				<path d="M6.5 17.5L10 14" />
-				<path d="M10 4h10a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 20 13h-7l-3 2.5V13a1.5 1.5 0 0 1-1.5-1.5v-6A1.5 1.5 0 0 1 10 4z" />
-			</svg>
-		),
-	},
-	{
 		id: 'hand',
 		label: 'Hand',
 		key: 'H',
@@ -363,13 +340,35 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 		),
 	},
 	{
+		id: 'annotate',
+		label: 'Comment on a spot',
+		key: 'A',
+		icon: (
+			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+				<path d="M12 21.5s-7-6-7-11.8a7 7 0 0 1 14 0c0 5.8-7 11.8-7 11.8z" />
+				<path d="M9.2 8.2h5.6M9.2 11.2h3.6" />
+			</svg>
+		),
+	},
+	{
+		id: 'note',
+		label: 'Sticky note',
+		key: 'N',
+		icon: (
+			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" style={{ transform: 'translateX(3px)' }}>
+				<path d="M4 4h16v10l-6 6H4z" />
+				<path d="M14 20v-6h6" />
+			</svg>
+		),
+	},
+	{
 		id: 'slap',
 		label: "Slap an agent · interrupts it if it's yours and working",
 		key: 'S',
 		icon: (
 			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-				<path d="M9 12.5V6.2a1.5 1.5 0 0 1 3 0V11V4.6a1.5 1.5 0 0 1 3 0V11V5.6a1.5 1.5 0 0 1 3 0V12V8.6a1.5 1.5 0 0 1 3 0v5.4a7 7 0 0 1-7 7h-.8a6.5 6.5 0 0 1-5-2.4l-3.1-3.8a1.5 1.5 0 0 1 2.3-1.9z" />
-				<path d="M2 7.5h2.5M1.5 11h2.5" />
+				<path d="M16.2 3.7L17.2 8.5L22.1 8.1L18.9 11.9L22.2 15.5L17.3 15.4L16.6 20.2L13.6 16.3L9.4 18.8L10.6 14L6 12.2L10.5 10.2L9 5.5L13.4 7.7z" />
+				<path d="M2 7.5h2.5M1.5 12h2M2 16.5h2.5" />
 			</svg>
 		),
 	},

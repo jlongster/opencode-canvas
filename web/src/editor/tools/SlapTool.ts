@@ -1,15 +1,17 @@
 import { StateNode } from '../StateNode'
 import type { EventOf } from '../types'
 
-/** An open hand, as the cursor while slapping. */
-const HAND =
-	'<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="#fff" stroke="#18181b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
-	'<path d="M7 12.5V6.2a1.5 1.5 0 0 1 3 0V11V4.6a1.5 1.5 0 0 1 3 0V11V5.6a1.5 1.5 0 0 1 3 0V12V8.6a1.5 1.5 0 0 1 3 0v5.4a7 7 0 0 1-7 7h-.8a6.5 6.5 0 0 1-5-2.4l-3.1-3.8a1.5 1.5 0 0 1 2.3-1.9z"/></svg>'
-export const SLAP_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(HAND)}") 13 12, pointer`
+/** The slap tool's icon (an impact burst with speed lines), as the cursor while slapping. */
+const BURST =
+	'<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">' +
+	'<path d="M2 7.5h2.5M1.5 12h2M2 16.5h2.5" stroke="#18181b" stroke-width="3.2"/>' +
+	'<path d="M2 7.5h2.5M1.5 12h2M2 16.5h2.5" stroke="#fff" stroke-width="1.6"/>' +
+	'<path d="M16.2 3.7L17.2 8.5L22.1 8.1L18.9 11.9L22.2 15.5L17.3 15.4L16.6 20.2L13.6 16.3L9.4 18.8L10.6 14L6 12.2L10.5 10.2L9 5.5L13.4 7.7z" fill="#fff" stroke="#18181b" stroke-width="1.5"/></svg>'
+export const SLAP_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(BURST)}") 17 14, pointer`
 
 /**
  * Slapping creatures (see multiplayer/Slap): clicking one is handled by the creatures' layer
- * before it gets here, so this tool only shows the hand. Clicks elsewhere do nothing; Escape goes
+ * before it gets here, so this tool only shows the burst cursor. Clicks elsewhere do nothing; Escape goes
  * back to selecting.
  */
 export class SlapTool extends StateNode {

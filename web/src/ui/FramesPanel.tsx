@@ -35,13 +35,6 @@ export function FramesStatus({ editor, canEdit }: { editor: Editor; canEdit: boo
 		const hidden = sessions.filter((s) => s.hidden).length
 		return [sessions.length - hidden, hidden, Object.keys(editor.items.get()).length, editor.selectedIds.get().length].join('·')
 	})
-	const hovered = useValue(() => {
-		const id = editor.hoveredId.get()
-		const item = id ? editor.items.get()[id] : null
-		if (!item) return null
-		const text = [item.title, item.caption].filter(Boolean).join(': ') || item.id
-		return `${text} — ${item.width}×${item.height}`
-	})
 	const open = useValue(() => framesPanelOpen.get())
 	const rootRef = useRef<HTMLDivElement>(null)
 	const [visible, hidden, items, selected] = counts.split('·').map(Number)
@@ -80,7 +73,6 @@ export function FramesStatus({ editor, canEdit }: { editor: Editor; canEdit: boo
 					<path d="M1 5l4-4 4 4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
 				</svg>
 			</button>
-			{hovered && <span className="hovered">{hovered}</span>}
 			{open && <FramesPanel editor={editor} canEdit={canEdit} />}
 		</div>
 	)

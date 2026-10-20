@@ -382,15 +382,6 @@ img.pt-th.sm {
 	color: #d9d9de;
 }
 
-.pt-who {
-	display: flex;
-	gap: 6px;
-	align-items: center;
-	margin-bottom: 2px;
-	font-size: 11px;
-	color: var(--dim);
-}
-
 .pt-md {
 	overflow-wrap: anywhere;
 }

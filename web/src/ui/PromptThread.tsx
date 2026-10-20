@@ -2,7 +2,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import type { Editor } from '../editor/Editor'
 import { onOpenCodeEvents } from '../opencode/events'
 import type { Conjure, LastExchange, PromptAttachment, PromptTarget, TalkBlock } from '../multiplayer/Conjure'
-import { relativeTime } from './Conjure'
 import { markdownToHtml } from './markdown'
 import { useValue } from './useValue'
 import './promptThread.css'
@@ -193,9 +192,10 @@ function PromptThread({ conjure, target, meta }: { conjure: Conjure; target: Pro
 		})
 	}, [owner, conjure, sessionId])
 
-	// Elapsed times and "3m ago" keep moving.
+	// The elapsed time keeps moving.
 	useEffect(() => {
-		const t = window.setInterval(() => setTick((n) => n + 1), thinking ? 1000 : 30_000)
+		if (!thinking) return
+		const t = window.setInterval(() => setTick((n) => n + 1), 1000)
 		return () => window.clearInterval(t)
 	}, [thinking])
 	useEffect(() => () => window.clearTimeout(flashTimer.current), [])
@@ -233,12 +233,10 @@ function PromptThread({ conjure, target, meta }: { conjure: Conjure; target: Pro
 	const prompts: { id: string; text: string; images: string[]; dim?: boolean }[] = [...(fresh ? [] : (exchange?.prompts ?? [])), ...pending]
 	const usable = (s: string | null) => (s && !s.startsWith('…') ? s : null)
 	let reply: string | null
-	let replyAt: number | null = null
 	if (thinking) reply = live
 	else if (fresh) reply = live !== staleChat.current ? live : null
 	else if (usable(live)) reply = live
 	else reply = exchange?.reply?.text ?? live
-	if (exchange?.reply && reply === exchange.reply.text) replyAt = exchange.reply.at
 	const streaming = thinking && !!live && Date.now() - liveChanged.current < STREAM_QUIET_MS
 	const turnStart = useMemo(() => {
 		const first = !fresh && exchange && !exchange.reply ? exchange.prompts[0]?.at : undefined
@@ -444,10 +442,6 @@ function PromptThread({ conjure, target, meta }: { conjure: Conjure; target: Pro
 					))}
 					{reply && (
 						<div className="pt-it">
-							<div className="pt-who">
-								{name}
-								{!streaming && !thinking && replyAt ? ` · ${relativeTime(replyAt)}` : ''}
-							</div>
 							<div
 								ref={replyRef}
 								className={`pt-md${!expanded && !streaming ? ' clamped' : ''}${canExpand && !expanded ? ' faded' : ''}`}

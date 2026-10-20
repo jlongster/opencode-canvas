@@ -1,32 +1,29 @@
-/* The prompt thread under a conjured worm (PromptThread.tsx): direction B, "Mini thread". */
+/* The prompt stack under a conjured worm (PromptThread.tsx): separate bubbles, one line each until opened. */
 
 .pt {
-	--surf: #1a1a1d;
-	--surf2: #202024;
+	--surf: #151518;
 	--line: rgba(255, 255, 255, 0.08);
 	--line2: rgba(255, 255, 255, 0.13);
 	--tx: #e7e7ea;
 	--mut: #9a9aa3;
 	--dim: #64646d;
+	--shadow:
+		0 10px 24px -8px rgba(0, 0, 0, 0.55),
+		0 2px 6px rgba(0, 0, 0, 0.3);
 	position: absolute;
 	left: 0;
 	top: 0;
 	z-index: 4;
 	box-sizing: border-box;
-	width: 348px;
 	display: flex;
 	flex-direction: column;
+	align-items: flex-start;
+	gap: 6px;
 	color: var(--tx);
-	font: 13px/1.45 system-ui, -apple-system, 'Segoe UI', Inter, Roboto, sans-serif;
+	/* (the same family PromptThread.tsx gives pretext: FONT_FAMILY) */
+	font: 13px/20px Inter, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 	-webkit-font-smoothing: antialiased;
 	text-align: left;
-	background: var(--surf);
-	border: 1px solid var(--line);
-	border-radius: 8px;
-	box-shadow:
-		0 1px 0 rgba(255, 255, 255, 0.03) inset,
-		0 12px 32px -8px rgba(0, 0, 0, 0.6),
-		0 2px 6px rgba(0, 0, 0, 0.35);
 	/* Positioned with left/top (inline) so this scale-in never animates where it is. */
 	animation: pt-in 140ms ease-out;
 	transform-origin: 20px 0;
@@ -67,101 +64,330 @@
 	flex: 1;
 }
 
-.pt-err {
-	color: #fca5a5;
-}
+/* ── bubbles ── */
 
-/* ── floating × and ⋯ (over the top-right of the thread; it scrolls under them) ── */
-
-.pt-body {
+.pt-b {
 	position: relative;
+	flex: none;
+	max-width: 360px;
+	border-radius: 16px;
+	box-shadow: var(--shadow);
 }
 
-.pt-float {
-	position: absolute;
-	top: 6px;
-	right: 6px;
-	z-index: 8;
-	isolation: isolate;
+/* Prompt and reply: filled with the worm's colour, one line. */
+.pt-fill {
 	display: flex;
-	gap: 4px;
-	opacity: 0;
-	transform: translateY(-2px);
-	transition:
-		opacity 120ms ease-out,
-		transform 120ms ease-out;
-	pointer-events: none;
+	align-items: center;
+	gap: 6px;
+	min-height: 32px;
+	padding: 6px 12px;
+	background: var(--c);
+	color: var(--ink);
 }
 
-/* A soft scrim in the corner, from the panel's colour to clear, so they read over any text. */
-.pt-float::before {
-	content: '';
-	position: absolute;
-	top: -6px;
-	right: -6px;
-	z-index: -1;
-	width: 150px;
-	height: 72px;
-	border-top-right-radius: 7px;
-	background: radial-gradient(ellipse 100% 100% at 100% 0%, rgb(26 26 29 / 0.95) 0%, rgb(26 26 29 / 0.82) 40%, rgb(26 26 29 / 0) 78%);
-	pointer-events: none;
+.pt-fill.can {
+	cursor: pointer;
 }
 
-.pt:hover .pt-float,
-.pt-float:focus-within,
-.pt-float.open {
-	opacity: 1;
-	transform: none;
-	pointer-events: auto;
+.pt-fill.can:hover {
+	background: color-mix(in srgb, var(--c) 90%, var(--ink));
 }
 
-@media (hover: none) {
-	.pt-float {
-		opacity: 1;
-		transform: none;
-		pointer-events: auto;
+.pt-fill.dim {
+	opacity: 0.6;
+}
+
+.pt-line {
+	display: block;
+	flex: none;
+	max-width: 336px;
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+.pt-fill.busy {
+	animation: pt-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes pt-pulse {
+	0%,
+	100% {
+		box-shadow:
+			var(--shadow),
+			0 0 0 0 color-mix(in srgb, var(--c) 45%, transparent);
+	}
+	50% {
+		box-shadow:
+			var(--shadow),
+			0 0 0 5px color-mix(in srgb, var(--c) 0%, transparent);
 	}
 }
 
-.pt .pt-fb {
-	width: 24px;
-	height: 24px;
+.pt-idle {
+	opacity: 0.85;
+}
+
+.pt-dot {
+	flex: none;
+	width: 6px;
+	height: 6px;
 	border-radius: 50%;
+	background: currentColor;
+	opacity: 0.5;
+}
+
+/* Prompt chips: its images, tiny, before its words. */
+.pt-chips {
+	display: inline-flex;
+	gap: 4px;
+	flex: none;
+}
+
+.pt-chips img,
+.pt-chip-n {
+	width: 18px;
+	height: 18px;
+	border-radius: 4px;
+	object-fit: cover;
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 20%, transparent);
+}
+
+.pt-chip-n {
+	display: grid;
+	place-items: center;
+	font-size: 10px;
+	font-weight: 600;
+	background: color-mix(in srgb, var(--ink) 14%, transparent);
+}
+
+/* Opened: as wide as they get, and scrolls past a fixed height. */
+.pt-open {
+	width: 360px;
+	padding: 0;
+	align-items: stretch;
+}
+
+.pt-scroll {
+	width: 100%;
+	max-height: 240px;
+	overflow: auto;
+	padding: 10px 14px;
+	overscroll-behavior: contain;
+	overflow-wrap: anywhere;
+	scrollbar-width: thin;
+	scrollbar-color: color-mix(in srgb, var(--ink) 30%, transparent) transparent;
+}
+
+.pt-p + .pt-p {
+	margin-top: 8px;
+	padding-top: 8px;
+	border-top: 1px solid color-mix(in srgb, var(--ink) 16%, transparent);
+}
+
+.pt-p.dim {
+	opacity: 0.6;
+}
+
+.pt-pt {
+	white-space: pre-wrap;
+}
+
+.pt-ims {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+
+.pt-ims:not(:last-child) {
+	margin-bottom: 6px;
+}
+
+.pt-th {
+	position: relative;
+	flex: none;
+	width: 44px;
+	height: 44px;
+	border-radius: 6px;
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	background: #1c1c20;
+}
+
+.pt-th img,
+img.pt-th {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	border-radius: 5px;
+}
+
+img.pt-th.sm {
+	width: 40px;
+	height: 40px;
+	border-color: color-mix(in srgb, var(--ink) 20%, transparent);
+}
+
+.pt .pt-th-x {
+	position: absolute;
+	right: -6px;
+	top: -6px;
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	background: #2a2a2f;
+	border: 1px solid var(--line2);
 	display: grid;
 	place-items: center;
 	color: var(--mut);
-	background: rgb(38 38 43 / 0.62);
-	border: 1px solid rgba(255, 255, 255, 0.1);
-	box-shadow:
-		0 1px 0 rgba(255, 255, 255, 0.05) inset,
-		0 2px 8px rgba(0, 0, 0, 0.45);
-	-webkit-backdrop-filter: blur(6px) saturate(140%);
-	backdrop-filter: blur(6px) saturate(140%);
-	transition:
-		background 100ms,
-		color 100ms,
-		border-color 100ms;
+	opacity: 0;
+	transition: opacity 0.1s;
 }
 
-.pt .pt-fb:hover,
-.pt .pt-fb[aria-expanded='true'] {
+.pt-th:hover .pt-th-x,
+.pt-th-x:focus-visible {
+	opacity: 1;
+}
+
+.pt-th-x svg {
+	width: 8px;
+	height: 8px;
+}
+
+/* The reply, opened: its Markdown, on its colour. */
+.pt-md > :first-child {
+	margin-top: 0;
+}
+
+.pt-md > :last-child {
+	margin-bottom: 0;
+}
+
+.pt-md p,
+.pt-md ul,
+.pt-md ol,
+.pt-md pre,
+.pt-md blockquote {
+	margin: 0 0 8px;
+}
+
+.pt-md ul,
+.pt-md ol {
+	padding-left: 18px;
+}
+
+.pt-md h1,
+.pt-md h2,
+.pt-md h3,
+.pt-md h4 {
+	margin: 10px 0 4px;
+	font-size: 13px;
+	font-weight: 700;
+}
+
+.pt-md a {
+	color: inherit;
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+
+.pt-md code {
+	font: 12px ui-monospace, monospace;
+	padding: 1px 4px;
+	border-radius: 4px;
+	background: color-mix(in srgb, var(--ink) 10%, transparent);
+}
+
+.pt-md pre {
+	padding: 8px 10px;
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--ink) 10%, transparent);
+	overflow-x: auto;
+}
+
+.pt-md pre code {
+	padding: 0;
+	background: none;
+}
+
+.pt-md blockquote {
+	padding-left: 10px;
+	border-left: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
+	opacity: 0.85;
+}
+
+.pt-md hr {
+	margin: 10px 0;
+	border: 0;
+	border-top: 1px solid color-mix(in srgb, var(--ink) 20%, transparent);
+}
+
+.pt-md img {
+	max-width: 100%;
+}
+
+/* ── input: dark, in a thick ring of its colour ── */
+
+.pt-in {
+	width: 360px;
+	padding: 6px 8px 5px 10px;
+	background: var(--surf);
+	border: 3px solid var(--c);
+}
+
+.pt-in.drag {
+	border-style: dashed;
+}
+
+.pt-atts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin: 4px 0 8px;
+}
+
+.pt-ta {
+	position: relative;
+}
+
+.pt-in textarea {
+	display: block;
+	width: 100%;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	outline: 0;
+	resize: none;
+	background: none;
 	color: var(--tx);
-	background: rgb(56 56 62 / 0.78);
-	border-color: rgba(255, 255, 255, 0.16);
+	font: inherit;
+	line-height: 20px;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+	overflow-y: hidden;
+	cursor: text;
+	scrollbar-width: thin;
+	scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
 }
 
-.pt .pt-fb:focus-visible {
-	outline: 2px solid color-mix(in srgb, var(--c) 70%, transparent);
-	outline-offset: 1px;
+.pt-in textarea::placeholder {
+	color: var(--dim);
 }
 
-.pt-fb svg {
-	width: 12px;
-	height: 12px;
+/* The draft's first line (pretext's), over the textarea while it's collapsed. */
+.pt-ta-line {
+	position: absolute;
+	inset: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	pointer-events: none;
+	color: var(--tx);
 }
 
-.pt-moon {
-	vertical-align: -1px;
+.pt-tb {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin-top: 4px;
 }
 
 .pt-ib {
@@ -191,12 +417,268 @@
 	height: 15px;
 }
 
-/* ── ⋯ menu ── */
+.pt-h {
+	margin-left: 4px;
+	min-width: 0;
+	font-size: 11.5px;
+	color: var(--dim);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pt-h.pt-fail {
+	color: #fca5a5;
+}
+
+.pt .pt-fail button {
+	color: #fecaca;
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+
+.pt-flash {
+	display: inline-flex;
+	gap: 6px;
+	align-items: center;
+	color: var(--c);
+	font-size: 12px;
+}
+
+.pt-flash svg {
+	width: 12px;
+	height: 12px;
+}
+
+.pt-error {
+	display: flex;
+	gap: 8px;
+	align-items: flex-start;
+	margin-top: 6px;
+	font-size: 12px;
+	line-height: 17px;
+	color: #fca5a5;
+}
+
+.pt-error svg {
+	flex: none;
+	width: 14px;
+	height: 14px;
+	margin-top: 1.5px;
+}
+
+.pt .pt-send {
+	width: 26px;
+	height: 26px;
+	border-radius: 6px;
+	display: inline-grid;
+	place-items: center;
+	flex: none;
+	background: rgba(255, 255, 255, 0.06);
+	color: var(--dim);
+}
+
+.pt .pt-send.on {
+	background: var(--c);
+	color: var(--ink);
+}
+
+.pt-send svg {
+	width: 14px;
+	height: 14px;
+}
+
+.pt .pt-btn {
+	height: 26px;
+	padding: 0 9px;
+	border-radius: 6px;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex: none;
+	font-size: 12px;
+	font-weight: 500;
+	white-space: nowrap;
+}
+
+.pt .pt-btn.ghost {
+	border: 1px solid var(--line2);
+	color: var(--tx);
+}
+
+.pt .pt-btn.ghost:hover:not(:disabled) {
+	background: rgba(255, 255, 255, 0.05);
+}
+
+.pt .pt-btn.pri {
+	background: var(--c);
+	color: var(--ink);
+}
+
+.pt .pt-btn.pri.off {
+	background: rgba(255, 255, 255, 0.06);
+	color: var(--dim);
+}
+
+.pt .pt-btn.danger {
+	background: #f87171;
+	color: #0d0d0f;
+}
+
+.pt-stopi {
+	width: 8px;
+	height: 8px;
+	border-radius: 2px;
+	background: currentColor;
+}
+
+.pt-drop {
+	position: absolute;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	border-radius: 13px;
+	background: color-mix(in srgb, #151518 82%, var(--c));
+	color: var(--tx);
+	font-size: 12px;
+	pointer-events: none;
+}
+
+/* ── read-only note, in place of the input ── */
+
+.pt-ro {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 32px;
+	padding: 5px 12px;
+	background: var(--surf);
+	border: 1.5px dashed color-mix(in srgb, var(--c) 65%, transparent);
+	color: var(--mut);
+}
+
+.pt-ro.can {
+	cursor: pointer;
+}
+
+.pt-ro.pt-open {
+	padding: 9px 13px;
+	font-size: 12px;
+	line-height: 17px;
+}
+
+.pt-ro-full b {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	margin-bottom: 2px;
+	color: var(--tx);
+	font-weight: 500;
+}
+
+.pt-lock {
+	flex: none;
+}
+
+.pt-asleep {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	margin-left: 4px;
+	color: var(--dim);
+	font-weight: 400;
+}
+
+.pt-moon {
+	vertical-align: -1px;
+}
+
+/* ── ⋯ and ×, beside the stack on hover ── */
+
+.pt-ctl {
+	position: absolute;
+	top: 4px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	opacity: 0;
+	transition: opacity 120ms ease-out;
+	pointer-events: none;
+}
+
+.pt-ctl.right {
+	left: calc(100% + 6px);
+}
+
+.pt-ctl.left {
+	right: calc(100% + 6px);
+}
+
+/* (a strip across the gap, so the pointer can get to them without leaving the stack) */
+.pt-ctl::before {
+	content: '';
+	position: absolute;
+	top: -4px;
+	bottom: -4px;
+	width: 10px;
+}
+
+.pt-ctl.right::before {
+	right: 100%;
+}
+
+.pt-ctl.left::before {
+	left: 100%;
+}
+
+.pt:hover .pt-ctl,
+.pt-ctl:focus-within,
+.pt-ctl.open {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+@media (hover: none) {
+	.pt-ctl {
+		opacity: 1;
+		pointer-events: auto;
+	}
+}
+
+.pt .pt-fb {
+	width: 24px;
+	height: 24px;
+	border-radius: 50%;
+	display: grid;
+	place-items: center;
+	color: var(--mut);
+	background: #222226;
+	border: 1px solid var(--line2);
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+	transition:
+		background 100ms,
+		color 100ms;
+}
+
+.pt .pt-fb:hover,
+.pt .pt-fb[aria-expanded='true'] {
+	color: var(--tx);
+	background: #2e2e33;
+}
+
+.pt .pt-fb:focus-visible {
+	outline: 2px solid color-mix(in srgb, var(--c) 70%, transparent);
+	outline-offset: 1px;
+}
+
+.pt-fb svg {
+	width: 12px;
+	height: 12px;
+}
 
 .pt-menu {
 	position: absolute;
-	right: 6px;
-	top: 36px;
+	top: 64px;
 	z-index: 9;
 	width: 220px;
 	display: flex;
@@ -207,6 +689,16 @@
 	border-radius: 8px;
 	box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
 	font-size: 12.5px;
+	line-height: 1.45;
+}
+
+/* (under the ⋯, reaching back over the stack rather than off the window) */
+.pt-menu.right {
+	right: -30px;
+}
+
+.pt-menu.left {
+	left: -30px;
 }
 
 .pt .pt-menu > button {
@@ -222,10 +714,6 @@
 
 .pt .pt-menu > button:hover:not(:disabled) {
 	background: rgba(255, 255, 255, 0.06);
-}
-
-.pt .pt-menu > button:disabled {
-	color: var(--dim);
 }
 
 .pt .pt-menu > button.pt-danger {
@@ -260,469 +748,6 @@
 	gap: 6px;
 }
 
-/* ── thread ── */
-
-.pt-thread {
-	position: relative;
-	display: flex;
-	flex-direction: column;
-	gap: 10px;
-	max-height: 240px;
-	overflow: auto;
-	padding: 12px 12px 4px;
-	overscroll-behavior: contain;
-	scrollbar-width: thin;
-	scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
-}
-
-.pt-thread.expanded {
-	max-height: min(60vh, 520px);
-}
-
-.pt-empty {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	min-height: 18px;
-	padding: 1px 64px 4px 0;
-	font-size: 12px;
-	color: var(--dim);
-}
-
-.pt-dot {
-	flex: none;
-	width: 6px;
-	height: 6px;
-	border-radius: 50%;
-	background: color-mix(in srgb, var(--c) 55%, transparent);
-}
-
-.pt-me {
-	align-self: flex-end;
-	max-width: 84%;
-	padding: 7px 10px;
-	border-radius: 10px 10px 3px 10px;
-	background: rgba(255, 255, 255, 0.065);
-	line-height: 18px;
-	white-space: pre-wrap;
-	overflow-wrap: anywhere;
-	flex: none;
-}
-
-.pt-me.dim {
-	opacity: 0.6;
-}
-
-.pt-ims {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 4px;
-	justify-content: flex-end;
-}
-
-.pt-ims:not(:last-child) {
-	margin-bottom: 6px;
-}
-
-.pt-th {
-	position: relative;
-	flex: none;
-	width: 44px;
-	height: 44px;
-	border-radius: 6px;
-	border: 1px solid rgba(255, 255, 255, 0.1);
-	background: #1c1c20;
-}
-
-.pt-th img,
-img.pt-th {
-	display: block;
-	width: 100%;
-	height: 100%;
-	object-fit: cover;
-	border-radius: 5px;
-}
-
-img.pt-th.sm {
-	width: 32px;
-	height: 32px;
-	border-radius: 5px;
-}
-
-.pt .pt-th-x {
-	position: absolute;
-	right: -6px;
-	top: -6px;
-	width: 16px;
-	height: 16px;
-	border-radius: 50%;
-	background: #2a2a2f;
-	border: 1px solid var(--line2);
-	display: grid;
-	place-items: center;
-	color: var(--mut);
-	opacity: 0;
-	transition: opacity 0.1s;
-}
-
-.pt-th:hover .pt-th-x,
-.pt-th-x:focus-visible {
-	opacity: 1;
-}
-
-.pt-th-x svg {
-	width: 8px;
-	height: 8px;
-}
-
-.pt-it {
-	flex: none;
-	padding-right: 6px;
-	line-height: 19px;
-	color: #d9d9de;
-}
-
-.pt-md {
-	overflow-wrap: anywhere;
-}
-
-.pt-md.clamped {
-	max-height: 152px;
-	overflow: hidden;
-}
-
-.pt-md.clamped.faded {
-	-webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent);
-	mask-image: linear-gradient(to bottom, #000 70%, transparent);
-}
-
-.pt-md > :first-child {
-	margin-top: 0;
-}
-
-.pt-md > :last-child {
-	margin-bottom: 0;
-}
-
-.pt-md p,
-.pt-md ul,
-.pt-md ol,
-.pt-md pre,
-.pt-md blockquote {
-	margin: 0 0 8px;
-}
-
-.pt-md ul,
-.pt-md ol {
-	padding-left: 18px;
-}
-
-.pt-md h1,
-.pt-md h2,
-.pt-md h3,
-.pt-md h4 {
-	margin: 10px 0 4px;
-	font-size: 13px;
-	font-weight: 600;
-	color: var(--tx);
-}
-
-.pt-md a {
-	color: var(--c);
-}
-
-.pt-md code {
-	font: 12px ui-monospace, monospace;
-	padding: 1px 4px;
-	border-radius: 4px;
-	background: rgba(255, 255, 255, 0.07);
-}
-
-.pt-md pre {
-	padding: 8px 10px;
-	border-radius: 6px;
-	background: rgba(0, 0, 0, 0.3);
-	overflow-x: auto;
-}
-
-.pt-md pre code {
-	padding: 0;
-	background: none;
-}
-
-.pt-md blockquote {
-	padding-left: 10px;
-	border-left: 2px solid var(--line2);
-	color: var(--mut);
-}
-
-.pt-md hr {
-	margin: 10px 0;
-	border: 0;
-	border-top: 1px solid var(--line2);
-}
-
-.pt-md img {
-	max-width: 100%;
-}
-
-.pt .pt-expand {
-	margin-top: 4px;
-	font-size: 11.5px;
-	color: var(--mut);
-}
-
-.pt .pt-expand:hover {
-	color: var(--tx);
-}
-
-.pt-think {
-	display: flex;
-	flex-direction: column;
-	gap: 5px;
-	flex: none;
-	padding: 2px 60px 2px 0;
-	font-size: 12px;
-	color: var(--mut);
-}
-
-.pt-row {
-	display: flex;
-	gap: 8px;
-	align-items: center;
-	min-width: 0;
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.pt-row b {
-	color: var(--tx);
-	font-weight: 500;
-	font-variant-numeric: tabular-nums;
-}
-
-.pt-fail,
-.pt-error {
-	display: flex;
-	gap: 8px;
-	align-items: flex-start;
-	font-size: 11.5px;
-	line-height: 17px;
-	color: #fca5a5;
-}
-
-.pt-fail {
-	align-self: flex-end;
-	margin-top: -6px;
-	flex: none;
-}
-
-.pt-error {
-	margin: 6px 12px 0;
-	font-size: 12px;
-}
-
-.pt-fail svg,
-.pt-error svg {
-	flex: none;
-	width: 14px;
-	height: 14px;
-	margin-top: 1.5px;
-}
-
-.pt .pt-fail button {
-	color: #fecaca;
-	text-decoration: underline;
-	text-underline-offset: 2px;
-	margin-left: 2px;
-}
-
-/* ── composer ── */
-
-.pt-comp {
-	position: relative;
-	margin: 8px;
-	padding: 8px 8px 6px 10px;
-	border: 1px solid var(--line);
-	border-radius: 8px;
-	background: #151518;
-}
-
-.pt-comp:focus-within,
-.pt-comp.drag {
-	border-color: color-mix(in srgb, var(--c) 70%, transparent);
-	box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 16%, transparent);
-}
-
-.pt-comp.drag {
-	border-style: dashed;
-}
-
-.pt-atts {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 6px;
-	margin: 2px 0 8px;
-}
-
-.pt-comp textarea {
-	display: block;
-	width: 100%;
-	margin: 0;
-	padding: 0;
-	border: 0;
-	outline: 0;
-	resize: none;
-	background: none;
-	color: var(--tx);
-	font: inherit;
-	line-height: 20px;
-	overflow-y: hidden;
-}
-
-.pt-comp textarea::placeholder {
-	color: var(--dim);
-}
-
-.pt-tb {
-	display: flex;
-	align-items: center;
-	gap: 4px;
-	margin-top: 4px;
-}
-
-.pt-h {
-	margin-left: 4px;
-	min-width: 0;
-	font-size: 11px;
-	color: var(--dim);
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.pt-flash {
-	display: inline-flex;
-	gap: 6px;
-	align-items: center;
-	color: var(--c);
-	font-size: 12px;
-}
-
-.pt-flash svg {
-	width: 12px;
-	height: 12px;
-}
-
-.pt .pt-send {
-	width: 26px;
-	height: 26px;
-	border-radius: 6px;
-	display: inline-grid;
-	place-items: center;
-	flex: none;
-	background: rgba(255, 255, 255, 0.06);
-	color: var(--dim);
-}
-
-.pt .pt-send.on {
-	background: var(--c);
-	color: #0d0d0f;
-}
-
-.pt-send svg {
-	width: 14px;
-	height: 14px;
-}
-
-.pt .pt-btn {
-	height: 26px;
-	padding: 0 9px;
-	border-radius: 6px;
-	display: inline-flex;
-	align-items: center;
-	gap: 6px;
-	flex: none;
-	font-size: 12px;
-	font-weight: 500;
-	white-space: nowrap;
-}
-
-.pt .pt-btn.ghost {
-	border: 1px solid var(--line2);
-	color: var(--tx);
-}
-
-.pt .pt-btn.ghost:hover:not(:disabled) {
-	background: rgba(255, 255, 255, 0.05);
-}
-
-.pt .pt-btn.pri {
-	background: var(--c);
-	color: #0d0d0f;
-}
-
-.pt .pt-btn.pri.off {
-	background: rgba(255, 255, 255, 0.06);
-	color: var(--dim);
-}
-
-.pt .pt-btn.danger {
-	background: #f87171;
-	color: #0d0d0f;
-}
-
-.pt-stopi {
-	width: 8px;
-	height: 8px;
-	border-radius: 2px;
-	background: currentColor;
-}
-
-.pt-drop {
-	position: absolute;
-	inset: 0;
-	display: grid;
-	place-items: center;
-	border-radius: 7px;
-	background: color-mix(in srgb, #151518 82%, var(--c));
-	color: var(--tx);
-	font-size: 12px;
-	pointer-events: none;
-}
-
-/* ── read-only ── */
-
-.pt-ro {
-	margin: 8px;
-	padding: 10px 12px;
-	border-radius: 8px;
-	background: rgba(255, 255, 255, 0.03);
-	border: 1px dashed var(--line2);
-	font-size: 12px;
-	line-height: 17px;
-	color: var(--mut);
-}
-
-.pt-ro b {
-	display: flex;
-	align-items: center;
-	gap: 5px;
-	margin-bottom: 2px;
-	color: var(--tx);
-	font-weight: 500;
-}
-
-.pt-asleep {
-	display: inline-flex;
-	align-items: center;
-	gap: 4px;
-	margin-left: 4px;
-	color: var(--dim);
-	font-weight: 400;
-}
-
 /* ── spinner, caret ── */
 
 .pt-spin {
@@ -731,9 +756,14 @@ img.pt-th.sm {
 	width: 12px;
 	height: 12px;
 	border-radius: 50%;
-	border: 1.5px solid color-mix(in srgb, var(--c) 25%, transparent);
-	border-top-color: var(--c);
+	border: 1.5px solid color-mix(in srgb, currentColor 25%, transparent);
+	border-top-color: currentColor;
 	animation: pt-spin 0.8s linear infinite;
+}
+
+.pt-in .pt-spin {
+	border-color: color-mix(in srgb, var(--c) 25%, transparent);
+	border-top-color: var(--c);
 }
 
 .pt-spin.pt-spin-xs {
@@ -741,9 +771,9 @@ img.pt-th.sm {
 	height: 9px;
 }
 
-.pt-spin.dark {
-	border-color: rgba(0, 0, 0, 0.2);
-	border-top-color: #0d0d0f;
+.pt .pt-spin.dark {
+	border-color: color-mix(in srgb, var(--ink) 20%, transparent);
+	border-top-color: var(--ink);
 }
 
 @keyframes pt-spin {
@@ -759,7 +789,7 @@ img.pt-th.sm {
 	margin-left: 2px;
 	border-radius: 1px;
 	vertical-align: -2px;
-	background: var(--c);
+	background: currentColor;
 	animation: pt-blink 1s steps(2) infinite;
 }
 
@@ -771,7 +801,8 @@ img.pt-th.sm {
 
 @media (prefers-reduced-motion: reduce) {
 	.pt,
-	.pt-caret {
+	.pt-caret,
+	.pt-fill.busy {
 		animation: none;
 	}
 

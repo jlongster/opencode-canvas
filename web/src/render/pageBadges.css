@@ -1,0 +1,87 @@
+/* Page items' link badges and loading notes (render/PageBadges.ts) */
+.page-badges {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	overflow: hidden;
+}
+
+.page-badge {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	padding: 3px 8px 3px 8px;
+	border-radius: 999px;
+	background: rgba(20, 20, 24, 0.78);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+	backdrop-filter: blur(8px);
+	color: rgba(255, 255, 255, 0.9);
+	font-size: 11.5px;
+	font-weight: 500;
+	line-height: 1.3;
+	white-space: nowrap;
+	overflow: hidden;
+	will-change: transform;
+}
+
+.page-badge .domain {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.page-badge .state {
+	color: rgba(255, 255, 255, 0.6);
+	font-weight: 400;
+}
+
+.page-badge svg {
+	flex: none;
+	opacity: 0.75;
+}
+
+.page-badge.failed .state {
+	color: #fca5a5;
+}
+
+.page-note {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 12px;
+	box-sizing: border-box;
+	text-align: center;
+	color: rgba(255, 255, 255, 0.55);
+	overflow: hidden;
+}
+
+.page-note.loading {
+	animation: page-note-pulse 1.4s ease-in-out infinite;
+}
+
+.page-note.failed {
+	color: #fca5a5;
+}
+
+@keyframes page-note-pulse {
+	50% {
+		opacity: 0.45;
+	}
+}
+
+/* the Shift-hover bar's Refresh snapshot button while one is being taken */
+.item-action.item-refresh.busy svg {
+	animation: page-refresh-spin 1s linear infinite;
+}
+
+@keyframes page-refresh-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}

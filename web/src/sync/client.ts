@@ -91,6 +91,13 @@ export function uploadItem(
 	return request<Item>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/items`, { method: 'POST', body: form })
 }
 
+/** Posts a snapshot of a web page as a page item (the snapshot follows live). */
+export const postPage = (canvasId: string, sessionId: string, page: string, meta: { sessionTitle?: string; group?: string } = {}) =>
+	request<Item>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/items`, json('POST', { page, ...meta }))
+
+/** Takes a page item's snapshot again. */
+export const refreshPage = (id: string) => request<Item>(`/api/items/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
+
 // ---------- conjured worms (records; the owner's browser runs them, see multiplayer/WormHost.ts) ----------
 
 const conjuredPath = (canvasId: string, sessionId?: string) =>

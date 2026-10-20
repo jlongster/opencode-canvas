@@ -11,6 +11,7 @@ import { homeSpot, rushSpot } from '../web/src/multiplayer/Pointer'
 import { AttentionError, createAttention } from './attention'
 import { ConjureError, createConjured } from './conjured'
 import { imageSize } from './imageSize'
+import { createPages, PAGE_MAX_HEIGHT, PageError } from './pages'
 import { createCanvasMcp } from './mcp'
 import { changeRoomDoc, discardRoom, getRoomSnapshot, readRoomDoc, roomSockets, setRoomPersistence, type RoomSocketData } from './rooms'
 import type { Server, ServerWebSocket } from 'bun'
@@ -404,6 +405,39 @@ async function makeThumb(input: string, output: string) {
 	])
 }
 
+/** fontconfig fonts by pattern, for drawn page cards */
+const fonts = new Map<string, Promise<string | null>>()
+function fontFor(pattern: string) {
+	if (!fonts.has(pattern)) {
+		fonts.set(
+			pattern,
+			Bun.which('fc-match') ? run(['fc-match', '-f', '%{file}', pattern]).then((f) => (f.trim() && existsSync(f.trim()) ? f.trim() : null), () => null) : Promise.resolve(null),
+		)
+	}
+	return fonts.get(pattern)!
+}
+
+/**
+ * Whether page items may show private and local addresses (localhost, 10.x, 192.168.x, …): yes when
+ * the server only listens on this machine (`bunx opencode-canvas` binds 127.0.0.1), so people can
+ * put their dev servers on a canvas; no when it listens on every interface (a shared server, like
+ * jamesbox), where it would let anyone probe its network. CANVAS_PAGES_PRIVATE=1/0 decides instead.
+ */
+const PAGES_PRIVATE = process.env.CANVAS_PAGES_PRIVATE
+	? /^(1|true|yes)$/i.test(process.env.CANVAS_PAGES_PRIVATE)
+	: !!HOSTNAME && ['localhost', '127.0.0.1', '::1', '[::1]'].includes(HOSTNAME)
+
+const pages = createPages({
+	mediaDir: MEDIA_DIR,
+	hasFfmpeg: HAS_FFMPEG,
+	run,
+	probe,
+	makeThumb,
+	font: fontFor,
+	allowPrivate: PAGES_PRIVATE,
+	log: (m) => !process.env.CANVAS_QUIET && console.log(m),
+})
+
 function kindOf(ext: string, mime?: string): MediaKind | null {
 	if (HTML_EXTS.has(ext) || mime?.startsWith('text/html')) return 'html'
 	if (VIDEO_EXTS.has(ext) || mime?.startsWith('video/')) return 'video'
@@ -480,9 +514,9 @@ function canvasData(canvas: Canvas): CanvasData {
 
 function canvasSummary(canvas: Canvas): CanvasSummary {
 	const { sessions, items } = canvasData(canvas)
-	// HTML items have no image thumbnail.
+	// HTML items have no image thumbnail, nor pages until their first snapshot.
 	const previews = items
-		.filter((i) => i.kind !== 'html')
+		.filter((i) => i.kind !== 'html' && i.thumb)
 		.sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
 		.slice(0, 4)
 		.map((i) => i.thumb)
@@ -738,6 +772,9 @@ interface ItemJson {
 	caption?: string
 	name?: unknown
 	sessionTitle?: unknown
+	/** a web page to snapshot (a page item) */
+	page?: unknown
+	fullPage?: unknown
 }
 
 /** The file a JSON post or PATCH sends: {"html"}, {"path"} (a file on this machine) or {"url"}; null for none. */
@@ -782,8 +819,13 @@ async function addItemFromJson(canvasId: string, sessionId: string, body: ItemJs
 		height: sizeField(body?.height, 'height'),
 		sessionTitle: textField(body?.sessionTitle)?.slice(0, TITLE_MAX),
 	}
+	if (body?.page !== undefined && body.page !== null) {
+		if ([body.path, body.url, body.html].some((v) => v !== undefined && v !== null)) throw new HttpError(400, 'send one of "page", "path", "url" or "html"')
+		const { width: _, height: __, ...rest } = meta
+		return addPageItem(canvasId, sessionId, await pageField(body.page), pageOptions(body), rest)
+	}
 	const source = await jsonSource(body)
-	if (!source) throw new HttpError(400, 'send multipart "file", or JSON {"path"}, {"url"} or {"html"}')
+	if (!source) throw new HttpError(400, 'send multipart "file", or JSON {"path"}, {"url"}, {"html"} or {"page"}')
 	return addItem(canvasId, sessionId, source, meta)
 }
 
@@ -796,15 +838,23 @@ async function addItemFromJson(canvasId: string, sessionId: string, body: ItemJs
  */
 async function patchItem(item: Item, body: Record<string, unknown>, source: MediaSource | null): Promise<Item> {
 	const changes = itemChanges(body)
+	if (body.page !== undefined && body.page !== null) {
+		if (source) throw new HttpError(400, 'send one of "page", "path", "url" or "html"')
+		return replacePage(item, await pageField(body.page), pageOptions(body, item.kind === 'page' ? item.page : undefined), changes)
+	}
+	if (item.kind === 'page' && !source && (isTrue(body.refresh) || ['width', 'height', 'fullPage'].some((k) => body[k] !== undefined))) {
+		return refreshPage(item, pageOptions(body, item.page), changes)
+	}
+	if (body.refresh !== undefined && !source) throw new HttpError(400, '"refresh" only re-snapshots page items')
 	const width = sizeField(body.width, 'width')
 	const height = sizeField(body.height, 'height')
 	if (!source) {
 		const resize = width !== undefined || height !== undefined
-		if (resize && item.kind !== 'html') throw new HttpError(400, '"width"/"height" only resize HTML items (or size a new HTML file)')
+		if (resize && item.kind !== 'html') throw new HttpError(400, '"width"/"height" only resize HTML items and re-snapshot pages (or size a new HTML file)')
 		if (!resize && !Object.keys(changes).length) {
 			throw new HttpError(
 				400,
-				'send a new file (multipart "file", or JSON {"path"}, {"url"} or {"html"}) and/or any of {"group", "title", "caption", "name"} (null clears, except name)',
+				'send a new file (multipart "file", or JSON {"path"}, {"url"}, {"html"} or {"page"}) and/or any of {"group", "title", "caption", "name"} (null clears, except name)',
 			)
 		}
 		return updateItem(item, changes, resize ? { width: width ?? item.width, height: height ?? item.height } : undefined)
@@ -818,8 +868,9 @@ async function patchItem(item: Item, body: Record<string, unknown>, source: Medi
 		throw new HttpError(404, `item ${item.id} was deleted while its new file was processed`)
 	}
 	const filename = 'data' in source ? source.filename : undefined
-	// No longer a frame of the video it was taken from, nor its old length.
-	const { duration: _, sourceItemId: __, sourceTime: ___, ...rest } = current
+	cancelSnapshot(item.id)
+	// No longer a frame of the video it was taken from, nor its old length, nor a web page.
+	const { duration: _, sourceItemId: __, sourceTime: ___, pageUrl: _p, page: _pi, snapshotAt: _s, ...rest } = current
 	const next = applyChanges(
 		{ ...rest, ...media, name: (filename && basename(filename)) || withExtension(current.name, media.src), createdAt: Date.now() },
 		changes,
@@ -836,6 +887,170 @@ function withExtension(name: string, src: string) {
 	const old = extname(name)
 	if (old.toLowerCase() === ext.toLowerCase()) return name
 	return (old ? name.slice(0, -old.length) : name) + ext
+}
+
+// ---------- pages (snapshots of web pages, see pages.ts) ----------
+
+const PAGE_DEFAULT = { width: 1280, height: 800 }
+type PageView = { width: number; height: number; fullPage?: true }
+const PAGE_MIN = { width: 320, height: 200 }
+const PAGE_MAX_WIDTH = 3840
+
+const isTrue = (v: unknown) => v === true || v === 'true' || v === '1'
+
+/** A "page" from the request: an http(s) URL this server may snapshot. */
+async function pageField(value: unknown): Promise<string> {
+	if (typeof value !== 'string' || !value.trim()) throw new HttpError(400, '"page" must be the URL of a web page')
+	return (await pages.checkUrl(value.trim())).href
+}
+
+/** A page's viewport: "width"/"height" (CSS px) and "fullPage", each defaulting to `current` (or 1280×800). */
+function pageOptions(body: Record<string, unknown> | ItemJson, current?: Item['page']) {
+	const num = (value: unknown, name: string, min: number, max: number, fallback: number) => {
+		if (value === undefined || value === null || value === '') return fallback
+		const n = Number(value)
+		if (!Number.isFinite(n)) throw new HttpError(400, `"${name}" must be a number (CSS pixels)`)
+		return Math.round(Math.min(max, Math.max(min, n)))
+	}
+	const fullPage = body.fullPage === undefined || body.fullPage === null ? !!current?.fullPage : isTrue(body.fullPage)
+	return {
+		width: num(body.width, 'width', PAGE_MIN.width, PAGE_MAX_WIDTH, current?.width ?? PAGE_DEFAULT.width),
+		height: num(body.height, 'height', PAGE_MIN.height, PAGE_MAX_HEIGHT, current?.height ?? PAGE_DEFAULT.height),
+		...(fullPage ? { fullPage: true as const } : {}),
+	}
+}
+
+const pageName = (url: string) => `${new URL(url).hostname.replace(/^www\./, '') || 'page'}.png`
+
+/** Posts a page item: it appears straight away, "loading", and its snapshot follows (see snapshotPage). */
+async function addPageItem(
+	canvasId: string,
+	sessionId: string,
+	url: string,
+	view: PageView,
+	opts: Omit<ItemOptions, 'width' | 'height'>,
+): Promise<Item> {
+	getCanvas(canvasId)
+	ensureSession(canvasId, sessionId, opts.sessionTitle || undefined)
+	const id = opts.id ?? newId()
+	const item: Item = {
+		id,
+		canvasId,
+		sessionId,
+		kind: 'page',
+		name: opts.name ?? pageName(url),
+		src: '',
+		thumb: '',
+		width: view.width,
+		height: view.height,
+		...(opts.group ? { group: opts.group } : {}),
+		title: opts.title,
+		caption: opts.caption,
+		pageUrl: url,
+		page: { url, ...view, status: 'loading' },
+		createdAt: opts.createdAt ?? Date.now(),
+	}
+	commitItem(item)
+	rushTo(item)
+	snapshotPage(id)
+	return item
+}
+
+/** Turns an item into a snapshot of `url` (or points a page at another URL), in place. */
+async function replacePage(item: Item, url: string, view: PageView, changes: ItemChanges): Promise<Item> {
+	cancelSnapshot(item.id)
+	const wasPage = item.kind === 'page'
+	const { duration: _, sourceItemId: __, sourceTime: ___, ...rest } = item
+	// A title that was the old page's own follows the new page's.
+	if (wasPage && item.title && item.title === item.page?.title) delete rest.title
+	const next = applyChanges(
+		{
+			...rest,
+			kind: 'page',
+			// a page keeps showing its last snapshot until the new one is ready
+			...(wasPage ? {} : { src: '', thumb: '', width: view.width, height: view.height }),
+			name: pageName(url),
+			pageUrl: url,
+			page: { url, ...view, status: 'loading' },
+			createdAt: Date.now(),
+		},
+		changes,
+	)
+	commitItem(next)
+	rushTo(next)
+	if (!wasPage) await removeItemFiles(item)
+	snapshotPage(item.id)
+	return next
+}
+
+/** Takes a page item's snapshot again (POST /api/items/:id/refresh, update_item refresh), optionally with a new viewport. */
+function refreshPage(item: Item, view?: PageView, changes: ItemChanges = {}): Item {
+	if (item.kind !== 'page' || !item.page) throw new HttpError(400, 'only page items have a snapshot to refresh')
+	cancelSnapshot(item.id)
+	const { fullPage: _, error: __, ...page } = item.page
+	const next = applyChanges({ ...item, page: { ...page, ...(view ?? { width: page.width, height: page.height, ...(item.page.fullPage ? { fullPage: true } : {}) }), status: 'loading' } }, changes)
+	commitItem(next)
+	snapshotPage(item.id)
+	return next
+}
+
+/** The latest snapshot job of each page item: older ones finishing late are thrown away. */
+const snapshotJobs = new Map<string, { token: number; done: Promise<void> }>()
+let snapshotToken = 0
+
+function cancelSnapshot(id: string) {
+	snapshotJobs.delete(id)
+}
+
+/** Waits (up to `ms`) for a page item's snapshot in progress, if there is one. */
+async function snapshotSettled(id: string, ms: number) {
+	const job = snapshotJobs.get(id)
+	if (job) await Promise.race([job.done, Bun.sleep(ms)])
+}
+
+/** Snapshots a page item in the background and swaps it in for everyone (or marks it failed). */
+function snapshotPage(id: string) {
+	const token = ++snapshotToken
+	const done = (async () => {
+		const item = db.items.get(id)
+		if (!item?.page) return
+		const { url, width, height, fullPage } = item.page
+		const base = `${id}-${randomId(8)}`
+		let shot: Awaited<ReturnType<typeof pages.snapshot>> | null = null
+		let error: string | null = null
+		try {
+			shot = await pages.snapshot(url, { width, height, fullPage }, base)
+		} catch (e) {
+			error = (e as Error).message || 'the snapshot failed'
+		}
+		const current = db.items.get(id)
+		if (!current?.page || current.kind !== 'page' || snapshotJobs.get(id)?.token !== token) {
+			if (shot) await removeItemFiles({ src: `/media/${shot.file}`, thumb: `/media/${shot.thumb}` })
+			return
+		}
+		snapshotJobs.delete(id)
+		if (!shot) {
+			if (!process.env.CANVAS_QUIET) console.warn(`snapshot of ${url} failed: ${error}`)
+			commitItem({ ...current, page: { ...current.page, status: 'failed', error: error! } })
+			return
+		}
+		const { error: _, title: oldTitle, ...page } = current.page
+		const next: Item = {
+			...current,
+			src: `/media/${shot.file}`,
+			thumb: `/media/${shot.thumb}`,
+			width: shot.width,
+			height: shot.height,
+			pageUrl: shot.finalUrl,
+			snapshotAt: Date.now(),
+			page: { ...page, status: 'ready', via: shot.via, ...(shot.title ? { title: shot.title } : {}) },
+		}
+		// The page's own title, unless someone gave the item another.
+		if (shot.title && (!current.title || current.title === oldTitle)) next.title = shot.title
+		commitItem(next)
+		await removeItemFiles(current)
+	})().catch((e) => console.error('page snapshot failed:', e))
+	snapshotJobs.set(id, { token, done })
 }
 
 /** Full documents are kept as they are; fragments get a minimal page: UTF-8, no margin, white background. */
@@ -952,6 +1167,8 @@ function restoreItem(canvasId: string, id: string, restored: { sessions: Session
 	save()
 	broadcast({ type: 'item', item })
 	restored.items.push(item)
+	// a page deleted while its snapshot was being taken
+	if (item.kind === 'page' && item.page?.status === 'loading' && !snapshotJobs.has(id)) snapshotPage(id)
 }
 
 async function restore(canvasId: string, sessionIds: string[], itemIds: string[], annotationIds: string[] = []) {
@@ -1235,6 +1452,7 @@ function resolveAnnotations(canvas: Canvas, list: Annotation[], filter: Annotati
 				width: item.width,
 				height: item.height,
 				url: /^https?:/.test(item.src) ? item.src : MEDIA_ORIGIN + item.src,
+				...(item.pageUrl ? { pageUrl: item.pageUrl } : {}),
 				link: `${WEB_BASE}/c/${canvas.id}#item=${encodeURIComponent(item.id)}`,
 				...(item.sourceItemId ? { sourceItemId: item.sourceItemId, sourceTime: item.sourceTime } : {}),
 			},
@@ -1427,6 +1645,7 @@ async function markedImage(canvasId: string, annotationId: string): Promise<Resp
 	const item = getItem(a.item.id)
 	if (item.kind === 'html') throw new HttpError(400, 'HTML items have no image to mark; use the strokes\' and anchor\'s pixel coordinates on the page')
 	const src = item.kind === 'video' ? item.thumb : item.src
+	if (!src) throw new HttpError(409, 'this page\'s snapshot isn\'t ready yet')
 	if (/^https?:/.test(src)) throw new HttpError(400, 'this item\'s media is not stored on the canvas server')
 	const input = join(MEDIA_DIR, basename(src))
 	const size = await probe(input)
@@ -1549,7 +1768,8 @@ const API_INDEX = {
 			'Delete a session and all its items (restorable for an hour, see restore), banishing its creature (restoring doesn\'t bring it back)',
 		'POST /api/canvases/:cid/sessions/:sessionId/items':
 			'Add an image, video or HTML page. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
-			'or JSON {"html": "<html source>"} for an HTML item. Plus optional "group", "title", "caption", "name". ' +
+			'or JSON {"html": "<html source>"} for an HTML item, or JSON {"page": "<https URL>", "width"?, "height"?, "fullPage"?} ' +
+			'for a snapshot of a live web page (see "pages"). Plus optional "group", "title", "caption", "name". ' +
 			'Send "sessionTitle" (your OpenCode session\'s title, from `opencode api get /api/session/$OPENCODE_SESSION_ID` ' +
 			'→ .data.title) with every post, JSON or multipart: it keeps the session\'s frame named after your session, ' +
 			'following renames. Multipart uploads may also send "createdAt" ' +
@@ -1557,6 +1777,8 @@ const API_INDEX = {
 			'at that many seconds; kept on the item). Creates the session if needed. Iterating on something already ' +
 			'posted? Replace it with PATCH /api/items/:itemId instead (post again only to show both versions side by side).',
 		'GET /api/items/:itemId': 'One item',
+		'POST /api/items/:itemId/refresh':
+			'Take a page item\'s snapshot again (after the site changed): it shows "loading" (keeping the old snapshot) and updates live. Returns the item',
 		'PATCH /api/items/:itemId':
 			'Change an item\'s "group", "title", "caption" (null clears) or "name", and/or replace its file in place: send a ' +
 			'new file exactly as when posting (JSON {"path"}, {"url"} or {"html", "width", "height"}, or multipart "file" with ' +
@@ -1564,7 +1786,8 @@ const API_INDEX = {
 			'posting a new item: it keeps its id, link, session, group, title, caption and annotations (pinned to the same ' +
 			'relative spots), gets a new media url (open canvases swap it live), takes the new file\'s kind, size and name ' +
 			'(unless "name" is sent), and moves to the top of its group like a new post; HTML pages keep their width/height ' +
-			'unless given new ones. Metadata-only changes don\'t move it. "width"/"height" alone resize an HTML item',
+			'unless given new ones. Metadata-only changes don\'t move it. "width"/"height" alone resize an HTML item. ' +
+			'{"page": "<URL>"} points an item at a web page (re-snapshotted); on a page item {"refresh": true}, or "width"/"height"/"fullPage" alone, re-snapshots it',
 		'DELETE /api/items/:itemId':
 			'Delete an item (restorable for an hour). Deleting a session\'s last item deletes the session too ' +
 			'(the response says {"sessionDeleted": true})',
@@ -1641,6 +1864,17 @@ const API_INDEX = {
 		'no interaction: the canvas takes all input) so make it static and fit the given size without scrolling. ' +
 		'A fragment is wrapped in a minimal page (UTF-8, no margin, white background); send a full document to ' +
 		'control everything. Inline everything (styles, scripts, images as data: URLs).',
+	pages:
+		'Page items put a real, live web page (a site, a running deployment) on the canvas as a snapshot: send {"page": ' +
+		'"https://…"} (not "url", which downloads a media file). The canvas server opens it in a headless Chromium at ' +
+		`"width" (default ${PAGE_DEFAULT.width}) × "height" (default ${PAGE_DEFAULT.height}) CSS px, or the whole page with ` +
+		`"fullPage": true (up to ${PAGE_MAX_HEIGHT}px tall), waits for the network to go quiet (about 15s at most) and stores ` +
+		'a PNG. The post returns at once (201) with page.status "loading"; the snapshot follows live (status "ready", or ' +
+		'"failed" with page.error). Without a browser on the server it falls back to the page\'s preview (og:image) or a ' +
+		'drawn card (page.via "card"). The item\'s title becomes the page\'s <title> unless you give one; pageUrl is the URL ' +
+		'after redirects, snapshotAt when it was taken. People see the snapshot (with a link badge) and open the real page ' +
+		'from it. After the site changes, refresh it (POST /api/items/:itemId/refresh). ' +
+		(PAGES_PRIVATE ? 'This server may snapshot local and private addresses (it only listens on this machine).' : 'Private and local addresses (localhost, 10.x, 192.168.x, …) are refused on this server.'),
 	layout:
 		'Sessions sit side by side, newest on the right, unless people arranged them (see /order); hidden ones aren\'t shown. In a session, the group posted to most recently ' +
 		'comes first; each group\'s items flow left to right in rows, newest first (an item whose file was replaced counts as ' +
@@ -2066,6 +2300,9 @@ async function handle(req: Request): Promise<Response> {
 		}
 	}
 
+	m = /^\/api\/items\/([^/]+)\/refresh$/.exec(p)
+	if (m && method === 'POST') return json(refreshPage(getItem(decodeURIComponent(m[1]))))
+
 	m = /^\/media\/([\w.-]+)$/.exec(p)
 	if (m && method === 'GET') {
 		const path = join(MEDIA_DIR, m[1])
@@ -2105,6 +2342,7 @@ const mcp = createCanvasMcp({
 	getItem,
 	addItem: (canvasId, sessionId, body) => addItemFromJson(getCanvas(canvasId).id, assertSessionId(sessionId), body as ItemJson),
 	updateItem: async (id, body) => patchItem(getItem(id), body, await jsonSource(body)),
+	snapshotSettled,
 	deleteItem: (id) => deleteItem(getItem(id).id),
 	restore,
 	queueAction: (canvasId, sessionId, body) => attention.queue(getCanvas(canvasId).id, sessionId, body),
@@ -2173,7 +2411,7 @@ async function route(req: Request, server: Server<SocketData>, reqUrl: URL): Pro
 	try {
 		return await handle(req)
 	} catch (e) {
-		if (e instanceof HttpError || e instanceof ConjureError || e instanceof AttentionError) return json({ error: e.message }, e.status)
+		if (e instanceof HttpError || e instanceof ConjureError || e instanceof AttentionError || e instanceof PageError) return json({ error: e.message }, e.status)
 		console.error(e)
 		return json({ error: 'internal error' }, 500)
 	}
@@ -2182,6 +2420,9 @@ async function route(req: Request, server: Server<SocketData>, reqUrl: URL): Pro
 if (!process.env.CANVAS_QUIET) console.log(`canvas server on http://localhost:${PORT}  (data: ${DATA_DIR})`)
 
 backfillDurations()
+
+// Page snapshots the server was taking when it stopped are taken again.
+for (const item of db.items.values()) if (item.kind === 'page' && item.page?.status === 'loading') snapshotPage(item.id)
 
 /** Videos posted before items had a duration get one, read in the background one at a time. */
 async function backfillDurations() {

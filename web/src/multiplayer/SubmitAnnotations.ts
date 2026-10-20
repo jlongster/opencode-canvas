@@ -296,6 +296,7 @@ export class SubmitAnnotations {
 			const html = item.kind === 'html'
 			lines.push('', `## ${item.title || item.name} (item ${item.id}, ${item.kind}, ${item.width}×${item.height}${html ? ' CSS px' : ' px'})`)
 			if (html) lines.push(`Canvas link: ${item.link}`)
+			if (item.kind === 'page' && item.pageUrl) lines.push(`A snapshot of the web page ${item.pageUrl}`)
 			for (const [i, v] of list.entries()) {
 				const note = v.text.trim() ? `"${v.text.trim()}"` : '(drawing, no text)'
 				const where = v.bbox

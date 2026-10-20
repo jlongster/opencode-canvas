@@ -32,7 +32,7 @@ import { askCount, askText, listAsks, parseForm, parsePermission, type Ask } fro
 import { onOpenCodeEvents, type OpenCodeEvent } from '../opencode/events'
 import { errorText, ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { react, type Atom } from '../state/signals'
-import { updateConjured } from '../sync/client'
+import { renameSession, updateConjured } from '../sync/client'
 import type { AskingInfo, PresenceState, SubagentInfo } from './Presence'
 
 const NAME_MAX = 40
@@ -91,6 +91,8 @@ export class WormHost {
 	constructor(
 		private canvasId: string,
 		private records: Atom<ConjuredAgent[]>,
+		/** the title of the session's frame on this canvas, undefined when it has none */
+		private frameTitle: (sessionId: string) => string | undefined,
 	) {
 		this.disposers.push(
 			react(() => {
@@ -123,7 +125,7 @@ export class WormHost {
 				if (run.stop.signal.aborted) return resolve()
 				const record = this.records.peek().find((r) => r.sessionId === sessionId)
 				if (!record) return resolve()
-				run.runtime = new WormRuntime(record)
+				run.runtime = new WormRuntime(record, this.frameTitle)
 				run.stop.signal.addEventListener('abort', () => {
 					run.runtime?.destroy()
 					run.runtime = null
@@ -191,16 +193,23 @@ class WormRuntime {
 	/** while its pending lists are being read: what events said meanwhile (those win over the lists) */
 	private askEvents: { added: Map<string, Ask>; gone: Set<string> } | null = null
 
-	constructor(private record: ConjuredAgent) {
+	constructor(
+		private record: ConjuredAgent,
+		private frameTitle: (sessionId: string) => string | undefined,
+	) {
 		// Read-only: a worm never writes the canvas's document, it only shares presence.
 		this.provider = new WebsocketProvider(wsUrl('/api/rooms'), `canvas-${record.canvasId}`, this.doc, { disableBc: true, params: { view: '1' } })
 		this.publish()
 		this.unwatch = onOpenCodeEvents(record.serverKey, {
 			onEvent: (ev) => this.onEvent(ev),
-			onConnect: () => void this.reconcile(),
+			onConnect: () => {
+				void this.reconcile()
+				void this.refreshTitle()
+			},
 		})
 		this.reconcileTimer = window.setInterval(() => void this.reconcile(), RECONCILE_MS)
 		void this.reconcile()
+		void this.refreshTitle()
 	}
 
 	setRecord(record: ConjuredAgent) {
@@ -250,6 +259,8 @@ class WormRuntime {
 		if (data && typeof data.sessionID === 'string' && data.sessionID !== this.record.sessionId) return this.onFamilyEvent(ev.type, data.sessionID, data)
 		if (data?.sessionID !== this.record.sessionId) return
 		switch (ev.type) {
+			case 'session.renamed':
+				return void this.refreshTitle(typeof data.title === 'string' ? data.title : undefined)
 			case 'session.execution.started':
 				return this.setBusy(true)
 			case 'session.status': {
@@ -524,12 +535,22 @@ class WormRuntime {
 		this.publishSubagents()
 	}
 
-	/** Sessions get their title after the first turn: keep the worm's name in step. */
-	private async refreshTitle() {
-		const s = await withServer(this.record.serverKey, (c) => c.session.get({ sessionID: this.record.sessionId })).catch(() => null)
-		const title = s?.title?.trim() || ''
-		if (!title || title === this.record.title || this.destroyed) return
+	/**
+	 * Sessions get their title after the first turn, and can be renamed: keep the worm's name, and
+	 * its session's frame's title (when it has a frame here), in step.
+	 */
+	private async refreshTitle(known?: string) {
+		const { canvasId, sessionId, serverKey } = this.record
+		let title = known?.trim() || ''
+		if (!title) {
+			const s = await withServer(serverKey, (c) => c.session.get({ sessionID: sessionId })).catch(() => null)
+			title = s?.title?.trim() || ''
+		}
+		if (!title || this.destroyed) return
+		const frame = this.frameTitle(sessionId)
+		if (frame !== undefined && frame !== title) void renameSession(canvasId, sessionId, title).catch(() => {})
+		if (title === this.record.title) return
 		this.setRecord({ ...this.record, title })
-		await updateConjured(this.record.canvasId, this.record.sessionId, { title }).catch(() => {})
+		await updateConjured(canvasId, sessionId, { title }).catch(() => {})
 	}
 }

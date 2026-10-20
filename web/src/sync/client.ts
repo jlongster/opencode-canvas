@@ -38,6 +38,10 @@ export const deleteCanvas = (id: string) =>
 export const deleteSession = (canvasId: string, id: string) =>
 	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
+/** Renames a session's frame for everyone (creating the session if there's none). */
+export const renameSession = (canvasId: string, id: string, title: string) =>
+	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(id)}`, json('PUT', { title }))
+
 /** Hides or shows a session's frame for everyone. */
 export const setSessionHidden = (canvasId: string, id: string, hidden: boolean) =>
 	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(id)}`, json('PATCH', { hidden }))

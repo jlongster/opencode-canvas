@@ -5,8 +5,23 @@ const SESSIONS_LIMIT = 50
 /** a server that hasn't listed its sessions by then counts as failed (it can be retried) */
 const LIST_TIMEOUT_MS = 8_000
 
+const listeners = new Set<(key: string, sessions: OpenCodeSessionSummary[]) => void>()
+
+/** Calls `fn` with every server's sessions each time they're listed (by anyone in this tab). */
+export function onSessionsListed(fn: (key: string, sessions: OpenCodeSessionSummary[]) => void): () => void {
+	listeners.add(fn)
+	return () => listeners.delete(fn)
+}
+
 /** One server's recent top-level sessions (no subagents) across all its projects, newest first; fails if it doesn't answer within LIST_TIMEOUT_MS. */
 export function listServerSessions(key: string): Promise<OpenCodeSessionSummary[]> {
+	return listSessions(key).then((sessions) => {
+		for (const fn of listeners) fn(key, sessions)
+		return sessions
+	})
+}
+
+function listSessions(key: string): Promise<OpenCodeSessionSummary[]> {
 	const abort = new AbortController()
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(() => {

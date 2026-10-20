@@ -58,8 +58,9 @@ own frame.
 Your frame is titled after your OpenCode session, but the canvas server can't ask OpenCode:
 **you** send the title. Read it once, then send it as `sessionTitle` with **every** post
 (JSON field, multipart `--form-string sessionTitle=…`, or the MCP `sessionTitle` param).
-It names your frame while it's new or untitled and never overwrites a title it already has.
-Without it the frame shows "Untitled session".
+`sessionTitle` keeps your frame named after your session; it follows renames (the frame takes
+whatever title you send, so re-read it if your session may have been renamed). Without it the
+frame shows "Untitled session".
 
 ```bash
 BASE=${CANVAS_URL:-http://localhost:4545}
@@ -74,8 +75,9 @@ hand-written JSON body the title must be JSON-escaped.
 
 ## Conventions
 
-- **Send `sessionTitle`** with every post (see above). Only rename a frame
-  (`PUT $API/canvases/$CID/sessions/$SID {"title"}`, always replaces it) if the user asks.
+- **Send `sessionTitle`** with every post (see above). The frame title is always the session's
+  title; don't rename frames to anything else (`PUT $API/canvases/$CID/sessions/$SID {"title"}`
+  exists, but the next `sessionTitle` puts the session's title back).
 - **Group related outputs**: one group per variant, approach, or before/after pair.
 - **Always set an item title**: short, shown small above the image (`"Panel focused"`, `"v3"`).
 - **Caption for detail**: prompt, settings, what changed. Shown on hover.

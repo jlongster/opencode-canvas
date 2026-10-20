@@ -9,6 +9,7 @@ import {
 } from '../sync/client'
 import { Attention } from '../multiplayer/Attention'
 import { Conjure } from '../multiplayer/Conjure'
+import { FrameTitles } from '../opencode/frameTitles'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedAnnotations } from '../multiplayer/SharedAnnotations'
@@ -176,7 +177,8 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					disposers.push(() => cursors.destroy(), () => calls.destroy(), () => spells.destroy(), () => notes.destroy(), () => annotations.destroy(), () => p.destroy())
 					if (link.role === 'edit') {
 						const summon = new Summon(editor, spells, container)
-						disposers.push(() => summon.destroy())
+						const frameTitles = new FrameTitles(editor, c.id)
+						disposers.push(() => summon.destroy(), () => frameTitles.destroy())
 					}
 					setPresence(p)
 					setConjure(spells)

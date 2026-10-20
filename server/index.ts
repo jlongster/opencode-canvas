@@ -170,11 +170,14 @@ const attention = createAttention(
 		save,
 		broadcast: (event) => broadcast(event),
 		resolveTarget: (canvasId, target) => resolveTarget(canvasId, target),
-		ensureCreature: (canvasId, sessionId, title) =>
+		ensureCreature: (canvasId, sessionId, title) => {
+			// The frame follows the session's title (renames included), when it has a frame.
+			if (title && db.sessions.has(sessionKey(canvasId, sessionId))) ensureSession(canvasId, sessionId, title)
 			void conjured.ensure(canvasId, sessionId, {
 				title: title ?? db.sessions.get(sessionKey(canvasId, sessionId))?.title,
 				at: () => creatureSpot(canvasId, sessionId),
-			}),
+			})
+		},
 	},
 	storedAttention,
 )
@@ -617,7 +620,7 @@ interface ItemOptions {
 	height?: number
 	/** defaults to now; seeded items get the time they were output, which orders them in their group */
 	createdAt?: number
-	/** the OpenCode session's title: names the session if it's new or still untitled */
+	/** the OpenCode session's title: the session's frame is named after it (following renames) */
 	sessionTitle?: string
 	/** a frame extracted from a video (see Item.sourceItemId) */
 	sourceItemId?: string
@@ -694,7 +697,7 @@ async function addItem(canvasId: string, sessionId: string, source: MediaSource,
 		await removeItemFiles(media)
 		throw e
 	}
-	ensureSession(canvasId, sessionId, opts.sessionTitle, { onlyIfUntitled: true })
+	ensureSession(canvasId, sessionId, opts.sessionTitle || undefined)
 	const filename = 'data' in source ? source.filename : undefined
 	const name =
 		opts.name ??
@@ -853,14 +856,13 @@ function sizeField(value: unknown, name: string): number | undefined {
 const untitled = (s: Session) => !s.title?.trim() || s.title === s.id
 
 /**
- * Gets a session, creating it if needed. `title` renames it (PUT /sessions/:sid). A posted item's
- * `sessionTitle` is passed with `onlyIfUntitled`: it names a new or still untitled session, but
- * never replaces a real title.
+ * Gets a session, creating it if needed. `title` renames it: PUT /sessions/:sid, and a post's
+ * `sessionTitle`, which keeps the frame named after its OpenCode session as that is renamed.
  */
-function ensureSession(canvasId: string, id: string, title?: string, opts: { onlyIfUntitled?: boolean } = {}): Session {
+function ensureSession(canvasId: string, id: string, title?: string): Session {
 	const key = sessionKey(canvasId, id)
 	const existing = db.sessions.get(key)
-	if (existing && (title === undefined || existing.title === title || (opts.onlyIfUntitled && !untitled(existing)))) return existing
+	if (existing && (title === undefined || existing.title === title)) return existing
 	const session: Session = existing
 		? { ...existing, title: title! }
 		: { id, canvasId, title: title ?? '', createdAt: Date.now() }
@@ -1359,7 +1361,7 @@ const API_INDEX = {
 			'The canvas\'s sessions, each with its groups and their items, in frame order (left to right; hidden ones ' +
 			'included where they\'d be, with "hidden": true)',
 		'GET /api/canvases/:cid/sessions/:sessionId': 'One session with its groups and items',
-		'PUT /api/canvases/:cid/sessions/:sessionId': 'Create or rename a session. Body: {"title"} (always replaces the title, unlike a post\'s "sessionTitle")',
+		'PUT /api/canvases/:cid/sessions/:sessionId': 'Create or rename a session. Body: {"title"}',
 		'PATCH /api/canvases/:cid/sessions/:sessionId':
 			'Hide or show a session\'s frame for everyone: {"hidden": true|false} (and/or {"title"} to rename). A hidden ' +
 			'frame isn\'t drawn but keeps its items and still takes posts; posting doesn\'t unhide it',
@@ -1373,8 +1375,8 @@ const API_INDEX = {
 			'Add an image, video or HTML page. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
 			'or JSON {"html": "<html source>"} for an HTML item. Plus optional "group", "title", "caption", "name". ' +
 			'Send "sessionTitle" (your OpenCode session\'s title, from `opencode api get /api/session/$OPENCODE_SESSION_ID` ' +
-			'→ .data.title) with every post, JSON or multipart: it names the session\'s frame when the session is new or ' +
-			'still untitled, and never replaces a real title (rename with PUT). Multipart uploads may also send "createdAt" ' +
+			'→ .data.title) with every post, JSON or multipart: it keeps the session\'s frame named after your session, ' +
+			'following renames. Multipart uploads may also send "createdAt" ' +
 			'(ms; orders the item in its group), and "sourceItemId" + "sourceTime" (a frame extracted from that video item, ' +
 			'at that many seconds; kept on the item). Creates the session if needed. Iterating on something already ' +
 			'posted? Replace it with PATCH /api/items/:itemId instead (post again only to show both versions side by side).',
@@ -1437,7 +1439,7 @@ const API_INDEX = {
 		'POST /api/canvases/:cid/sessions/:sessionId/actions':
 			'Queue something for people to look at, on the session\'s creature (made beside its frame if it has none). Body: ' +
 			'{"kind": "say", "text"} (Markdown) or {"kind": "highlight", "target", "text"?} with target an item id, ' +
-			'"<sessionId>/<group name>", "frame:<sessionId>" or "note:<noteId>"; plus "sessionTitle" (names a new creature). ' +
+			'"<sessionId>/<group name>", "frame:<sessionId>" or "note:<noteId>"; plus "sessionTitle" (names the creature, and the session\'s frame if it has one, after your session). ' +
 			'Returns {"id", "position", "queued", "action"}. Fire-and-forget: people step through the queue on the canvas',
 		'DELETE /api/canvases/:cid/sessions/:sessionId/actions': 'Clear the session\'s queue: {"ok", "cleared"}',
 		'DELETE /api/canvases/:cid/sessions/:sessionId/actions/:actionId': 'Mark one action done (removes it): {"ok", "done"}',

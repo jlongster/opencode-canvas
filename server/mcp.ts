@@ -246,7 +246,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 		.optional()
 		.describe(
 			'Your OpenCode session\'s title (e.g. from `opencode api get /api/session/$OPENCODE_SESSION_ID` → .data.title). ' +
-				'Names your frame or creature while it is new or untitled; pass it every time.',
+				'Keeps your frame and creature named after your session, following renames; pass it every time.',
 		)
 
 	function buildServer() {
@@ -529,8 +529,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'Post an image, video or HTML page to a canvas, into your session\'s frame. Give exactly one of path (an ' +
 					'absolute path of a file on this machine), url, or html (inline HTML: diagrams, charts, annotated explanations; ' +
 					'set width/height to the CSS pixel size it is designed for, default 800x600). Use group to organise items ' +
-					'within the session. Pass sessionTitle (your OpenCode session\'s title) on every post: it names your frame ' +
-					'while it is new or untitled, and never overwrites a title it already has. Posting to a frame people hid ' +
+					'within the session. Pass sessionTitle (your OpenCode session\'s title) on every post: it keeps your ' +
+					'frame named after your session and follows renames. Posting to a frame people hid ' +
 					'works but doesn\'t unhide it. For a new version of something you already posted, replace that item with ' +
 					'update_item instead.',
 				inputSchema: {

@@ -120,7 +120,7 @@ export class Conjure {
 		readonly records: Atom<ConjuredAgent[]>,
 		private canvasTitle: () => string,
 	) {
-		this.host = new WormHost(canvasId, records)
+		this.host = new WormHost(canvasId, records, (id) => this.editor.sessions.peek()[id]?.title)
 		this.unwatchStopping = react(() => {
 			const peers = this.presence.peers.get()
 			const stopping = this.stopping.peek()

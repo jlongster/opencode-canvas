@@ -1,6 +1,7 @@
 import type { ConjuredAgent } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import type { Vec } from '../editor/geometry'
+import { answerQuestion, dismissQuestion, listAsks, replyPermission, type Ask, type AskValue, type PermissionAsk, type QuestionAsk } from '../opencode/asks'
 import { ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { atom, computed, react, type Atom } from '../state/signals'
 import { banishConjured, conjure as conjureSession, moveConjured } from '../sync/client'
@@ -391,6 +392,39 @@ export class Conjure {
 			} else if (m?.type === 'compaction' && prompts.length) break
 		}
 		return { prompts, reply }
+	}
+
+	/**
+	 * What our own worm's session (and its busy subagents) waits on us to answer: questions and
+	 * permission requests, oldest first. Null when it isn't ours or OpenCode can't be reached.
+	 */
+	async asks(sessionId: string): Promise<Ask[] | null> {
+		const r = this.record(sessionId)
+		if (!r || !this.ours(sessionId)) return null
+		const peer = this.presence.peers.peek().find((p) => p.user.conjured && p.user.sessionId === sessionId)
+		return listAsks(r.serverKey, [sessionId, ...(peer?.subagents ?? []).map((s) => s.id)])
+	}
+
+	/** Answers one of our worm's questions (field key → value); the session carries on with it. */
+	async answer(sessionId: string, ask: QuestionAsk, answer: Record<string, AskValue>) {
+		await answerQuestion(this.ownedServer(sessionId), ask, answer)
+	}
+
+	/** Dismisses one of our worm's questions unanswered (OpenCode stops the turn, as its TUI's Esc does). */
+	async dismiss(sessionId: string, ask: QuestionAsk) {
+		await dismissQuestion(this.ownedServer(sessionId), ask)
+	}
+
+	/** Allows (once, or always from now on) or rejects one of our worm's tool permission requests. */
+	async permit(sessionId: string, ask: PermissionAsk, decision: 'once' | 'always' | 'reject') {
+		await replyPermission(this.ownedServer(sessionId), ask, decision)
+	}
+
+	private ownedServer(sessionId: string) {
+		const r = this.record(sessionId)
+		if (!r) throw new Error('that worm was banished')
+		if (this.talkBlock(sessionId)) throw new Error('only the browser that conjured this worm can answer it')
+		return r.serverKey
 	}
 
 	async banish(sessionId: string) {

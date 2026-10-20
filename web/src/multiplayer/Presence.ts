@@ -37,6 +37,8 @@ export interface PresenceState {
 	thinking?: boolean
 	/** conjured worms: their busy subagents (child sessions), oldest first */
 	subagents?: SubagentInfo[]
+	/** conjured worms: their session is waiting for its owner to answer questions or permission requests */
+	asking?: AskingInfo | null
 	/** the last slap this person gave a creature (see Slap) */
 	slap?: SlapCall | null
 }
@@ -49,6 +51,15 @@ export interface SlapCall {
 	dx: number
 	dy: number
 	at: number
+}
+
+/** What a conjured worm's session is waiting on (see WormHost): questions win over permission requests. */
+export interface AskingInfo {
+	kind: 'question' | 'permission'
+	/** how many things to answer */
+	count: number
+	/** the first one, in a line, for viewers who can't read the session */
+	text?: string
 }
 
 export interface SubagentInfo {

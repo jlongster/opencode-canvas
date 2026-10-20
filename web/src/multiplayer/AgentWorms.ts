@@ -199,8 +199,14 @@ export interface Worm {
 	sessionId: string | null
 	/** when its record was created, to tell a new one of the same session from the last */
 	conjuredAt: number
-	/** how many attention actions its session has queued: while any are, it calls (badge, ring, wiggling), awake */
+	/**
+	 * how many attention actions its session has queued, plus what it's asking its owner (see
+	 * WormHost): while any, it calls (badge, ring, wiggling), awake
+	 */
 	calls: number
+	/** of which queued actions, and whether its session waits on its owner to answer something */
+	queued: number
+	asking: boolean
 	/** the count badge, while it calls */
 	badge: HTMLButtonElement | null
 }
@@ -333,7 +339,7 @@ export class AgentWorms {
 				this.worms.set(peer.clientId, worm)
 			}
 			if (worm.leaving) this.revive(worm, now)
-			this.syncCalls(worm)
+			this.syncCalls(worm, peer)
 			if (target) {
 				// (landing where it was put, it's no longer held there till its new position comes back: that's elsewhere)
 				if (landing) this.carry.unpin(worm.sessionId!)
@@ -444,7 +450,7 @@ export class AgentWorms {
 		const now = performance.now()
 		for (const worm of worms) {
 			if (!worm.conjured || worm.leaving || !worm.shape || worm.mode === 'vanish' || (worm.mode === 'pop' && now - worm.modeAt < POP_MS * 0.5)) continue
-			if (!this.conjure?.canPrompt && !worm.calls) continue
+			if (!this.conjure?.canPrompt && !worm.queued) continue
 			if (hits(worm.shape, p, HIT_SLOP)) return worm
 		}
 		return null
@@ -490,10 +496,16 @@ export class AgentWorms {
 		const peer = this.conjure?.peer(worm.id)
 		if (press.dragging) return this.drop(worm, peer?.user.sessionId ?? null, e.type === 'pointerup')
 		if (press.panning || !peer || e.type !== 'pointerup') return
-		// Calling for attention: a click opens its walkthrough, and another one (or a click while it
-		// isn't calling) the prompt box.
+		// Asking its owner something: a click opens its stack (with the questions). Calling for
+		// attention: a click opens its walkthrough, and another one (or a click while it isn't
+		// calling) the prompt box.
 		const sessionId = peer.user.sessionId
-		if (sessionId && worm.calls && !this.attention?.isOpen(sessionId)) {
+		if (sessionId && worm.asking && this.conjure!.canPrompt) {
+			this.startle(worm)
+			this.attention?.close()
+			return this.conjure!.open(peer)
+		}
+		if (sessionId && worm.queued && !this.attention?.isOpen(sessionId)) {
 			this.startle(worm)
 			return this.attention!.open(sessionId)
 		}
@@ -683,6 +695,8 @@ export class AgentWorms {
 			rushArriveAt: -1e9,
 			colony: new Colony(),
 			calls: 0,
+			queued: 0,
+			asking: false,
 			badge: null,
 			sessionId: peer.user.sessionId ?? null,
 			conjuredAt: 0,
@@ -852,14 +866,23 @@ export class AgentWorms {
 		worm.message?.classList.toggle('sent', sent)
 	}
 
-	/** The attention badge (with its count) and calling state, from its session's queue. */
-	private syncCalls(worm: Worm) {
+	/**
+	 * The attention badge and calling state, from its session's queue and what it's asking: a "?"
+	 * while it waits on its owner to answer something, else the queue's count.
+	 */
+	private syncCalls(worm: Worm, peer: Peer) {
 		const sessionId = worm.sessionId
-		const calls = sessionId && worm.conjured ? (this.attention?.count(sessionId) ?? 0) : 0
-		const open = !!sessionId && !!this.attention?.isOpen(sessionId)
+		const queued = sessionId && worm.conjured ? (this.attention?.count(sessionId) ?? 0) : 0
+		const asking = (worm.conjured && peer.asking?.count) || 0
+		const calls = queued + asking
+		// (calm while you're looking: its walkthrough open, or its stack open on its questions)
+		const open = !!sessionId && (!!this.attention?.isOpen(sessionId) || (asking > 0 && this.conjure?.prompting.peek()?.sessionId === sessionId))
 		worm.el.classList.toggle('attending', open)
-		if (calls === worm.calls) return
+		worm.el.classList.toggle('asking', asking > 0)
+		if (calls === worm.calls && queued === worm.queued && (asking > 0) === worm.asking) return
 		worm.calls = calls
+		worm.queued = queued
+		worm.asking = asking > 0
 		worm.el.classList.toggle('calling', calls > 0)
 		if (!calls) {
 			worm.badge?.remove()
@@ -872,7 +895,9 @@ export class AgentWorms {
 			badge.addEventListener('pointerdown', (e) => e.stopPropagation())
 			badge.addEventListener('click', (e) => {
 				e.stopPropagation()
-				if (worm.sessionId) this.attention?.open(worm.sessionId)
+				if (!worm.sessionId) return
+				if (worm.asking && this.conjure?.canPrompt) this.attention?.answer(worm.sessionId)
+				else this.attention?.open(worm.sessionId)
 			})
 			const ring = document.createElement('span')
 			ring.className = 'agent-worm-call-ring'
@@ -880,8 +905,14 @@ export class AgentWorms {
 			worm.el.append(ring, badge)
 			worm.badge = badge
 		}
-		worm.badge.textContent = calls > 99 ? '99+' : String(calls)
-		worm.badge.title = `${calls} thing${calls === 1 ? '' : 's'} for you to look at: click to go through ${calls === 1 ? 'it' : 'them'}`
+		if (asking) {
+			const what = peer.asking?.kind === 'permission' ? 'needs your permission' : asking === 1 ? 'is asking you a question' : `is asking you ${asking} questions`
+			worm.badge.textContent = '?'
+			worm.badge.title = `${worm.nameText || 'It'} ${what}: click to answer`
+		} else {
+			worm.badge.textContent = calls > 99 ? '99+' : String(calls)
+			worm.badge.title = `${calls} thing${calls === 1 ? '' : 's'} for you to look at: click to go through ${calls === 1 ? 'it' : 'them'}`
+		}
 	}
 
 	/** A jolt, as when it's clicked. */

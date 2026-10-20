@@ -239,6 +239,7 @@ export class Offscreen {
 		const subagents = worm.colony.count
 		const subs = subagents ? `${subagents} subagent${subagents === 1 ? '' : 's'}` : ''
 		const busy = (s: string) => (subs ? `${s} · ${subs}` : s)
+		if (worm.asking) return 'needs your answer'
 		if (worm.calls) return `needs you · ${worm.calls > 99 ? '99+' : worm.calls}`
 		if (worm.asleep) return null
 		if (worm.thinking && stopping) return busy('stopping')
@@ -338,6 +339,8 @@ export class Offscreen {
 		const calls = members.reduce((a, m) => a + m.worm.calls, 0)
 		const busy = members.filter((m) => m.status).length
 		const names = members.map((m) => m.worm.nameText || 'Untitled session').join(', ')
+		const asking = members.filter((m) => m.worm.asking).length
+		if (asking === 1 && calls === members.find((m) => m.worm.asking)!.worm.calls) return { status: 'needs your answer', title: hovered ? names : `${members.length} agents` }
 		if (calls) return { status: `needs you · ${calls}`, title: hovered ? names : `${members.length} agents` }
 		return hovered ? { status: busy ? `${busy} of ${members.length} busy` : `${members.length} agents`, title: names } : null
 	}
@@ -381,6 +384,10 @@ export class Offscreen {
 		el.addEventListener('click', (e) => {
 			e.stopPropagation()
 			this.fly(made.worms)
+			// One asking its owner something: its stack opens on the questions too.
+			const asking = made.worms.length === 1 && made.worms[0].asking ? made.worms[0] : null
+			const peer = asking && this.conjure?.canPrompt ? this.conjure.peer(asking.id) : undefined
+			if (peer) this.conjure!.open(peer)
 		})
 		// (nor for hovering what's under it)
 		el.addEventListener('pointermove', (e) => e.stopPropagation())

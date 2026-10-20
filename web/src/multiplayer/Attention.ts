@@ -5,6 +5,7 @@ import { parseSelectionId } from '../editor/selection'
 import { atom, computed, react, type Atom } from '../state/signals'
 import { clearActions, markActionDone } from '../sync/client'
 import type { Conjure } from './Conjure'
+import type { AskingInfo } from './Presence'
 import { wormName } from './WormHost'
 
 /** A creature's walkthrough of its queue, open here. */
@@ -21,6 +22,8 @@ export interface Caller {
 	name: string
 	color: string
 	actions: AttentionAction[]
+	/** its session waits on its owner to answer questions or permission requests (see WormHost) */
+	asking: AskingInfo | null
 }
 
 /** room (screen px) kept around a highlighted target when the camera brings it into view */
@@ -53,16 +56,25 @@ export class Attention {
 		}
 		return map
 	})
-	/** creatures with something queued, in the order they first asked */
+	/** what each conjured creature's session is asking its owner, by session (from their presence) */
+	readonly asking = computed<Map<string, AskingInfo>>('attentionAsking', () => {
+		const map = new Map<string, AskingInfo>()
+		for (const p of this.conjure.presence.peers.get()) if (p.user.conjured && p.user.sessionId && p.asking?.count) map.set(p.user.sessionId, p.asking)
+		return map
+	})
+	/** creatures asking something first, then those with something queued, in the order they first asked */
 	readonly callers = computed<Caller[]>('attentionCallers', () => {
 		const records = this.conjure.records.get()
-		return [...this.bySession.get()].map(([sessionId, actions]) => {
+		const asking = this.asking.get()
+		const queued = this.bySession.get()
+		return [...new Set([...asking.keys(), ...queued.keys()])].map((sessionId) => {
 			const r = records.find((x) => x.sessionId === sessionId)
 			return {
 				sessionId,
 				name: r ? wormName(r) : `ses_…${sessionId.slice(-6)}`,
 				color: r?.color ?? '#a78bfa',
-				actions,
+				actions: queued.get(sessionId) ?? [],
+				asking: asking.get(sessionId) ?? null,
 			}
 		})
 	})
@@ -118,6 +130,17 @@ export class Attention {
 
 	close() {
 		this.walk.set(null)
+	}
+
+	/**
+	 * A creature asking its owner something: brings it into view (from the tray) and opens its stack,
+	 * which shows the questions (to its owner; read-only to everyone else on an edit link).
+	 */
+	answer(sessionId: string, opts: { fromTray?: boolean } = {}) {
+		this.close()
+		if (opts.fromTray) this.revealCreature(sessionId)
+		const peer = this.conjure.worms().find((p) => p.user.sessionId === sessionId)
+		if (peer) this.conjure.open(peer)
 	}
 
 	/** Marks the current step done (edit links) and moves on; past the last one, closes. */

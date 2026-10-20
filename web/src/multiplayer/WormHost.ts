@@ -19,16 +19,21 @@
  *
  * Its subagents (child sessions, e.g. from the task tool, and their children) are tracked from the
  * same stream: which are busy is published as `subagents`, and viewers draw a tiny worm for each.
+ *
+ * So are the questions (its question tool: OpenCode forms) and tool permission requests the session
+ * and its subagents are waiting on (see asks.ts), reconciled with OpenCode's pending lists like
+ * busy/idle: while any are, `asking` says so, and the worm calls for its owner to answer.
  */
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
 import type { ConjuredAgent } from '../../../shared/types'
 import { wsUrl } from '../base'
+import { askCount, askText, listAsks, parseForm, parsePermission, type Ask } from '../opencode/asks'
 import { onOpenCodeEvents, type OpenCodeEvent } from '../opencode/events'
 import { errorText, ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { react, type Atom } from '../state/signals'
 import { updateConjured } from '../sync/client'
-import type { PresenceState, SubagentInfo } from './Presence'
+import type { AskingInfo, PresenceState, SubagentInfo } from './Presence'
 
 const NAME_MAX = 40
 const CHAT_MAX = 2000
@@ -180,6 +185,11 @@ class WormRuntime {
 	/** descendant sessions (children, grandchildren…), by id */
 	private subs = new Map<string, Subagent>()
 	private subagents: SubagentInfo[] = []
+	/** questions and permission requests it (or a subagent) waits on, by id, in the order they came */
+	private asks = new Map<string, Ask>()
+	private asking: AskingInfo | null = null
+	/** while its pending lists are being read: what events said meanwhile (those win over the lists) */
+	private askEvents: { added: Map<string, Ask>; gone: Set<string> } | null = null
 
 	constructor(private record: ConjuredAgent) {
 		// Read-only: a worm never writes the canvas's document, it only shares presence.
@@ -225,6 +235,7 @@ class WormRuntime {
 			speaking: !!this.chat,
 			thinking: this.thinking,
 			...(this.subagents.length ? { subagents: this.subagents } : {}),
+			...(this.asking ? { asking: this.asking } : {}),
 		}
 		this.provider.awareness.setLocalState(state)
 	}
@@ -235,6 +246,7 @@ class WormRuntime {
 
 	private onEvent(ev: OpenCodeEvent) {
 		const data = ev.data
+		if (data && this.onAskEvent(ev.type, data)) return
 		if (data && typeof data.sessionID === 'string' && data.sessionID !== this.record.sessionId) return this.onFamilyEvent(ev.type, data.sessionID, data)
 		if (data?.sessionID !== this.record.sessionId) return
 		switch (ev.type) {
@@ -334,12 +346,71 @@ class WormRuntime {
 		// Something new started meanwhile: that owns the worm now.
 		if (this.busy || this.destroyed) return
 		this.thinking = false
+		this.dropAsks(this.record.sessionId)
 		const interrupted = error?.startsWith('(interrupted')
 		const chat = error ? `${text ? text + '\n\n' : ''}${interrupted ? error : `⚠️ ${short(error)}`}` : text
 		this.chat = chat ? capChat(chat) : null
 		this.chatSent = true
 		this.publish()
 		void this.refreshTitle()
+	}
+
+	/** Questions and permission requests coming and going (true when it was one, ours or not). */
+	private onAskEvent(type: string, data: Record<string, unknown>): boolean {
+		const ours = (sessionId: unknown) => sessionId === this.record.sessionId || (typeof sessionId === 'string' && this.subs.has(sessionId))
+		switch (type) {
+			case 'form.created':
+			case 'permission.asked': {
+				const ask = type === 'form.created' ? parseForm(data.form) : parsePermission(data)
+				if (ask && ours(ask.sessionId)) {
+					this.asks.set(ask.id, ask)
+					this.askEvents?.added.set(ask.id, ask)
+					this.publishAsking()
+				}
+				return true
+			}
+			case 'form.replied':
+			case 'form.cancelled':
+			case 'permission.replied': {
+				const id = type === 'permission.replied' ? data.requestID : data.id
+				if (typeof id !== 'string') return true
+				this.askEvents?.gone.add(id)
+				this.askEvents?.added.delete(id)
+				if (this.asks.delete(id)) this.publishAsking()
+				return true
+			}
+		}
+		return false
+	}
+
+	/** A session that stopped working isn't waiting on anything any more. */
+	private dropAsks(sessionId: string) {
+		let dropped = false
+		for (const [id, a] of this.asks) if (a.sessionId === sessionId) dropped = this.asks.delete(id) || dropped
+		if (dropped) this.publishAsking()
+	}
+
+	/** Publishes what it's asking, if that changed. */
+	private publishAsking() {
+		const asks = [...this.asks.values()]
+		const next: AskingInfo | null = asks.length
+			? { kind: asks.some((a) => a.kind === 'question') ? 'question' : 'permission', count: askCount(asks), text: askText(asks.find((a) => a.kind === 'question') ?? asks[0]) }
+			: null
+		if (JSON.stringify(next) === JSON.stringify(this.asking)) return
+		this.asking = next
+		this.publish()
+	}
+
+	/** Checks its asks against OpenCode's pending lists, for it and its busy subagents. */
+	private async reconcileAsks(active: Record<string, unknown>) {
+		const ids = [this.record.sessionId, ...[...this.subs.values()].filter((s) => s.id in active).map((s) => s.id)]
+		const events = (this.askEvents = { added: new Map(), gone: new Set() })
+		const asks = await listAsks(this.record.serverKey, ids)
+		if (this.askEvents === events) this.askEvents = null
+		if (!asks || this.destroyed) return
+		// (sessions not listed, idle subagents, can't be waiting on anything)
+		this.asks = new Map([...asks.filter((a) => !events.gone.has(a.id)).map((a) => [a.id, a] as const), ...events.added])
+		this.publishAsking()
 	}
 
 	/** Events of other sessions: the worm's subagents starting, working and finishing. */
@@ -361,6 +432,7 @@ class WormRuntime {
 				return this.publishSubagents(true)
 			case 'session.deleted':
 				this.subs.delete(sessionId)
+				this.dropAsks(sessionId)
 				return this.publishSubagents()
 			case 'session.status': {
 				const status = (data.status as { type?: unknown } | undefined)?.type
@@ -385,6 +457,7 @@ class WormRuntime {
 		if (sub.busy === busy) return
 		sub.busy = busy
 		if (busy) sub.since = Date.now()
+		else this.dropAsks(sub.id)
 		this.publishSubagents()
 	}
 
@@ -410,6 +483,7 @@ class WormRuntime {
 		if (!active || this.destroyed) return
 		this.setBusy(this.record.sessionId in active)
 		await this.reconcileSubagents(active)
+		await this.reconcileAsks(active)
 	}
 
 	/** Lists the worm's children (and the children of busy ones) and marks which are running. */

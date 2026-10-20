@@ -3,6 +3,7 @@ import type { AttentionAction } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import type { Attention } from '../multiplayer/Attention'
 import type { Conjure } from '../multiplayer/Conjure'
+import type { AskingInfo } from '../multiplayer/Presence'
 import { framesPanelOpen } from './FramesPanel'
 import { markdownToHtml } from './markdown'
 import { useValue } from './useValue'
@@ -28,8 +29,11 @@ export function AttentionTray({ attention }: { attention: Attention }) {
 		if (!callers.length) setOpen(false)
 	}, [callers.length])
 	if (!callers.length) return null
-	const total = callers.reduce((n, c) => n + c.actions.length, 0)
+	const total = callers.reduce((n, c) => n + c.actions.length + (c.asking?.count ?? 0), 0)
 	const names = callers.map((c) => c.name)
+	const askers = callers.filter((c) => c.asking)
+	const lone = askers.length === 1 && callers.length === 1
+	const headline = lone ? `${askers[0].name} ${asks(askers[0].asking!)}` : `${total} thing${total === 1 ? ' wants' : 's want'} your attention`
 	return (
 		<div className={`attention-tray${open ? ' open' : ''}`} onPointerDown={(e) => e.stopPropagation()} onWheel={(e) => e.stopPropagation()}>
 			<button className="attention-pill" aria-expanded={open} title={`From ${names.join(', ')}`} onClick={() => setOpen(!open)}>
@@ -39,12 +43,14 @@ export function AttentionTray({ attention }: { attention: Attention }) {
 					))}
 				</span>
 				<span className="attention-pill-text">
-					{total} thing{total === 1 ? ' wants' : 's want'} your attention
-					<span className="attention-pill-names">
-						{' · '}
-						{names[0]}
-						{names.length > 1 ? ` +${names.length - 1}` : ''}
-					</span>
+					{headline}
+					{!lone && (
+						<span className="attention-pill-names">
+							{' · '}
+							{names[0]}
+							{names.length > 1 ? ` +${names.length - 1}` : ''}
+						</span>
+					)}
 				</span>
 				<span className="attention-caret">{open ? '▴' : '▾'}</span>
 			</button>
@@ -53,12 +59,13 @@ export function AttentionTray({ attention }: { attention: Attention }) {
 					{callers.map((c) => (
 						<button
 							key={c.sessionId}
-							className="attention-row"
+							className={`attention-row${c.asking ? ' asking' : ''}`}
 							style={{ ['--agent-color' as string]: c.color }}
 							title={hidden.includes(c.sessionId) ? 'Its frame is hidden: show it from the frames list' : undefined}
 							onClick={() => {
 								setOpen(false)
 								if (hidden.includes(c.sessionId)) framesPanelOpen.set(true)
+								else if (c.asking) attention.answer(c.sessionId, { fromTray: true })
 								else attention.open(c.sessionId, { fromTray: true })
 							}}
 						>
@@ -68,9 +75,11 @@ export function AttentionTray({ attention }: { attention: Attention }) {
 									{c.name}
 									{hidden.includes(c.sessionId) && <span className="attention-row-hidden"> (hidden)</span>}
 								</span>
-								<span className="attention-row-preview">{preview(attention, c.actions[0])}</span>
+								<span className="attention-row-preview">
+									{c.asking ? `${capital(asks(c.asking))}${c.asking.text ? `: ${c.asking.text}` : ''}` : preview(attention, c.actions[0])}
+								</span>
 							</span>
-							<span className="attention-row-count">{c.actions.length}</span>
+							<span className="attention-row-count">{c.asking ? '?' : c.actions.length}</span>
 						</button>
 					))}
 				</div>
@@ -273,6 +282,14 @@ function place(c: { x: number; y: number } | null, t: Rect | null, vw: number, v
 	const at = c ?? { x: vw / 2, y: vh / 2 }
 	return { left: Math.round(clampX(at.x - w / 2)), top: Math.round(clampY(at.y - h / 2)), docked: 'edge' as const }
 }
+
+/** "is asking a question", "needs your permission" and the like. */
+function asks(asking: AskingInfo): string {
+	if (asking.kind === 'permission') return asking.count > 1 ? `needs your permission (${asking.count})` : 'needs your permission'
+	return asking.count > 1 ? `is asking ${asking.count} questions` : 'is asking a question'
+}
+
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
 /** The first line of an action, as plain text, for the tray. */
 function preview(attention: Attention, action: AttentionAction | undefined): string {

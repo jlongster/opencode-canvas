@@ -593,6 +593,219 @@ img.pt-th.sm {
 	vertical-align: -1px;
 }
 
+/* ── questions and permission requests, in place of the three bubbles (AskBubbles.tsx) ── */
+
+.pt-asks {
+	display: contents;
+}
+
+/* One question: filled with the worm's colour, like the prompt and reply, as wide as they get. */
+.pt-q {
+	width: 360px;
+	padding: 9px 12px 10px;
+	background: var(--c);
+	color: var(--ink);
+	outline: none;
+	animation: pt-q-in 180ms cubic-bezier(0.34, 1.4, 0.64, 1) both;
+}
+
+.pt-q + .pt-q {
+	animation-delay: 40ms;
+}
+
+@keyframes pt-q-in {
+	from {
+		opacity: 0;
+		transform: translateY(-4px) scale(0.98);
+	}
+}
+
+.pt-q-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 11px;
+	line-height: 16px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	opacity: 0.75;
+}
+
+.pt-q-icon {
+	flex: none;
+	width: 13px;
+	height: 13px;
+}
+
+.pt-q-title {
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.pt-q-n {
+	margin-left: auto;
+	font-variant-numeric: tabular-nums;
+}
+
+.pt-q-text {
+	margin-top: 3px;
+	font-size: 13.5px;
+	line-height: 20px;
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+
+.pt-q-note {
+	margin-top: 6px;
+	font-size: 12px;
+	line-height: 17px;
+	opacity: 0.75;
+}
+
+.pt-q-note code {
+	font: 11.5px ui-monospace, monospace;
+	padding: 1px 4px;
+	border-radius: 4px;
+	background: color-mix(in srgb, var(--ink) 10%, transparent);
+}
+
+.pt-q-opts {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	margin-top: 8px;
+}
+
+.pt .pt-q-opt {
+	display: flex;
+	align-items: flex-start;
+	gap: 9px;
+	width: 100%;
+	padding: 6px 9px;
+	border-radius: 9px;
+	text-align: left;
+	color: var(--ink);
+	background: color-mix(in srgb, var(--ink) 7%, transparent);
+	transition: background 90ms;
+}
+
+.pt .pt-q-opt:not(.on):hover:not(:disabled) {
+	background: color-mix(in srgb, var(--ink) 13%, transparent);
+}
+
+.pt .pt-q-opt.on {
+	background: var(--ink);
+	color: var(--c);
+}
+
+.pt .pt-q-opt:focus-visible {
+	outline: 2px solid var(--ink);
+	outline-offset: 1px;
+}
+
+.pt .pt-q-opt:disabled {
+	opacity: 0.7;
+}
+
+.pt-q-mark {
+	flex: none;
+	width: 14px;
+	height: 14px;
+	margin-top: 3px;
+	border-radius: 50%;
+	border: 1.5px solid currentColor;
+	opacity: 0.7;
+	position: relative;
+}
+
+.pt-q-mark.sq {
+	border-radius: 4px;
+}
+
+.pt-q-opt.on .pt-q-mark {
+	opacity: 1;
+}
+
+.pt-q-opt.on .pt-q-mark::after {
+	content: '';
+	position: absolute;
+	inset: 2.5px;
+	border-radius: inherit;
+	background: currentColor;
+}
+
+.pt-q-opt-main {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.pt-q-opt-label {
+	font-weight: 500;
+	overflow-wrap: anywhere;
+}
+
+.pt-q-opt-desc {
+	font-size: 12px;
+	line-height: 16px;
+	opacity: 0.7;
+	overflow-wrap: anywhere;
+}
+
+/* A typed answer: the dark of the input, ringed in the worm's ink. */
+.pt-q-input {
+	display: block;
+	width: 100%;
+	margin-top: 6px;
+	padding: 6px 10px;
+	border: 0;
+	border-radius: 9px;
+	outline: 2px solid transparent;
+	background: var(--surf);
+	color: var(--tx);
+	font: inherit;
+	transition: outline-color 90ms;
+}
+
+.pt-q-input:focus {
+	outline-color: var(--ink);
+}
+
+.pt-q-input::placeholder {
+	color: var(--dim);
+}
+
+/* The answer's actions: dark, in its colour's ring, like the input it stands in for. */
+.pt-act {
+	width: 360px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 6px 5px 12px;
+	background: var(--surf);
+	border: 3px solid var(--c);
+}
+
+.pt-act-h {
+	min-width: 0;
+	font-size: 11.5px;
+	color: var(--dim);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pt-act-h.pt-fail {
+	color: #fca5a5;
+}
+
+.pt .pt-act .pt-btn.pri:not(.off):hover:not(:disabled) {
+	background: color-mix(in srgb, var(--c) 88%, white);
+}
+
 /* ── ⋯ and ×, beside the stack on hover ── */
 
 .pt-ctl {
@@ -802,6 +1015,7 @@ img.pt-th.sm {
 @media (prefers-reduced-motion: reduce) {
 	.pt,
 	.pt-caret,
+	.pt-q,
 	.pt-fill.busy {
 		animation: none;
 	}

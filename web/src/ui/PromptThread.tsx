@@ -1,8 +1,11 @@
 import { clearCache, layout, layoutNextLine, layoutWithLines, measureNaturalWidth, prepare, prepareWithSegments } from '@chenglou/pretext'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type { Editor } from '../editor/Editor'
+import { isAskEvent, type Ask } from '../opencode/asks'
 import { onOpenCodeEvents } from '../opencode/events'
 import type { Conjure, LastExchange, PromptAttachment, PromptTarget, TalkBlock } from '../multiplayer/Conjure'
+import type { AskingInfo } from '../multiplayer/Presence'
+import { AskBubbles, AskWaiting, type AskActions } from './AskBubbles'
 import { markdownToHtml } from './markdown'
 import { useValue } from './useValue'
 import './promptThread.css'
@@ -12,6 +15,10 @@ const ANCHOR_X = 24
 const ANCHOR_Y = 44
 /** and stays this far inside the window */
 const MARGIN = 8
+/** too tall to go above or below, it goes this far to the pointer's side */
+const SIDE_X = 44
+/** it only goes above the pointer with room for it under the top bar (and the attention tray) */
+const TOP_ROOM = 100
 /** the widest a bubble gets (the input always is this wide) */
 const BUBBLE_MAX = 360
 /** a bubble's horizontal padding, and the input's border */
@@ -39,6 +46,8 @@ const FLASH_MS = 1800
 const STREAM_QUIET_MS = 1500
 /** after a turn ends, the exchange is read again from OpenCode this much later (its last message lands) */
 const REFETCH_MS = 700
+/** ask events come in bursts (a reply, then the next ask): the asks are read again once they settle */
+const ASKS_REFETCH_MS = 120
 /** a click (not a pan) away from the stack closes it */
 const CLICK_SLOP_PX = 5
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
@@ -77,6 +86,8 @@ type Expanded = null | 'prompt' | 'reply' | 'note'
  * one line until clicked (pretext lays the text out to find that line): your last prompt and its
  * reply in the worm's colour (the reply's live last line while it works), then the input, outlined
  * in that colour, for its owner (send, steer, stop, attach). Everyone else gets a note on whose it is.
+ * While its session waits on its owner to answer questions or a permission request, those take the
+ * three bubbles' place (see AskBubbles): to answer for its owner, read-only for everyone else.
  */
 export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Conjure }) {
 	const target = useValue(() => conjure.prompting.get(), [conjure])
@@ -122,6 +133,11 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 		const peer = conjure.presence.peers.get().find((p) => p.user.conjured && p.user.sessionId === sessionId)
 		return (peer?.speaking && peer.chat) || null
 	}, [conjure, sessionId])
+	const askingKey = useValue(() => {
+		const peer = conjure.presence.peers.get().find((p) => p.user.conjured && p.user.sessionId === sessionId)
+		return peer?.asking?.count ? JSON.stringify(peer.asking) : ''
+	}, [conjure, sessionId])
+	const asking = useMemo(() => (askingKey ? (JSON.parse(askingKey) as AskingInfo) : null), [askingKey])
 	const turn = useValue(() => conjure.turns.get()[sessionId] ?? null, [conjure, sessionId])
 	const stopping = useValue(() => !!conjure.stopping.get()[sessionId], [conjure, sessionId])
 
@@ -141,6 +157,11 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 	const [size, setSize] = useState<{ w: number; h: number } | null>(null)
 	const [fonts, setFonts] = useState(0)
 	const [, setTick] = useState(0)
+	/** what its session waits on us to answer (ours only), as last read from OpenCode */
+	const [asks, setAsks] = useState<Ask[] | null>(null)
+	const [asksLoading, setAsksLoading] = useState(false)
+	const asksSeq = useRef(0)
+	const asksTimer = useRef<number>(undefined)
 	const expandedRef = useRef(expanded)
 	expandedRef.current = expanded
 
@@ -182,6 +203,22 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 		if (owner) void refetch()
 	}, [owner, refetch])
 
+	const loadAsks = useCallback(async () => {
+		if (!conjure.ours(sessionId)) return
+		const seq = ++asksSeq.current
+		setAsksLoading(true)
+		const list = await conjure.asks(sessionId).catch(() => null)
+		if (seq !== asksSeq.current) return
+		setAsksLoading(false)
+		if (list) setAsks(list)
+	}, [conjure, sessionId])
+
+	// Read when it opens, and again whenever its presence says what it's asking changed.
+	useEffect(() => {
+		if (owner) void loadAsks()
+	}, [owner, askingKey, loadAsks])
+	useEffect(() => () => window.clearTimeout(asksTimer.current), [])
+
 	// A turn ended: read the exchange again (its prompts and its whole reply).
 	const wasThinking = useRef(thinking)
 	useEffect(() => {
@@ -202,6 +239,11 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 		return onOpenCodeEvents(r.serverKey, {
 			onEvent: (ev) => {
 				const d = ev.data
+				if (isAskEvent(ev.type)) {
+					window.clearTimeout(asksTimer.current)
+					asksTimer.current = window.setTimeout(() => void loadAsks(), ASKS_REFETCH_MS)
+					return
+				}
 				if (d?.sessionID !== sessionId) return
 				if (ev.type === 'session.tool.input.started') {
 					tools.set(String(d.id), String(d.name ?? ''))
@@ -211,7 +253,7 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 				} else if (ev.type === 'session.text.started') setActivity(null)
 			},
 		})
-	}, [owner, conjure, sessionId])
+	}, [owner, conjure, sessionId, loadAsks])
 
 	// The elapsed time keeps moving.
 	useEffect(() => {
@@ -233,10 +275,11 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 		return () => fontSet.removeEventListener('loadingdone', reflow)
 	}, [])
 
-	// Focused as soon as there's somewhere to type.
+	// Focused as soon as there's somewhere to type (again after answering what it asked).
+	const asksShowing = owner && !!asks?.length
 	useEffect(() => {
-		if (owner) inputRef.current?.focus()
-	}, [owner])
+		if (owner && !asksShowing) inputRef.current?.focus()
+	}, [owner, asksShowing])
 
 	// Kept on screen: its size decides whether it fits below the pointer.
 	useLayoutEffect(() => {
@@ -407,6 +450,31 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 
 	const close = () => conjure.close()
 
+	/** An ask answered here: gone straight away (OpenCode's events and the next read confirm it). */
+	const answered = (id: string) => {
+		setAsks((list) => list?.filter((a) => a.id !== id) ?? null)
+		void loadAsks()
+	}
+	const askActions: AskActions = {
+		answer: async (ask, answer) => {
+			await conjure.answer(sessionId, ask, answer)
+			answered(ask.id)
+		},
+		dismiss: async (ask) => {
+			await conjure.dismiss(sessionId, ask)
+			answered(ask.id)
+		},
+		permit: async (ask, decision) => {
+			await conjure.permit(sessionId, ask, decision)
+			answered(ask.id)
+		},
+	}
+	const askView = asksShowing ? (
+		<AskBubbles asks={asks!} actions={askActions} more={asks!.length - 1} />
+	) : asking && (!owner || (asksLoading && !asks?.length)) ? (
+		<AskWaiting asking={asking} loading={owner} />
+	) : null
+
 	const isFileDrag = (e: DragEvent) => e.dataTransfer.types.includes('Files')
 	const dropHandlers = {
 		onDragEnter: (e: DragEvent) => {
@@ -454,7 +522,14 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 	const h = size?.h ?? 0
 	let left = meta.x - ANCHOR_X
 	let top = meta.y + ANCHOR_Y
-	if (top + h > vh - MARGIN && meta.y - ANCHOR_Y - h >= MARGIN) top = meta.y - ANCHOR_Y - h
+	if (top + h > vh - MARGIN) {
+		if (meta.y - ANCHOR_Y - h >= TOP_ROOM) top = meta.y - ANCHOR_Y - h
+		else if (vh - h - MARGIN < meta.y + ANCHOR_Y / 2) {
+			// Too tall for either (questions can be): beside the pointer rather than over it.
+			left = meta.x + SIDE_X + w + MARGIN <= vw ? meta.x + SIDE_X : meta.x - SIDE_X - w
+			top = Math.max(TOP_ROOM, meta.y - h / 3)
+		}
+	}
 	left = Math.round(Math.max(MARGIN, Math.min(left, vw - w - MARGIN)))
 	top = Math.round(Math.max(MARGIN, Math.min(top, vh - h - MARGIN)))
 	/** the ⋯ and × go on the stack's right, or its left with no room there */
@@ -500,256 +575,260 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 			}}
 			{...dropHandlers}
 		>
-			{lastPrompt &&
-				(expanded === 'prompt' ? (
-					<div className="pt-b pt-fill pt-open" data-b="prompt">
-						<div className="pt-scroll">
-							{prompts.map((p) => (
-								<div key={p.id} className={`pt-p${p.dim ? ' dim' : ''}`}>
-									{p.images.length > 0 && (
-										<div className="pt-ims">
-											{p.images.map((src, i) => (
-												<img key={i} className="pt-th sm" src={src} alt="" />
-											))}
+			{askView ?? (
+				<>
+					{lastPrompt &&
+						(expanded === 'prompt' ? (
+							<div className="pt-b pt-fill pt-open" data-b="prompt">
+								<div className="pt-scroll">
+									{prompts.map((p) => (
+										<div key={p.id} className={`pt-p${p.dim ? ' dim' : ''}`}>
+											{p.images.length > 0 && (
+												<div className="pt-ims">
+													{p.images.map((src, i) => (
+														<img key={i} className="pt-th sm" src={src} alt="" />
+													))}
+												</div>
+											)}
+											{p.text && <div className="pt-pt">{p.text}</div>}
 										</div>
-									)}
-									{p.text && <div className="pt-pt">{p.text}</div>}
+									))}
 								</div>
-							))}
-						</div>
-					</div>
-				) : (
-					<div
-						className={`pt-b pt-fill${lastPrompt.dim ? ' dim' : ''}${promptMore ? ' can' : ''}`}
-						data-b="prompt"
-						title={promptMore ? 'Show the whole prompt' : undefined}
-						onPointerDown={expandOn('prompt', promptMore)}
-					>
-						{chips > 0 && (
-							<span className="pt-chips">
-								{lastPrompt.images.slice(0, CHIPS_MAX).map((src, i) => (
-									<img key={i} src={src} alt="" />
-								))}
-								{lastPrompt.images.length > CHIPS_MAX && <span className="pt-chip-n">+{lastPrompt.images.length - CHIPS_MAX}</span>}
-							</span>
-						)}
-						{promptLine && promptLine.text && (
-							<span className="pt-line" style={{ width: promptLine.width }}>
-								{promptLine.text}
-							</span>
-						)}
-					</div>
-				))}
-
-			{expanded === 'reply' && reply ? (
-				<div className={`pt-b pt-fill pt-open${thinking ? ' busy' : ''}`} data-b="reply">
-					<div
-						ref={replyRef}
-						className="pt-scroll pt-md"
-						onScroll={(e) => {
-							const t = e.currentTarget
-							atEnd.current = t.scrollHeight - t.scrollTop - t.clientHeight < 24
-						}}
-						dangerouslySetInnerHTML={{ __html: streaming ? withCaret(replyHtml) : replyHtml }}
-					/>
-				</div>
-			) : thinking && !replyLine ? (
-				<div className="pt-b pt-fill busy" data-b="reply">
-					<span className="pt-spin" />
-					<span className="pt-line" style={{ width: busyFit.width }}>
-						{busyFit.text}
-					</span>
-				</div>
-			) : replyLine ? (
-				<div
-					className={`pt-b pt-fill${thinking ? ' busy' : ''}${replyMore ? ' can' : ''}`}
-					data-b="reply"
-					title={replyMore ? 'Show the whole reply' : undefined}
-					onPointerDown={expandOn('reply', replyMore)}
-				>
-					<span className="pt-line" style={{ width: replyLine.width }}>
-						{replyLine.text}
-					</span>
-				</div>
-			) : (
-				empty && (
-					<div className="pt-b pt-fill pt-idle" data-b="reply">
-						{loading ? <span className="pt-spin" /> : <span className="pt-dot" />}
-						{loading ? 'Loading the last exchange…' : owner ? 'Idle · nothing said yet' : 'Idle · its replies show here'}
-					</div>
-				)
-			)}
-
-			{block ? (
-				<div
-					className={`pt-b pt-ro${expanded === 'note' ? ' pt-open' : roLine.cut ? ' can' : ''}`}
-					data-b="note"
-					onPointerDown={expandOn('note', roLine.cut)}
-					title={expanded === 'note' ? undefined : roText}
-				>
-					{expanded === 'note' ? (
-						<div className="pt-ro-full">
-							<b>
-								<LockIcon /> Read-only
-								{asleep && (
-									<span className="pt-asleep">
-										<MoonIcon /> asleep
+							</div>
+						) : (
+							<div
+								className={`pt-b pt-fill${lastPrompt.dim ? ' dim' : ''}${promptMore ? ' can' : ''}`}
+								data-b="prompt"
+								title={promptMore ? 'Show the whole prompt' : undefined}
+								onPointerDown={expandOn('prompt', promptMore)}
+							>
+								{chips > 0 && (
+									<span className="pt-chips">
+										{lastPrompt.images.slice(0, CHIPS_MAX).map((src, i) => (
+											<img key={i} src={src} alt="" />
+										))}
+										{lastPrompt.images.length > CHIPS_MAX && <span className="pt-chip-n">+{lastPrompt.images.length - CHIPS_MAX}</span>}
 									</span>
 								)}
-							</b>
-							{roText}
+								{promptLine && promptLine.text && (
+									<span className="pt-line" style={{ width: promptLine.width }}>
+										{promptLine.text}
+									</span>
+								)}
+							</div>
+						))}
+
+					{expanded === 'reply' && reply ? (
+						<div className={`pt-b pt-fill pt-open${thinking ? ' busy' : ''}`} data-b="reply">
+							<div
+								ref={replyRef}
+								className="pt-scroll pt-md"
+								onScroll={(e) => {
+									const t = e.currentTarget
+									atEnd.current = t.scrollHeight - t.scrollTop - t.clientHeight < 24
+								}}
+								dangerouslySetInnerHTML={{ __html: streaming ? withCaret(replyHtml) : replyHtml }}
+							/>
+						</div>
+					) : thinking && !replyLine ? (
+						<div className="pt-b pt-fill busy" data-b="reply">
+							<span className="pt-spin" />
+							<span className="pt-line" style={{ width: busyFit.width }}>
+								{busyFit.text}
+							</span>
+						</div>
+					) : replyLine ? (
+						<div
+							className={`pt-b pt-fill${thinking ? ' busy' : ''}${replyMore ? ' can' : ''}`}
+							data-b="reply"
+							title={replyMore ? 'Show the whole reply' : undefined}
+							onPointerDown={expandOn('reply', replyMore)}
+						>
+							<span className="pt-line" style={{ width: replyLine.width }}>
+								{replyLine.text}
+							</span>
 						</div>
 					) : (
-						<>
-							<LockIcon />
-							<span className="pt-line" style={{ width: roLine.width }}>
-								{roLine.text}
-							</span>
-						</>
+						empty && (
+							<div className="pt-b pt-fill pt-idle" data-b="reply">
+								{loading ? <span className="pt-spin" /> : <span className="pt-dot" />}
+								{loading ? 'Loading the last exchange…' : owner ? 'Idle · nothing said yet' : 'Idle · its replies show here'}
+							</div>
+						)
 					)}
-				</div>
-			) : (
-				<div
-					className={`pt-b pt-in${typing ? ' open' : ''}${dragging ? ' drag' : ''}`}
-					data-b="input"
-					onPointerDown={(e) => {
-						// Anywhere in it but its buttons is somewhere to type.
-						if (!(e.target as HTMLElement).closest('button, textarea')) {
-							e.preventDefault()
-							inputRef.current?.focus()
-						}
-					}}
-				>
-					{attachments.length > 0 && (
-						<div className="pt-atts">
-							{attachments.map((a) => (
-								<div key={a.id} className="pt-th" title={a.name}>
-									<img src={a.dataUrl} alt={a.name} />
-									<button
-										className="pt-th-x"
-										title={`Remove ${a.name}`}
-										disabled={sending}
-										onPointerDown={keepFocus}
-										onClick={() => setAttachments((prev) => prev.filter((p) => p.id !== a.id))}
-									>
-										<XIcon />
-									</button>
+
+					{block ? (
+						<div
+							className={`pt-b pt-ro${expanded === 'note' ? ' pt-open' : roLine.cut ? ' can' : ''}`}
+							data-b="note"
+							onPointerDown={expandOn('note', roLine.cut)}
+							title={expanded === 'note' ? undefined : roText}
+						>
+							{expanded === 'note' ? (
+								<div className="pt-ro-full">
+									<b>
+										<LockIcon /> Read-only
+										{asleep && (
+											<span className="pt-asleep">
+												<MoonIcon /> asleep
+											</span>
+										)}
+									</b>
+									{roText}
 								</div>
-							))}
+							) : (
+								<>
+									<LockIcon />
+									<span className="pt-line" style={{ width: roLine.width }}>
+										{roLine.text}
+									</span>
+								</>
+							)}
 						</div>
-					)}
-					<div className="pt-ta">
-						<textarea
-							ref={inputRef}
-							value={text}
-							rows={1}
-							style={{
-								height: (typing ? Math.min(inputLines, INPUT_MAX_LINES) : 1) * LINE_PX,
-								overflowY: typing && inputLines > INPUT_MAX_LINES ? 'auto' : 'hidden',
-								color: draftLine ? 'transparent' : undefined,
-							}}
-							placeholder={thinking ? 'Steer it: added to the work in progress…' : `Message ${name}…`}
-							onFocus={() => setTyping(true)}
-							onBlur={(e) => {
-								if (!e.currentTarget.closest('.pt-in')?.contains(e.relatedTarget as Node)) setTyping(false)
-							}}
-							onChange={(e) => setText(e.target.value)}
-							onPaste={(e) => {
-								const files = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'))
-								if (!files.length) return
-								if (!e.clipboardData.getData('text/plain')) e.preventDefault()
-								attach(files)
-							}}
-							onKeyDown={(e) => {
-								if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+					) : (
+						<div
+							className={`pt-b pt-in${typing ? ' open' : ''}${dragging ? ' drag' : ''}`}
+							data-b="input"
+							onPointerDown={(e) => {
+								// Anywhere in it but its buttons is somewhere to type.
+								if (!(e.target as HTMLElement).closest('button, textarea')) {
 									e.preventDefault()
-									void send(e.altKey)
+									inputRef.current?.focus()
 								}
 							}}
-						/>
-						{draftLine && <div className="pt-ta-line">{draftLine.text}</div>}
-					</div>
-					{error && (
-						<div className="pt-error">
-							<WarnIcon />
-							<span>{error}</span>
+						>
+							{attachments.length > 0 && (
+								<div className="pt-atts">
+									{attachments.map((a) => (
+										<div key={a.id} className="pt-th" title={a.name}>
+											<img src={a.dataUrl} alt={a.name} />
+											<button
+												className="pt-th-x"
+												title={`Remove ${a.name}`}
+												disabled={sending}
+												onPointerDown={keepFocus}
+												onClick={() => setAttachments((prev) => prev.filter((p) => p.id !== a.id))}
+											>
+												<XIcon />
+											</button>
+										</div>
+									))}
+								</div>
+							)}
+							<div className="pt-ta">
+								<textarea
+									ref={inputRef}
+									value={text}
+									rows={1}
+									style={{
+										height: (typing ? Math.min(inputLines, INPUT_MAX_LINES) : 1) * LINE_PX,
+										overflowY: typing && inputLines > INPUT_MAX_LINES ? 'auto' : 'hidden',
+										color: draftLine ? 'transparent' : undefined,
+									}}
+									placeholder={thinking ? 'Steer it: added to the work in progress…' : `Message ${name}…`}
+									onFocus={() => setTyping(true)}
+									onBlur={(e) => {
+										if (!e.currentTarget.closest('.pt-in')?.contains(e.relatedTarget as Node)) setTyping(false)
+									}}
+									onChange={(e) => setText(e.target.value)}
+									onPaste={(e) => {
+										const files = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'))
+										if (!files.length) return
+										if (!e.clipboardData.getData('text/plain')) e.preventDefault()
+										attach(files)
+									}}
+									onKeyDown={(e) => {
+										if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+											e.preventDefault()
+											void send(e.altKey)
+										}
+									}}
+								/>
+								{draftLine && <div className="pt-ta-line">{draftLine.text}</div>}
+							</div>
+							{error && (
+								<div className="pt-error">
+									<WarnIcon />
+									<span>{error}</span>
+								</div>
+							)}
+							<div className="pt-tb">
+								<button
+									className="pt-ib"
+									title={`Attach images (or drop or paste them here; up to ${ATTACH_MAX})`}
+									aria-label="Attach images"
+									disabled={sending || attachments.length >= ATTACH_MAX}
+									onPointerDown={keepFocus}
+									onClick={() => fileRef.current?.click()}
+								>
+									<PaperclipIcon />
+								</button>
+								{failed ? (
+									<span className="pt-h pt-fail" title={failed.error}>
+										{/isn't reachable/.test(failed.error ?? '') ? 'Couldn’t reach its OpenCode' : 'Not delivered'} ·{' '}
+										<button onPointerDown={keepFocus} onClick={() => send()} disabled={sending}>
+											Retry
+										</button>
+									</span>
+								) : (
+									flash && (
+										<span className="pt-h">
+											<span className="pt-flash">
+												<CheckIcon /> {flash}
+											</span>
+										</span>
+									)
+								)}
+								<span className="pt-sp" />
+								{thinking ? (
+									<>
+										<button
+											className="pt-btn ghost"
+											title={`Stop: interrupt the session (${STOP_KEY})`}
+											disabled={stopping}
+											onPointerDown={keepFocus}
+											onClick={stop}
+										>
+											{stopping ? <span className="pt-spin pt-spin-xs" /> : <span className="pt-stopi" />}
+											Stop
+										</button>
+										<button
+											className={`pt-btn pri${hasContent && !sending ? '' : ' off'}`}
+											title="Steer: add this to the work in progress (Enter). Alt+Enter queues it for when it’s done."
+											disabled={!hasContent || sending}
+											onPointerDown={keepFocus}
+											onClick={() => send()}
+										>
+											{sending ? <span className="pt-spin pt-spin-xs dark" /> : 'Steer'}
+										</button>
+									</>
+								) : (
+									<button
+										className={`pt-send${hasContent ? ' on' : ''}`}
+										title="Send (Enter; Shift+Enter for a new line, Esc closes)"
+										disabled={!hasContent || sending}
+										onPointerDown={keepFocus}
+										onClick={() => send()}
+									>
+										{sending ? <span className="pt-spin pt-spin-xs dark" /> : <UpIcon />}
+									</button>
+								)}
+							</div>
+							<input
+								ref={fileRef}
+								type="file"
+								accept={ATTACH_TYPES.join(',')}
+								multiple
+								hidden
+								onChange={(e) => {
+									attach([...(e.target.files ?? [])])
+									e.target.value = ''
+								}}
+							/>
+							{dragging && <div className="pt-drop">Drop images to attach</div>}
 						</div>
 					)}
-					<div className="pt-tb">
-						<button
-							className="pt-ib"
-							title={`Attach images (or drop or paste them here; up to ${ATTACH_MAX})`}
-							aria-label="Attach images"
-							disabled={sending || attachments.length >= ATTACH_MAX}
-							onPointerDown={keepFocus}
-							onClick={() => fileRef.current?.click()}
-						>
-							<PaperclipIcon />
-						</button>
-						{failed ? (
-							<span className="pt-h pt-fail" title={failed.error}>
-								{/isn't reachable/.test(failed.error ?? '') ? 'Couldn’t reach its OpenCode' : 'Not delivered'} ·{' '}
-								<button onPointerDown={keepFocus} onClick={() => send()} disabled={sending}>
-									Retry
-								</button>
-							</span>
-						) : (
-							flash && (
-								<span className="pt-h">
-									<span className="pt-flash">
-										<CheckIcon /> {flash}
-									</span>
-								</span>
-							)
-						)}
-						<span className="pt-sp" />
-						{thinking ? (
-							<>
-								<button
-									className="pt-btn ghost"
-									title={`Stop: interrupt the session (${STOP_KEY})`}
-									disabled={stopping}
-									onPointerDown={keepFocus}
-									onClick={stop}
-								>
-									{stopping ? <span className="pt-spin pt-spin-xs" /> : <span className="pt-stopi" />}
-									Stop
-								</button>
-								<button
-									className={`pt-btn pri${hasContent && !sending ? '' : ' off'}`}
-									title="Steer: add this to the work in progress (Enter). Alt+Enter queues it for when it’s done."
-									disabled={!hasContent || sending}
-									onPointerDown={keepFocus}
-									onClick={() => send()}
-								>
-									{sending ? <span className="pt-spin pt-spin-xs dark" /> : 'Steer'}
-								</button>
-							</>
-						) : (
-							<button
-								className={`pt-send${hasContent ? ' on' : ''}`}
-								title="Send (Enter; Shift+Enter for a new line, Esc closes)"
-								disabled={!hasContent || sending}
-								onPointerDown={keepFocus}
-								onClick={() => send()}
-							>
-								{sending ? <span className="pt-spin pt-spin-xs dark" /> : <UpIcon />}
-							</button>
-						)}
-					</div>
-					<input
-						ref={fileRef}
-						type="file"
-						accept={ATTACH_TYPES.join(',')}
-						multiple
-						hidden
-						onChange={(e) => {
-							attach([...(e.target.files ?? [])])
-							e.target.value = ''
-						}}
-					/>
-					{dragging && <div className="pt-drop">Drop images to attach</div>}
-				</div>
+				</>
 			)}
 
 			<div className={`pt-ctl ${ctlSide}${menu ? ' open' : ''}`}>

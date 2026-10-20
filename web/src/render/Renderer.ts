@@ -1,6 +1,6 @@
 import type { Item } from '../../../shared/types'
 import { GROUP_OUTLINE_PADDING, type Editor, type HtmlLink } from '../editor/Editor'
-import { Box, clamp, lerp } from '../editor/geometry'
+import { Box, clamp } from '../editor/geometry'
 import { LAYOUT, type SectionLayout } from '../editor/layout'
 import { frameKey } from '../editor/selection'
 import { imageShader, rectShader, videoShader } from './shaders'
@@ -14,8 +14,7 @@ import './frameButtons.css'
 const THUMB_SIZE = 512
 const ITEM_RADIUS = 6
 const SECTION_RADIUS = 20
-/** Layout moves ease out over this long, straight to where they're going (no overshoot). */
-const MOVE_MS = 200
+const EASE_MS = 90 // time constant for layout motion
 const FADE_MS = 220
 /** A focused group's outline shows this long, fading out over the last GROUP_FLASH_FADE_MS. */
 const GROUP_FLASH_MS = 1200
@@ -59,10 +58,6 @@ interface Displayed {
 	w: number
 	h: number
 	opacity: number
-	/** the move it's making: from where, to where, and how far in (ms) */
-	from: Box
-	to: Box
-	t: number
 }
 
 /**
@@ -600,47 +595,32 @@ export class Renderer {
 		return thumb.state === 'ready' ? thumb : undefined
 	}
 
-	/**
-	 * Moves displayed boxes toward their layout targets: each change of target starts a short
-	 * ease-out from where the box is, so it never overshoots. A frame being dragged (and its items)
-	 * keeps right up with the pointer. Returns true while anything is still moving.
-	 */
+	/** Eases displayed boxes toward their layout targets. Returns true while anything is still moving. */
 	private stepDisplay(layout: ReturnType<Editor['layout']['get']>, elapsed: number) {
+		const k = 1 - Math.exp(-elapsed / EASE_MS)
 		const fade = elapsed / FADE_MS
-		const liftedId = this.editor.frameDrag.get()?.sessionId ?? null
 		let moving = false
-		const step = (map: Map<string, Displayed>, targets: Iterable<[string, Box]>, lifted: (id: string) => boolean) => {
+		const step = (map: Map<string, Displayed>, targets: Iterable<[string, Box]>) => {
 			const seen = new Set<string>()
 			for (const [id, t] of targets) {
 				seen.add(id)
 				const d = map.get(id)
 				if (!d) {
-					map.set(id, { ...t, opacity: 0, from: { ...t }, to: { ...t }, t: MOVE_MS })
+					map.set(id, { ...t, opacity: 0 })
 					moving = true
 					continue
 				}
-				if (lifted(id)) {
-					d.to = { ...t }
-					d.t = MOVE_MS
-				} else if (d.to.x !== t.x || d.to.y !== t.y || d.to.w !== t.w || d.to.h !== t.h) {
-					d.from = { x: d.x, y: d.y, w: d.w, h: d.h }
-					d.to = { ...t }
-					d.t = 0
-				}
-				d.t = Math.min(MOVE_MS, d.t + elapsed)
-				const done = d.t >= MOVE_MS
-				const e = easeOutCubic(d.t / MOVE_MS)
-				d.x = done ? t.x : lerp(d.from.x, t.x, e)
-				d.y = done ? t.y : lerp(d.from.y, t.y, e)
-				d.w = done ? t.w : lerp(d.from.w, t.w, e)
-				d.h = done ? t.h : lerp(d.from.h, t.h, e)
+				d.x = approach(d.x, t.x, k)
+				d.y = approach(d.y, t.y, k)
+				d.w = approach(d.w, t.w, k)
+				d.h = approach(d.h, t.h, k)
 				d.opacity = Math.min(1, d.opacity + fade)
-				if (d.t < MOVE_MS || d.opacity < 1) moving = true
+				if (d.x !== t.x || d.y !== t.y || d.w !== t.w || d.h !== t.h || d.opacity < 1) moving = true
 			}
 			for (const id of map.keys()) if (!seen.has(id)) map.delete(id)
 		}
-		step(this.displayedItems, layout.items, (id) => liftedId !== null && layout.sectionOf.get(id) === liftedId)
-		step(this.displayedSections, layout.sections.map((s) => [s.id, s.box] as [string, Box]), (id) => id === liftedId)
+		step(this.displayedItems, layout.items)
+		step(this.displayedSections, layout.sections.map((s) => [s.id, s.box] as [string, Box]))
 		return moving
 	}
 
@@ -1353,8 +1333,9 @@ function configureContext(context: GPUCanvasContext, device: GPUDevice): GPUText
 	throw error
 }
 
-function easeOutCubic(u: number) {
-	return 1 - (1 - u) ** 3
+function approach(a: number, b: number, k: number) {
+	const next = a + (b - a) * k
+	return Math.abs(b - next) < 0.05 ? b : next
 }
 
 function ensure(arr: Float32Array<ArrayBuffer>, length: number): Float32Array<ArrayBuffer> {

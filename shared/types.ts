@@ -106,19 +106,20 @@ export interface Note {
 
 /**
  * An annotation as stored in a canvas's room document (map "annotations": id -> Y.Map of these
- * fields): a comment pinned to a spot on an item. The anchor (x, y) is normalized to the item
- * (0..1 across its width and height), so it stays on the same spot of the image however the
- * layout sizes the item. The comment card sits at anchor + (ox, oy) × the item's width on the page.
+ * fields): freehand pencil strokes on an item with an optional text note, or a text-only note on
+ * a spot. Everything is normalized to the item (0..1 across its width and height), so it stays on
+ * the same spot of the image however the layout sizes the item. (Older pin annotations also have
+ * ox/oy/len, ignored: they show as text-only notes.)
  */
 export interface Annotation {
 	id: string
 	itemId: string
+	/** where its note sits (normalized 0..1 to the item): beside the drawing, or the spot of a text-only note */
 	x: number
 	y: number
-	ox: number
-	oy: number
-	/** the line's on-screen length (px) when it was drawn or last moved: zoomed in, it's never drawn longer */
-	len?: number
+	/** freehand strokes drawn with the pencil, each flat [x0, y0, x1, y1, …] normalized to the item (empty: a text-only note) */
+	strokes: number[][]
+	/** may be empty for a drawing */
 	text: string
 	author: string
 	color: string
@@ -152,8 +153,14 @@ export interface AnnotationView {
 		sourceItemId?: string
 		sourceTime?: number
 	}
-	/** the spot it points at: normalized (0..1) and in pixels of the original image (px = x × width) */
+	/** where its note sits (a text-only note's spot, else beside the drawing): normalized (0..1) and in pixels of the original image (px = x × width) */
 	anchor: { x: number; y: number; px: number; py: number }
+	/** the freehand strokes, as [x, y] pixel points in the original image (empty for a text-only note) */
+	strokes: [number, number][][]
+	/** the drawing's bounding box in pixels of the original image (absent for a text-only note) */
+	bbox?: { x: number; y: number; width: number; height: number }
+	/** the author's colour, the strokes' colour on the canvas */
+	color: string
 	/** reading it took it off the canvas (into the trash for an hour: restore brings it back) */
 	consumed?: true
 }

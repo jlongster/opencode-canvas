@@ -39,18 +39,6 @@ export interface PresenceState {
 	subagents?: SubagentInfo[]
 	/** conjured worms: their session is waiting for its owner to answer questions or permission requests */
 	asking?: AskingInfo | null
-	/** the last slap this person gave a creature (see Slap) */
-	slap?: SlapCall | null
-}
-
-/** A slap: the creature (session id), the point of its body hit, and the way the blow went (a unit vector, screen space). */
-export interface SlapCall {
-	id: string
-	s: string
-	i: number
-	dx: number
-	dy: number
-	at: number
 }
 
 /** What a conjured worm's session is waiting on (see WormHost): questions win over permission requests. */
@@ -95,8 +83,6 @@ export class Presence {
 	/** Our cursor chat message (null when there's none) and whether we're still typing it */
 	readonly chat = atom<string | null>('chat', null)
 	readonly chatOpen = atom<boolean>('chatOpen', false)
-	/** our last slap, broadcast for a few seconds */
-	readonly slap = atom<SlapCall | null>('slap', null)
 	private chatTimer = 0
 
 	/** The canvas's document: notes (and later drawings). Read-only on view links. */
@@ -129,7 +115,6 @@ export class Presence {
 				this.me.get()
 				this.chat.get()
 				this.chatOpen.get()
-				this.slap.get()
 				editor.pointerPage.get()
 				editor.selectedIds.get()
 				editor.viewportPageBounds.get()
@@ -266,7 +251,6 @@ export class Presence {
 			chat: this.chat.peek(),
 			chatSent: !this.chatOpen.peek(),
 			view: editor.viewportPageBounds.get(),
-			slap: this.slap.peek(),
 		}
 		this.provider.awareness.setLocalState(state)
 	}

@@ -219,7 +219,7 @@ multipart `file` (other fields as form fields). It can be combined with `title`,
 `group`, `name` changes.
 
 - The item keeps its **id**, its link, its session and group, its title and caption (unless you
-  change them too), and the user's **annotations** (pinned to the same relative spots, so check
+  change them too), and the user's **annotations** (drawn at the same relative spots, so check
   they still make sense if the layout changed a lot).
 - It gets the new file's kind (an image can become a video or an HTML page), size and file name
   (unless you send `name`), and a new media `url`; everyone looking at the canvas sees the new
@@ -278,16 +278,25 @@ act highlight "$SID/2. Cool palette" "These read calmer but lose contrast. Which
 
 ## Reading the user's annotations
 
-The user can pin comments to a specific spot of an image (or video or HTML item): a dot on the
-item, a line, and a comment. Check them for feedback on what you posted, e.g. when the user says
-"see my comments" or before iterating on an image: `list_annotations {canvas, sessionId?, itemId?}`
-(pass your `sessionId` for comments on your items), or `GET $API/canvases/$CID/annotations?sessionId=$SID`
-(or `?itemId=`). Each has `text`, `author`, `createdAt`, the `item` (`id`, `title`, `name`,
-`group`, `sessionId`, `width`, `height`, `url` of the original file, canvas `link`) and the
-`anchor`: `x`/`y` normalized to the item (0..1) and `px`/`py`, **pixel coordinates in the original
-image** (`x × width`, `y × height`; CSS px for HTML items). `GET $API/canvases/$CID/annotations/<id>/image`
-(`markedImageUrl` in MCP results) returns the image with that spot circled in red, handy to see
-what the comment points at.
+The user gives feedback by **drawing on items** with the pencil: freehand strokes (circling,
+underlining, crossing out, arrows) on an image (or video or HTML item), each with an optional
+text note, or a text-only note dropped on a spot. Check them for feedback on what you posted, e.g.
+when the user says "see my comments" / "look at what I circled" or before iterating on an image:
+`list_annotations {canvas, sessionId?, itemId?}` (pass your `sessionId` for annotations on your
+items), or `GET $API/canvases/$CID/annotations?sessionId=$SID` (or `?itemId=`). Each has `text`
+(may be empty for a drawing), `author`, `color`, `createdAt`, the `item` (`id`, `title`, `name`,
+`group`, `sessionId`, `width`, `height`, `url` of the original file, canvas `link`) and:
+
+- `strokes`: each stroke as a list of `[x, y]` **pixel points in the original image** (CSS px for
+  HTML items); `[]` for a text-only note.
+- `bbox`: `{x, y, width, height}`, the drawing's bounding box in pixels: what it marks.
+- `anchor`: where the note sits (beside the drawing, or a text-only note's spot): `x`/`y`
+  normalized to the item (0..1) and `px`/`py` in pixels.
+
+**Look at `markedImageUrl`** (MCP results; over HTTP `GET $API/canvases/$CID/annotations/<id>/image`):
+the image (or a video's poster frame) with the strokes drawn on it in the author's colour and the
+annotation's number beside them (a ring round the spot for a text-only note). Fetch it to see what
+was circled before acting on the text; the strokes and bbox tell you where, precisely.
 
 **Reading annotations consumes them**: once you've read them they disappear from the canvas (people
 see them fly into your session's creature), so read them when you're about to act on them, and
@@ -296,7 +305,7 @@ pass `keep: true` to just peek. Over HTTP, `GET …/annotations?sessionId=$SID` 
 (`&keep=true` peeks); without `sessionId` it only peeks unless you add `&keep=false`. Consumed
 annotations wait in the trash for an hour (their `markedImageUrl` keeps working): `restore
 {canvas, annotationIds}` (or `POST $API/canvases/$CID/restore {"annotationIds": [...]}`) puts them
-back. `get_canvas` lists annotations too, without consuming them.
+back. `get_canvas` lists annotations too (with their bbox), without consuming them.
 
 ## MCP server
 
@@ -314,7 +323,7 @@ session take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
   metadata (`null` clears title, caption, group).
 - `delete_item`, `restore`: soft-delete, undo deletes (and bring back consumed annotations with `annotationIds`).
 - `list_canvases`, `create_canvas`, `get_canvas` (sessions, groups, items, notes, annotations), `find_items`, `list_notes`.
-- `list_annotations {canvas, sessionId?, itemId?, keep?}`: the user's comments pinned to spots on items, with pixel coordinates; reading consumes them unless `keep: true` (see above).
+- `list_annotations {canvas, sessionId?, itemId?, keep?}`: the user's pencil drawings (strokes and bbox in image pixels, optional text, `markedImageUrl` to look at); reading consumes them unless `keep: true` (see above).
 - `get_item {itemId, includeImage?, fullSize?}`: see an image (or an HTML item's source).
 - `get_selection`: what people on the canvas have selected ("look at this"); `get_presence`: who's there.
 

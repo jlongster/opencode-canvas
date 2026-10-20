@@ -1,14 +1,20 @@
-import { clamp } from '../geometry'
 import { StateNode } from '../StateNode'
 import type { EventOf } from '../types'
 
+/** A pencil, its tip at the hotspot (bottom left), as the cursor over items. */
+const PENCIL =
+	'<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22"><path d="M3 19l1.2-4.6L15.6 3a1.9 1.9 0 0 1 2.7 0l.7.7a1.9 1.9 0 0 1 0 2.7L7.6 17.8z" fill="white" stroke="black" stroke-width="1.4" stroke-linejoin="round"/><path d="M13.6 5l3.4 3.4M4.2 14.4l3.4 3.4" stroke="black" stroke-width="1.2"/><path d="M3 19l.7-2.6 1.9 1.9z" fill="black"/></svg>'
+export const PENCIL_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(PENCIL)}") 3 19, crosshair`
+
 /**
- * Press on a spot of an item and drag: a line follows the pointer from that spot, and releasing
- * opens a comment box at its end (see SharedAnnotations). The tool stays active for the next
- * comment, like comment tools usually do; Escape goes back to select. Pressing anywhere else pans.
+ * Draw on items: press on an item and draw a freehand stroke (the layer tracks the pointer itself,
+ * coalesced events and all, see SharedAnnotations); on release a note box opens by the drawing.
+ * T (or typing) over an item drops a text-only note there. Once the annotation is saved for good
+ * (see SharedAnnotations.finished) it goes back to select; Escape does too. Pressing anywhere off
+ * an item pans.
  */
-export class AnnotateTool extends StateNode {
-	static override id = 'annotate'
+export class PencilTool extends StateNode {
+	static override id = 'pencil'
 	static override initial = 'idle'
 	static override children = () => [Idle, Drawing, Panning]
 }
@@ -27,23 +33,23 @@ class Idle extends StateNode {
 	override onPointerDown(e: EventOf<'pointer_down'>) {
 		if (e.button !== 0) return
 		const { editor } = this
-		const box = e.target.type === 'item' ? editor.layout.get().items.get(e.target.id) : undefined
-		if (e.target.type !== 'item' || !box || !editor.annotationDrafts) return this.parent!.transition('panning', e)
-		const p = editor.inputs.currentPagePoint
-		editor.annotationDrafts.begin(e.target.id, { x: clamp((p.x - box.x) / box.w, 0, 1), y: clamp((p.y - box.y) / box.h, 0, 1) })
+		if (e.target.type !== 'item' || !editor.annotationDrafts) return this.parent!.transition('panning', e)
+		editor.annotationDrafts.begin(e.target.id, editor.inputs.currentPagePoint)
 		this.parent!.transition('drawing')
 	}
 
 	override onKeyDown(e: EventOf<'key_down'>) {
-		if (e.key === 'Escape') this.editor.setCurrentTool('select')
+		if (e.key === 'Escape') return this.editor.setCurrentTool('select')
+		if (e.metaKey || e.ctrlKey || e.altKey || e.key.length !== 1 || e.key === ' ' || e.key === '/') return
+		this.editor.annotationDrafts?.type(e.key === 't' || e.key === 'T' ? '' : e.key)
 	}
 
-	/** A crosshair over items (where a press starts a comment), the hand elsewhere (a press pans). */
+	/** The pencil over items (where a press draws), the hand elsewhere (a press pans). */
 	private updateCursor() {
 		const { editor } = this
 		if (editor.inputs.isSpaceDown) return
 		const target = editor.inputs.isPointerInside ? editor.getTargetAt(editor.inputs.currentPagePoint) : null
-		editor.setCursor(!target || target.type === 'item' ? 'crosshair' : 'grab')
+		editor.setCursor(!target || target.type === 'item' ? PENCIL_CURSOR : 'grab')
 	}
 }
 
@@ -53,26 +59,17 @@ class Drawing extends StateNode {
 
 	override onEnter() {
 		this.done = false
-		this.editor.setCursor('crosshair')
+		this.editor.setCursor(PENCIL_CURSOR)
 	}
 
 	override onExit() {
 		if (!this.done) this.editor.annotationDrafts?.cancel()
 	}
 
-	override onPointerMove() {
-		this.editor.annotationDrafts?.move(this.pointerPage())
-	}
-
 	override onPointerUp() {
 		this.done = true
-		this.editor.annotationDrafts?.finish(this.pointerPage())
+		this.editor.annotationDrafts?.end()
 		this.parent!.transition('idle')
-	}
-
-	/** Where the pointer is now, even if the camera moved since its last move event. */
-	private pointerPage() {
-		return this.editor.screenToPage(this.editor.inputs.currentScreenPoint)
 	}
 
 	override onKeyDown(e: EventOf<'key_down'>) {

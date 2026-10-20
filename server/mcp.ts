@@ -118,7 +118,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 
 	/** An annotation as get_canvas lists it: what it says and where, with the item referred to by id. */
 	const annotationSummary = (a: AnnotationView) => ({
-		id: a.id, text: a.text, author: a.author, itemId: a.item.id, anchor: a.anchor, createdAt: a.createdAt,
+		id: a.id, text: a.text, author: a.author, itemId: a.item.id, anchor: a.anchor, ...(a.bbox ? { bbox: a.bbox, strokes: a.strokes.length } : {}), createdAt: a.createdAt,
 	})
 
 	const noteSummary = (n: Note) => ({ id: n.id, text: n.text, author: n.author, color: n.color, x: Math.round(n.x), y: Math.round(n.y) })
@@ -260,8 +260,9 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'item, group, frame or note) queue steps on your creature, which the user plays through when they look; ' +
 					'queue them in the order they should be read. Pass sessionId and sessionTitle (your OpenCode session\'s ' +
 					'title) on every post_item, say and highlight. The user gives feedback on a specific spot of an image with ' +
-					'annotations: check list_annotations (filter by your sessionId) for comments on what you posted; their ' +
-					'px/py are pixel coordinates in the original image. Reading annotations consumes them: they disappear from ' +
+					'annotations: check list_annotations (filter by your sessionId) for feedback on what you posted: freehand ' +
+					'drawings with optional text (strokes and bbox in pixels of the original image; look at markedImageUrl to ' +
+					'see what was circled). Reading annotations consumes them: they disappear from ' +
 					'the canvas once you\'ve read them (pass keep: true to peek; restore brings them back). To show a new version of something you posted, replace ' +
 					'it in place with update_item (path, url or html) rather than posting it again: it keeps its place and comments.',
 			},
@@ -288,7 +289,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				description:
 					'Everything on one canvas: its sessions (one frame per OpenCode session) in frame order, left to right, each ' +
 					'with its groups and their items (id, name, title, kind, size, media url), plus its sticky notes and annotations ' +
-					'(comments pinned to a spot on an item; see list_annotations). People can hide frames ("hidden": true): a ' +
+					'(pencil drawings and notes on items; see list_annotations). People can hide frames ("hidden": true): a ' +
 					'hidden frame isn\'t shown on the canvas but still takes posts (posting doesn\'t unhide it).',
 				inputSchema: { canvas: canvasArg },
 			},
@@ -448,12 +449,15 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			'list_annotations',
 			{
 				description:
-					'The user\'s annotations: comments pinned to a spot on an item (an image, video or HTML page), oldest first. ' +
-					'Each has id, text, author, createdAt, the item (id, title, name, group, sessionId, kind, width, height, url ' +
-					'of the original file, canvas link; sourceItemId and sourceTime in seconds when it is a frame extracted from a ' +
-					'video) and the anchor: x/y normalized to the item (0..1) and px/py, pixel ' +
-					'coordinates in the original image (x × width, y × height). Filter by sessionId (yours, for feedback on what ' +
-					'you posted) or itemId. markedImageUrl is the image with the spot circled. Reading consumes them: the ' +
+					'The user\'s annotations, oldest first: freehand pencil drawings on an item (an image, video or HTML page) — ' +
+					'circling, underlining, crossing out, arrows — with an optional text note, or text-only notes dropped on a ' +
+					'spot. Each has id, text (may be empty for a drawing), author, color, createdAt, the item (id, title, name, ' +
+					'group, sessionId, kind, width, height, url of the original file, canvas link; sourceItemId and sourceTime in ' +
+					'seconds when it is a frame extracted from a video), strokes (each stroke a list of [x, y] pixel points in the ' +
+					'original image; [] for a text-only note), bbox (the drawing\'s bounding box in pixels: what it marks) and ' +
+					'anchor (where the note sits, or a text-only note\'s spot: x/y normalized 0..1, px/py in pixels). Filter by ' +
+					'sessionId (yours, for feedback on what you posted) or itemId. markedImageUrl is the image with the strokes ' +
+					'and the annotation\'s number drawn on it: fetch it to see what was circled. Reading consumes them: the ' +
 					'annotations returned are taken off the canvas (people see them fly into your creature) and come back with ' +
 					'consumed: true, so act on them now; they wait in the trash for an hour (restore with annotationIds brings ' +
 					'them back). Pass keep: true to just peek.',

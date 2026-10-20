@@ -118,7 +118,7 @@ export class Deletions {
 		if (!annotations.length) return
 		this.stack.push({ itemIds: [], sessionIds: [], notes: [], annotations })
 		if (this.stack.length > MAX_UNDO) this.stack.shift()
-		this.showToast(`Deleted ${annotations.length === 1 ? 'comment' : `${annotations.length} comments`}`, true)
+		this.showToast(`Deleted ${annotations.length === 1 ? 'annotation' : `${annotations.length} annotations`}`, true)
 	}
 
 	/** Restores the most recent delete batch. */

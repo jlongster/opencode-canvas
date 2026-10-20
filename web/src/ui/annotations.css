@@ -1,4 +1,4 @@
-/* Annotations: drawn at a constant screen size (not scaled with the camera), above notes. */
+/* Annotations: pencil strokes and note cards at a constant screen size (not scaled with the camera), above notes. */
 .annotation-layer {
 	--ann-bg: #1c1c1f;
 	--ann-border: rgba(255, 255, 255, 0.08);
@@ -15,7 +15,7 @@
 	-moz-osx-font-smoothing: grayscale;
 }
 
-.annotation-lines {
+.annotation-strokes {
 	position: absolute;
 	inset: 0;
 	width: 100%;
@@ -23,21 +23,32 @@
 	overflow: visible;
 }
 
-/* A thin dark casing keeps the hairline readable on light images without reading as a shadow. */
+/* Pencil strokes: 3px on screen at any zoom, with a soft dark casing so they read on light images. */
+.annotation-stroke,
 .annotation-casing {
-	stroke: rgba(0, 0, 0, 0.28);
-	stroke-width: 3;
+	fill: none;
 	stroke-linecap: round;
+	stroke-linejoin: round;
+	vector-effect: non-scaling-stroke;
 }
 
-.annotation-line {
+.annotation-casing {
+	stroke: rgba(0, 0, 0, 0.3);
+	stroke-width: 5;
+}
+
+.annotation-stroke {
 	stroke: var(--author);
-	stroke-width: 1.5;
-	stroke-linecap: round;
-	stroke-opacity: 0.8;
-	transition: stroke-opacity 120ms;
+	stroke-width: 3;
 }
 
+.annotation-g.hover .annotation-casing,
+.annotation-g.active .annotation-casing {
+	stroke: rgba(0, 0, 0, 0.5);
+	stroke-width: 6;
+}
+
+/* A text-only note's spot. */
 .annotation-ring {
 	fill: rgba(17, 17, 19, 0.45);
 	stroke: var(--author);
@@ -48,24 +59,12 @@
 	fill: var(--author);
 }
 
-.annotation-tip {
-	fill: var(--author);
-	stroke: rgba(0, 0, 0, 0.35);
-	stroke-width: 1;
-}
-
-.annotation-g.hover .annotation-line,
-.annotation-g.active .annotation-line,
-.annotation-g.drawing .annotation-line {
-	stroke-opacity: 1;
-}
-
 .annotation-g.hover .annotation-ring,
 .annotation-g.active .annotation-ring {
 	fill: rgba(17, 17, 19, 0.7);
 }
 
-/* Collapsed: the anchor plus its number on the item (the same number agents see). */
+/* The number chip: a drawing without a note, or any note collapsed at low zoom (the same number agents see). */
 .annotation-badge {
 	position: absolute;
 	left: 0;
@@ -115,14 +114,9 @@
 
 .annotation-card:hover,
 .annotation-card.active,
-.annotation-card.editing,
-.annotation-card.dragging {
+.annotation-card.editing {
 	z-index: 1;
 	border-color: var(--ann-border-strong);
-}
-
-.annotation-card.dragging {
-	cursor: grabbing;
 }
 
 .annotation-head {
@@ -173,8 +167,7 @@
 	opacity: 1;
 }
 
-.annotation-card.editing .annotation-actions,
-.annotation-card.dragging .annotation-actions {
+.annotation-card.editing .annotation-actions {
 	display: none;
 }
 
@@ -212,6 +205,11 @@
 	line-height: 18px;
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
+}
+
+.annotation-text.empty {
+	color: var(--ann-faint);
+	font-style: italic;
 }
 
 .annotation-input {

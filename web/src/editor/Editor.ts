@@ -5,11 +5,10 @@ import { Deletions } from './Deletions'
 import { computeLayout, frameTitleBox, itemsToReveal, LAYOUT, newestFirst, orderSessions, shiftSection, type GroupLayout, type Layout } from './layout'
 import { groupKey, noteKey, parseSelectionId, type SelectionKind } from './selection'
 import { StateNode } from './StateNode'
-import { AnnotateTool } from './tools/AnnotateTool'
+import { PENCIL_CURSOR, PencilTool } from './tools/PencilTool'
 import { HandTool } from './tools/HandTool'
 import { NoteTool } from './tools/NoteTool'
 import { SelectTool } from './tools/SelectTool'
-import { SLAP_CURSOR, SlapTool } from './tools/SlapTool'
 import type { EditorEvent, EventOf, Modifiers, Target } from './types'
 
 export interface Camera {
@@ -46,21 +45,23 @@ export const GROUP_OUTLINE_PADDING = 14
 class Root extends StateNode {
 	static override id = 'root'
 	static override initial = 'select'
-	static override children = () => [SelectTool, HandTool, NoteTool, AnnotateTool, SlapTool]
+	static override children = () => [SelectTool, HandTool, NoteTool, PencilTool]
 }
 
-export type ToolId = 'select' | 'hand' | 'note' | 'annotate' | 'slap'
+export type ToolId = 'select' | 'hand' | 'note' | 'pencil'
 
 /**
- * Drawing a new annotation (set by SharedAnnotations on edit links): the annotate tool starts a
- * draft at a spot on an item, moves its line's end with the pointer, then opens its comment box.
+ * Drawing annotations (set by SharedAnnotations on edit links): the pencil tool starts a stroke on
+ * an item (the layer follows the pointer itself, for its coalesced events), ends it on release
+ * (a note box opens by the drawing), or drops a text-only note where the pointer is.
  */
 export interface AnnotationDrafts {
-	begin(itemId: string, anchor: Vec): void
-	move(point: Vec): void
-	/** release: the comment box opens at the line's end (page point) */
-	finish(point: Vec): void
+	/** pen down on an item, at a page point */
+	begin(itemId: string, point: Vec): void
+	end(): void
 	cancel(): void
+	/** T or typing with the pencil: a text-only note under the pointer, starting with `text` (false when it isn't over an item) */
+	type(text: string): boolean
 }
 
 /** Sessions' creatures (set by AgentWorms), so others can send one somewhere for a moment (see SharedAnnotations). */
@@ -449,7 +450,7 @@ export class Editor {
 	/** The cursor the current tool shows at rest (used after a space-pan ends). */
 	private restingCursor() {
 		const tool = this.currentToolId.get()
-		return tool === 'hand' ? 'grab' : tool === 'note' || tool === 'annotate' ? 'crosshair' : tool === 'slap' ? SLAP_CURSOR : 'default'
+		return tool === 'hand' ? 'grab' : tool === 'note' ? 'crosshair' : tool === 'pencil' ? PENCIL_CURSOR : 'default'
 	}
 
 	// ---------- hit testing ----------
@@ -1167,10 +1168,12 @@ export class Editor {
 		if (!mod && !e.altKey && (e.key === 'v' || e.key === 'V')) return this.setCurrentTool('select')
 		if (!mod && !e.altKey && (e.key === 'h' || e.key === 'H')) return this.setCurrentTool('hand')
 		if (!mod && !e.altKey && (e.key === 'n' || e.key === 'N') && this.createNote) return this.setCurrentTool('note')
-		if (!mod && !e.altKey && (e.key === 'a' || e.key === 'A') && this.annotationDrafts) return this.setCurrentTool('annotate')
-		if (!mod && !e.altKey && (e.key === 's' || e.key === 'S') && this.createNote) return this.setCurrentTool('slap')
+		if (!mod && !e.altKey && e.key.length === 1 && 'pPaA'.includes(e.key) && this.annotationDrafts) return this.setCurrentTool('pencil')
 
+		const focused = document.activeElement
 		this.dispatch({ name: 'key_down', key: e.key, code: e.code, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey })
+		// A key that opened a text box (see PencilTool) isn't typed into it as well.
+		if (document.activeElement !== focused && isEditable(document.activeElement)) e.preventDefault()
 	}
 
 	private handleKeyUp = (e: KeyboardEvent) => {

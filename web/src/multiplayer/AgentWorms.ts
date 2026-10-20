@@ -4,7 +4,6 @@ import type { Attention } from './Attention'
 import type { Conjure } from './Conjure'
 import { Colony, type Baby } from './Babies'
 import { Offscreen } from './Offscreen'
-import { Slaps, type Pose } from './Slap'
 import { Carry } from './Carry'
 import './farAway.css'
 import type { Peer, SubagentInfo } from './Presence'
@@ -148,7 +147,7 @@ export interface Worm {
 	nextGlance: number
 	dart: Vec
 	nextDart: number
-	/** 0..1 squashed (slapped), easing back */
+	/** 0..1 squashed (picked up), easing back */
 	squash: number
 	wakeAt: number
 	recoilAt: number
@@ -261,8 +260,6 @@ export class AgentWorms {
 	private tipFor: Baby | null = null
 	/** when this page started showing creatures (wall clock), to tell sessions conjured since from ones already here */
 	private bornAt = Date.now()
-	/** the slap tool's blows (see Slap) */
-	private slaps: Slaps
 	/** creatures their owner is dragging (see Carry) */
 	private carry: Carry
 	/** markers at the edges of the view for creatures out of it */
@@ -287,7 +284,6 @@ export class AgentWorms {
 		this.tip = document.createElement('div')
 		this.tip.className = 'agent-worm-tiny-tip'
 		this.tip.hidden = true
-		this.slaps = new Slaps(editor, conjure, this.reducedMotion)
 		this.carry = new Carry(editor, this.reducedMotion)
 		this.offscreen = new Offscreen(parent, editor, conjure, this.reducedMotion, (worm) => this.startle(worm))
 		this.labels.appendChild(this.tip)
@@ -397,7 +393,6 @@ export class AgentWorms {
 			this.draw(worm, now, elapsed)
 		}
 		this.peek(now)
-		this.slaps.frame(ctx, now, this.worms.values())
 		this.showTip()
 		this.offscreen.frame(now, elapsed, this.worms.values())
 	}
@@ -405,7 +400,6 @@ export class AgentWorms {
 	destroy() {
 		for (const d of this.disposers.splice(0)) d()
 		if (this.editor.creatures?.reaching === this.reaching) this.editor.creatures = null
-		this.slaps.destroy()
 		this.carry.clear()
 		this.offscreen.destroy()
 		this.container?.classList.remove('conjure-hover', 'conjure-panning', 'conjure-dragging')
@@ -478,7 +472,6 @@ export class AgentWorms {
 		e.preventDefault()
 		this.swallowed.add(e.pointerId)
 		const at = this.local(e)
-		if (this.slaps.active) return this.slaps.hit(worm, at)
 		this.press = { pointerId: e.pointerId, worm, start: at, last: at, panning: false, dragging: false }
 		try {
 			;(e.target as Element).setPointerCapture?.(e.pointerId)
@@ -546,8 +539,7 @@ export class AgentWorms {
 		}
 		if (this.swallowed.has(e.pointerId)) return e.stopPropagation()
 		const over = e.buttons === 0 && this.overCanvas(e) ? this.hitTest(e.clientX, e.clientY) : null
-		this.slaps.hovered = this.slaps.active ? over : null
-		this.container?.classList.toggle('conjure-hover', !!over && !this.slaps.active)
+		this.container?.classList.toggle('conjure-hover', !!over)
 	}
 
 	/** Let go of a dragged creature: put down there for everyone, or back where it was if that's refused. */
@@ -948,20 +940,17 @@ export class AgentWorms {
 
 		worm.rest = this.restHeading(worm, this.centreOf(worm))
 		const carried = this.carry.holds(worm)
-		const held = carried || this.slaps.holds(worm, now)
-		if (!held) {
+		if (!carried) {
 			this.locomote(worm, now, dt, z)
 			this.fret(worm, now)
 		} else {
 			worm.vel = { x: 0, y: 0 }
 		}
 		if (worm.mode === 'pop' || worm.mode === 'vanish') this.popping(worm, now)
-		this.slaps.step(worm, now)
-		const pose = this.slaps.pose(worm, now, z)
 		if (carried) this.carry.dangle(worm, dt)
 		else {
-			this.knock(worm, pose, dt)
-			this.steer(worm, pose, now, dt, z)
+			this.knock(worm, dt)
+			this.steer(worm, now, dt, z)
 		}
 		worm.squash *= 1 - ease(140)
 		this.eyes(worm, now, elapsed)
@@ -1072,42 +1061,36 @@ export class AgentWorms {
 		} else worm.gone = true
 	}
 
-	/** Knocked out of place (slaps, recoils): sprung back, or thrown and left to fly. */
-	private knock(worm: Worm, pose: Pose | null, dt: number) {
-		const to = pose?.off ?? { x: 0, y: 0 }
+	/** Knocked out of place (dropped, recoils): sprung back. */
+	private knock(worm: Worm, dt: number) {
+		const to = { x: 0, y: 0 }
 		if (this.reducedMotion.matches) {
 			worm.off = { ...to }
 			worm.offV = { x: 0, y: 0 }
 			return
 		}
-		const w = pose?.k ?? SETTLE_W
+		const w = SETTLE_W
 		for (let left = dt; left > 1e-6; left -= 1 / 120) {
 			const h = Math.min(left, 1 / 120)
-			if (pose?.free) {
-				const drag = Math.exp(-3 * h)
-				worm.offV.x *= drag
-				worm.offV.y *= drag
-			} else {
-				worm.offV.x += (w * w * (to.x - worm.off.x) - 2 * 0.8 * w * worm.offV.x) * h
-				worm.offV.y += (w * w * (to.y - worm.off.y) - 2 * 0.8 * w * worm.offV.y) * h
-			}
+			worm.offV.x += (w * w * (to.x - worm.off.x) - 2 * 0.8 * w * worm.offV.x) * h
+			worm.offV.y += (w * w * (to.y - worm.off.y) - 2 * 0.8 * w * worm.offV.y) * h
 			worm.off.x += worm.offV.x * h
 			worm.off.y += worm.offV.y * h
 		}
 	}
 
-	/** Turns it toward where it should point, on an angular spring (or lets it spin, thrown). */
-	private steer(worm: Worm, pose: Pose | null, now: number, dt: number, z: number) {
-		const want = pose ? pose.heading : this.heading(worm, now, z)
+	/** Turns it toward where it should point, on an angular spring. */
+	private steer(worm: Worm, now: number, dt: number, z: number) {
+		const want = this.heading(worm, now, z)
 		if (this.reducedMotion.matches) {
-			worm.heading = want ?? worm.rest
+			worm.heading = want
 			worm.spin = 0
 			return
 		}
-		const w = pose?.turn ?? (worm.trip ? TURN_W * 1.25 : TURN_W)
+		const w = worm.trip ? TURN_W * 1.25 : TURN_W
 		for (let left = dt; left > 1e-6; left -= 1 / 120) {
 			const h = Math.min(left, 1 / 120)
-			const acc = want === null ? -1.6 * worm.spin : w * w * turn(worm.heading, want) - 2 * TURN_Z * w * worm.spin
+			const acc = w * w * turn(worm.heading, want) - 2 * TURN_Z * w * worm.spin
 			worm.spin += acc * h
 			worm.heading += worm.spin * h
 		}
@@ -1230,8 +1213,8 @@ export class AgentWorms {
 		let squeeze = 0
 		let lower = 0
 		let dizzy = 0
-		const slapped = this.carry.eye(worm, now) ?? this.slaps.eye(worm, now)
-		if (slapped) ({ look, lid, wide, slant, squeeze, lower, dizzy } = slapped)
+		const held = this.carry.eye(worm, now)
+		if (held) ({ look, lid, wide, slant, squeeze, lower, dizzy } = held)
 		else if (startle > 0) {
 			look = { x: 0, y: 0 }
 			wide = startle
@@ -1368,7 +1351,7 @@ export class AgentWorms {
 	// ---------- drawing ----------
 
 	private draw(worm: Worm, now: number, elapsed: number) {
-		if (worm.asleep && !this.slaps.awake(worm, now)) return this.drawFaded(worm, now, elapsed, 0.5)
+		if (worm.asleep) return this.drawFaded(worm, now, elapsed, 0.5)
 		this.ctx.save()
 		try {
 			this.drawCreature(worm, now, elapsed)
@@ -1463,7 +1446,7 @@ export class AgentWorms {
 		const glow = worm.think * (still ? 0.6 : 0.5 + 0.3 * Math.sin(now * 0.0055))
 		drawPointer(this.ctx, shape, worm.palette, worm.eye, { dpr: window.devicePixelRatio || 1, glow, glowColor: worm.color })
 		// (where it goes and the way it travels aren't part of it: its marker stays put, pointing at it)
-		const posed = worm.mode === 'here' && !worm.trip && !this.slaps.holds(worm, now)
+		const posed = worm.mode === 'here' && !worm.trip
 		worm.live = { dx: c.x - worm.off.x - home.x, dy: c.y - worm.off.y - home.y, turn: posed ? turn(worm.rest, heading) : heading - worm.heading, scale, glow }
 		this.placeLabels(worm, shape, elapsed)
 	}

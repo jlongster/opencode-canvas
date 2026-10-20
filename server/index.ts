@@ -1130,15 +1130,25 @@ function annotationFrom(id: string, a: Y.Map<unknown> | Record<string, unknown>)
 		itemId: String(get('itemId') ?? ''),
 		x: num('x'),
 		y: num('y'),
-		ox: num('ox'),
-		oy: num('oy'),
-		...(num('len') ? { len: num('len') } : {}),
+		strokes: strokesFrom(get('strokes')),
 		text: String(get('text') ?? ''),
 		author: String(get('author') ?? ''),
 		color: String(get('color') ?? ''),
 		createdAt: num('createdAt'),
 		...(updatedAt ? { updatedAt } : {}),
 	}
+}
+
+/** Pencil strokes as stored (flat normalized [x, y, …] arrays), with anything malformed dropped (old pin annotations have none). */
+function strokesFrom(value: unknown): number[][] {
+	if (!Array.isArray(value)) return []
+	const strokes: number[][] = []
+	for (const s of value) {
+		if (!Array.isArray(s) || s.length < 2) continue
+		const flat = s.slice(0, s.length - (s.length % 2)).map((v) => Number(v))
+		if (flat.every(Number.isFinite)) strokes.push(flat)
+	}
+	return strokes
 }
 
 type AnnotationFilter = { sessionId?: string; itemId?: string }
@@ -1201,6 +1211,7 @@ function resolveAnnotations(canvas: Canvas, list: Annotation[], filter: Annotati
 		if (filter.sessionId && item.sessionId !== filter.sessionId) continue
 		const x = clamp01(a.x)
 		const y = clamp01(a.y)
+		const { strokes, bbox } = strokePixels(a.strokes, item.width, item.height)
 		const sessionTitle = db.sessions.get(sessionKey(canvas.id, item.sessionId))?.title
 		views.push({
 			id: a.id,
@@ -1223,6 +1234,9 @@ function resolveAnnotations(canvas: Canvas, list: Annotation[], filter: Annotati
 				...(item.sourceItemId ? { sourceItemId: item.sourceItemId, sourceTime: item.sourceTime } : {}),
 			},
 			anchor: { x: round4(x), y: round4(y), px: Math.round(x * item.width), py: Math.round(y * item.height) },
+			strokes,
+			...(bbox ? { bbox } : {}),
+			color: a.color,
 		})
 	}
 	return views
@@ -1238,65 +1252,222 @@ function findMarkFont() {
 }
 
 /**
+ * Strokes in pixels of an image (or page) `width` × `height`, simplified (to within about a pixel)
+ * so long scribbles stay readable, and the drawing's bounding box.
+ */
+function strokePixels(strokes: number[][], width: number, height: number) {
+	const tolerance = Math.max(1, Math.hypot(width, height) / 1000)
+	const out: [number, number][][] = []
+	let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+	for (const flat of strokes) {
+		const points: [number, number][] = []
+		for (let i = 0; i + 1 < flat.length; i += 2) points.push([flat[i] * width, flat[i + 1] * height])
+		for (const [x, y] of points) {
+			x0 = Math.min(x0, x)
+			y0 = Math.min(y0, y)
+			x1 = Math.max(x1, x)
+			y1 = Math.max(y1, y)
+		}
+		out.push(simplify(points, tolerance).map(([x, y]) => [Math.round(x), Math.round(y)]))
+	}
+	if (!out.length) return { strokes: out, bbox: undefined }
+	const bx = Math.max(0, Math.floor(x0))
+	const by = Math.max(0, Math.floor(y0))
+	const bbox = { x: bx, y: by, width: Math.max(0, Math.min(width, Math.ceil(x1)) - bx), height: Math.max(0, Math.min(height, Math.ceil(y1)) - by) }
+	return { strokes: out, bbox }
+}
+
+/** Ramer–Douglas–Peucker: the polyline with points closer than `tolerance` to the line between their neighbours dropped. */
+function simplify(points: [number, number][], tolerance: number): [number, number][] {
+	if (points.length < 3) return points
+	const keep = new Uint8Array(points.length)
+	keep[0] = keep[points.length - 1] = 1
+	const stack: [number, number][] = [[0, points.length - 1]]
+	while (stack.length) {
+		const [a, b] = stack.pop()!
+		let worst = -1
+		let far = tolerance
+		for (let i = a + 1; i < b; i++) {
+			const d = segmentDistance(points[i][0], points[i][1], points[a], points[b])
+			if (d > far) {
+				far = d
+				worst = i
+			}
+		}
+		if (worst < 0) continue
+		keep[worst] = 1
+		stack.push([a, worst], [worst, b])
+	}
+	return points.filter((_, i) => keep[i])
+}
+
+function segmentDistance(px: number, py: number, a: [number, number], b: [number, number]) {
+	const dx = b[0] - a[0]
+	const dy = b[1] - a[1]
+	const l2 = dx * dx + dy * dy
+	const t = l2 ? Math.min(1, Math.max(0, ((px - a[0]) * dx + (py - a[1]) * dy) / l2)) : 0
+	return Math.hypot(px - a[0] - t * dx, py - a[1] - t * dy)
+}
+
+/** The stroke as the canvas draws it: through the midpoints between its points, as quadratic curves, sampled finely. */
+function smoothStroke(points: [number, number][]): [number, number][] {
+	if (points.length < 3) return points
+	const out: [number, number][] = [points[0]]
+	const mid = (a: [number, number], b: [number, number]): [number, number] => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
+	let from = mid(points[0], points[1])
+	out.push(from)
+	for (let i = 1; i < points.length - 1; i++) {
+		const c = points[i]
+		const to = mid(c, points[i + 1])
+		const steps = Math.min(24, Math.max(2, Math.ceil((Math.hypot(c[0] - from[0], c[1] - from[1]) + Math.hypot(to[0] - c[0], to[1] - c[1])) / 3)))
+		for (let k = 1; k <= steps; k++) {
+			const t = k / steps
+			const u = 1 - t
+			out.push([u * u * from[0] + 2 * u * t * c[0] + t * t * to[0], u * u * from[1] + 2 * u * t * c[1] + t * t * to[1]])
+		}
+		from = to
+	}
+	out.push(points[points.length - 1])
+	return out
+}
+
+function hexColor(color: string): [number, number, number] {
+	const m = /^#?([0-9a-f]{6})$/i.exec(color.trim())
+	const n = m ? parseInt(m[1], 16) : 0xff3b30
+	return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+}
+
+/**
+ * The strokes rasterised (anti-aliased) into an RGBA patch covering just the drawing, to overlay
+ * on the image with ffmpeg: the author's colour with a dark edge, so it shows on light and dark images.
+ */
+function rasterStrokes(lines: [number, number][][], imageW: number, imageH: number, width: number, color: [number, number, number]) {
+	const core = width / 2
+	const edge = core + Math.max(1.5, width / 3)
+	let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+	for (const line of lines) {
+		for (const [x, y] of line) {
+			x0 = Math.min(x0, x)
+			y0 = Math.min(y0, y)
+			x1 = Math.max(x1, x)
+			y1 = Math.max(y1, y)
+		}
+	}
+	const pad = Math.ceil(edge) + 2
+	const left = Math.max(0, Math.floor(x0) - pad)
+	const top = Math.max(0, Math.floor(y0) - pad)
+	const w = Math.min(imageW, Math.ceil(x1) + pad) - left
+	const h = Math.min(imageH, Math.ceil(y1) + pad) - top
+	if (w <= 0 || h <= 0) return null
+	const coreCover = new Float32Array(w * h)
+	const edgeCover = new Float32Array(w * h)
+	for (const line of lines) {
+		for (let i = 0; i < line.length; i++) {
+			const a = line[i]
+			const b = line[Math.min(i + 1, line.length - 1)]
+			const sx0 = Math.max(0, Math.floor(Math.min(a[0], b[0]) - edge - 1) - left)
+			const sx1 = Math.min(w - 1, Math.ceil(Math.max(a[0], b[0]) + edge + 1) - left)
+			const sy0 = Math.max(0, Math.floor(Math.min(a[1], b[1]) - edge - 1) - top)
+			const sy1 = Math.min(h - 1, Math.ceil(Math.max(a[1], b[1]) + edge + 1) - top)
+			for (let py = sy0; py <= sy1; py++) {
+				for (let px = sx0; px <= sx1; px++) {
+					const d = segmentDistance(px + left + 0.5, py + top + 0.5, a, b)
+					if (d > edge + 0.5) continue
+					const k = py * w + px
+					coreCover[k] = Math.max(coreCover[k], Math.min(1, Math.max(0, core + 0.5 - d)))
+					edgeCover[k] = Math.max(edgeCover[k], Math.min(1, Math.max(0, edge + 0.5 - d)))
+				}
+			}
+		}
+	}
+	const rgba = new Uint8Array(w * h * 4)
+	for (let k = 0; k < w * h; k++) {
+		const e = edgeCover[k]
+		if (!e) continue
+		const c = coreCover[k]
+		// the edge is black at 60%: where the core covers, its colour, opaque
+		const alpha = c + (1 - c) * 0.6 * e
+		const mix = alpha ? c / alpha : 0
+		rgba[k * 4] = Math.round(color[0] * mix)
+		rgba[k * 4 + 1] = Math.round(color[1] * mix)
+		rgba[k * 4 + 2] = Math.round(color[2] * mix)
+		rgba[k * 4 + 3] = Math.round(255 * alpha)
+	}
+	return { rgba, left, top, w, h }
+}
+
+/**
  * GET /api/canvases/:cid/annotations/:id/image: the annotated image (a video's poster frame) as a
- * PNG, with a red ring around the anchor and the annotation's number on its item beside it.
+ * PNG, with the pencil strokes drawn on it (a ring round the spot for a text-only note) and the
+ * annotation's number on its item beside them.
+ *
+ * The strokes are rasterised here, in plain TypeScript, into an RGBA patch that ffmpeg overlays (it
+ * already reads and writes every format we accept): no browser, native module or SVG renderer needed.
  */
 async function markedImage(canvasId: string, annotationId: string): Promise<Response> {
 	if (!HAS_FFMPEG) throw new HttpError(501, 'marking images needs ffmpeg on the canvas server')
 	// Annotations an agent has read are in the trash, but the image it was handed still works.
 	const canvas = getCanvas(canvasId)
-	const trashed = [...trash.values()].flatMap((t) => (t.kind === 'annotation' && t.canvasId === canvas.id ? [annotationFrom(t.id, t.fields)] : []))
+	const trashed = [...trash.values()].flatMap((t) => (t.kind === 'annotation' && t.canvasId === canvas.id ? [t] : []))
 	const live = await readRoomDoc(`canvas-${canvas.id}`, readAnnotations)
-	const all = resolveAnnotations(canvas, [...live, ...trashed].sort((a, b) => a.createdAt - b.createdAt), {})
+	// Numbered as on the canvas: among the live ones, or for one an agent read, among those read with it.
+	const gone = trashed.find((t) => t.id === annotationId)
+	const list = (gone ? [...live, ...trashed.filter((t) => t.deletedAt === gone.deletedAt).map((t) => annotationFrom(t.id, t.fields))] : live).sort(
+		(a, b) => a.createdAt - b.createdAt,
+	)
+	const all = resolveAnnotations(canvas, list, {})
 	const a = all.find((v) => v.id === annotationId)
-	if (!a) throw new HttpError(404, `no annotation ${annotationId} on this canvas`)
+	const raw = list.find((v) => v.id === annotationId)
+	if (!a || !raw) throw new HttpError(404, `no annotation ${annotationId} on this canvas`)
 	const item = getItem(a.item.id)
-	if (item.kind === 'html') throw new HttpError(400, 'HTML items have no image to mark; use the anchor\'s px/py on the page')
+	if (item.kind === 'html') throw new HttpError(400, 'HTML items have no image to mark; use the strokes\' and anchor\'s pixel coordinates on the page')
 	const src = item.kind === 'video' ? item.thumb : item.src
 	if (/^https?:/.test(src)) throw new HttpError(400, 'this item\'s media is not stored on the canvas server')
 	const input = join(MEDIA_DIR, basename(src))
 	const size = await probe(input)
 	const number = all.filter((v) => v.item.id === item.id).findIndex((v) => v.id === a.id) + 1
-	const cx = Math.round(a.anchor.x * size.width)
-	const cy = Math.round(a.anchor.y * size.height)
-	const r = Math.max(12, Math.round(Math.min(size.width, size.height) * 0.035))
-	const stroke = Math.max(3, Math.round(r / 4))
-	const half = r + stroke + 3
-	const side = half * 2
-	// The ring: red, with a thin white edge so it shows on any background.
-	const ring = new Uint8Array(side * side * 4)
-	for (let py = 0; py < side; py++) {
-		for (let px = 0; px < side; px++) {
-			const off = Math.abs(Math.hypot(px + 0.5 - half, py + 0.5 - half) - r)
-			const red = Math.min(1, Math.max(0, stroke / 2 + 0.5 - off))
-			const edge = Math.min(1, Math.max(0, stroke / 2 + 2 - off))
-			const i = (py * side + px) * 4
-			ring[i] = 255
-			ring[i + 1] = ring[i + 2] = Math.round(255 * (1 - red))
-			ring[i + 3] = Math.round(255 * edge)
-		}
+	const short = Math.min(size.width, size.height)
+	const width = Math.max(3, Math.round(short / 180))
+	let lines: [number, number][][] = raw.strokes.map((flat) => {
+		const points: [number, number][] = []
+		for (let i = 0; i + 1 < flat.length; i += 2) points.push([flat[i] * size.width, flat[i + 1] * size.height])
+		return smoothStroke(points)
+	})
+	if (!lines.length) {
+		// a text-only note: a ring round its spot
+		const cx = clamp01(raw.x) * size.width
+		const cy = clamp01(raw.y) * size.height
+		const r = Math.max(12, short * 0.035)
+		lines = [Array.from({ length: 49 }, (_, i): [number, number] => [cx + r * Math.cos((i / 48) * Math.PI * 2), cy + r * Math.sin((i / 48) * Math.PI * 2)])]
 	}
+	const color = hexColor(a.color)
+	const patch = rasterStrokes(lines, size.width, size.height, width, color)
+	if (!patch) throw new HttpError(400, 'this annotation is drawn outside its image')
 	const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-	const ringFile = join(DATA_DIR, `.mark-${stamp}.rgba`)
+	const patchFile = join(DATA_DIR, `.mark-${stamp}.rgba`)
 	const output = join(DATA_DIR, `.mark-${stamp}.png`)
 	try {
-		await Bun.write(ringFile, ring)
+		await Bun.write(patchFile, patch.rgba)
 		const font = await findMarkFont()
-		const fontSize = Math.max(14, Math.round(r * 1.1))
+		const fontSize = Math.max(14, Math.round(short * 0.03))
+		const hex = color.map((c) => c.toString(16).padStart(2, '0')).join('')
+		// the number just outside the drawing's top-right corner, kept inside the image
+		const lx = patch.left + patch.w
+		const ly = patch.top - fontSize
 		const text = font
-			? `,drawtext=fontfile='${font.replace(/'/g, '')}':text='${number}':fontsize=${fontSize}:fontcolor=white:box=1:boxcolor=red:` +
-				`boxborderw=${Math.round(fontSize / 4)}:x='min(max(0,${cx + half}),w-tw)':y='min(max(0,${cy - half - fontSize}),h-th)'`
+			? `,drawtext=fontfile='${font.replace(/'/g, '')}':text='${number}':fontsize=${fontSize}:fontcolor=0x111111:box=1:boxcolor=0x${hex}:` +
+				`boxborderw=${Math.round(fontSize / 4)}:x='min(max(${Math.round(fontSize / 4)},${lx}),w-tw-${Math.round(fontSize / 4)})':y='min(max(${Math.round(fontSize / 4)},${ly}),h-th-${Math.round(fontSize / 4)})'`
 			: ''
 		await run([
 			'ffmpeg', '-y', '-v', 'error', '-i', input,
-			'-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${side}x${side}`, '-i', ringFile,
-			'-filter_complex', `[0:v][1:v]overlay=${cx - half}:${cy - half}:format=auto${text}`,
+			'-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${patch.w}x${patch.h}`, '-i', patchFile,
+			'-filter_complex', `[0:v][1:v]overlay=${patch.left}:${patch.top}:format=auto${text}`,
 			'-frames:v', '1', output,
 		])
 		const bytes = await Bun.file(output).arrayBuffer()
 		return new Response(bytes, { headers: { 'content-type': 'image/png', 'cache-control': 'no-store' } })
 	} finally {
-		await rm(ringFile, { force: true })
+		await rm(patchFile, { force: true })
 		await rm(output, { force: true })
 	}
 }
@@ -1405,17 +1576,20 @@ const API_INDEX = {
 			'cursor and view are in page coordinates. [] when nobody is there',
 		'GET /api/canvases/:cid/notes': 'The canvas\'s sticky notes: [{"id", "text", "author", "color", "x", "y", "createdAt"}]',
 		'GET /api/canvases/:cid/annotations':
-			'The user\'s annotations: comments pinned to a spot on an item, oldest first. Optional ?sessionId= (only that ' +
+			'The user\'s annotations: freehand pencil drawings on an item (circling, underlining, arrows) with an optional ' +
+			'text note, or text-only notes dropped on a spot, oldest first. Optional ?sessionId= (only that ' +
 			'session\'s items) and ?itemId=. Reading with ?sessionId= consumes them: the ones returned are taken off the ' +
 			'canvas (they fly into your creature, and wait in the trash for an hour: restore them with ' +
 			'POST /api/canvases/:cid/restore {"annotationIds"}) and come back with "consumed": true. ?keep=true peeks ' +
 			'instead; without ?sessionId= nothing is consumed unless you send ?keep=false. Each: {"id", "text", "author", "createdAt", "item": {"id", "kind", "name", "title", ' +
 			'"group", "sessionId", "sessionTitle", "width", "height", "url" (the original file), "link", "sourceItemId" and ' +
-			'"sourceTime" (seconds) when the item is a frame extracted from a video}, "anchor": {"x", "y" ' +
-			'(0..1 across the item), "px", "py" (pixels in the original image: x × width, y × height)}}',
+			'"sourceTime" (seconds) when the item is a frame extracted from a video}, "strokes": [[[x, y], …], …] (each pencil ' +
+			'stroke as pixel points in the original image; [] for a text-only note), "bbox": {"x", "y", "width", "height"} ' +
+			'(the drawing\'s bounding box in pixels), "color", "anchor": {"x", "y" (0..1 across the item), "px", "py" ' +
+			'(pixels in the original image: where the note sits, or a text-only note\'s spot)}}',
 		'GET /api/canvases/:cid/annotations/:id/image':
-			'The annotated image (or a video\'s poster frame) as a PNG with the spot marked by a red circle and the ' +
-			'annotation\'s number on that item',
+			'The annotated image (or a video\'s poster frame) as a PNG with the annotation\'s pencil strokes drawn on it ' +
+			'(a ring round the spot for a text-only note) and its number on that item: look at it to see what was circled',
 		'GET /api/canvases/:cid/selection':
 			'What each person on the canvas has selected, resolved: {"users": [{"user", "selection", "items" (full items ' +
 			'with absolute "url"/"thumbUrl"), "sessions" (with "itemCount"), "notes", "missing"}]}. Use this to answer ' +

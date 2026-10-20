@@ -1151,7 +1151,7 @@ function strokesFrom(value: unknown): number[][] {
 	return strokes
 }
 
-type AnnotationFilter = { sessionId?: string; itemId?: string }
+type AnnotationFilter = { sessionId?: string; itemId?: string; ids?: string[] }
 
 /**
  * A canvas's annotations resolved against their items, oldest first, optionally only those on one
@@ -1209,6 +1209,7 @@ function resolveAnnotations(canvas: Canvas, list: Annotation[], filter: Annotati
 		if (!item || item.canvasId !== canvas.id) continue
 		if (filter.itemId && item.id !== filter.itemId) continue
 		if (filter.sessionId && item.sessionId !== filter.sessionId) continue
+		if (filter.ids && !filter.ids.includes(a.id)) continue
 		const x = clamp01(a.x)
 		const y = clamp01(a.y)
 		const { strokes, bbox } = strokePixels(a.strokes, item.width, item.height)
@@ -1587,6 +1588,9 @@ const API_INDEX = {
 			'stroke as pixel points in the original image; [] for a text-only note), "bbox": {"x", "y", "width", "height"} ' +
 			'(the drawing\'s bounding box in pixels), "color", "anchor": {"x", "y" (0..1 across the item), "px", "py" ' +
 			'(pixels in the original image: where the note sits, or a text-only note\'s spot)}}',
+		'POST /api/canvases/:cid/annotations/consume':
+			'Marks annotations delivered (the canvas\'s Submit annotations button sent them to their session as a prompt): ' +
+			'they\'re consumed like a read with ?sessionId=. Body: {"ids": [...], "sessionId"}',
 		'GET /api/canvases/:cid/annotations/:id/image':
 			'The annotated image (or a video\'s poster frame) as a PNG with the annotation\'s pencil strokes drawn on it ' +
 			'(a ring round the spot for a text-only note) and its number on that item: look at it to see what was circled',
@@ -1896,6 +1900,17 @@ async function handle(req: Request): Promise<Response> {
 		const keepParam = q.get('keep')
 		const keep = keepParam === null ? !sessionId : !/^(0|false|no)$/i.test(keepParam)
 		return json(await readAnnotationsAsAgent(decodeURIComponent(m[1]), { sessionId, itemId: q.get('itemId') || undefined, keep, readerSessionId: sessionId }))
+	}
+
+	// The canvas submitted these annotations to their session as a prompt (see SubmitAnnotations):
+	// delivered, so they're consumed the way an agent reading them would.
+	m = /^\/api\/canvases\/([^/]+)\/annotations\/consume$/.exec(p)
+	if (m && method === 'POST') {
+		const body = (await req.json().catch(() => ({}))) as { ids?: unknown; sessionId?: unknown }
+		const ids = idList(body?.ids, 'ids')
+		if (!ids.length) throw new HttpError(400, 'send {"ids": [...], "sessionId"}')
+		const sessionId = typeof body?.sessionId === 'string' && body.sessionId.trim() ? body.sessionId.trim() : undefined
+		return json(await readAnnotationsAsAgent(decodeURIComponent(m[1]), { ids, sessionId, keep: false, readerSessionId: sessionId }))
 	}
 
 	m = /^\/api\/canvases\/([^/]+)\/annotations\/([^/]+)\/image$/.exec(p)

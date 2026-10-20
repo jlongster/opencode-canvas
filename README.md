@@ -36,7 +36,9 @@ On a canvas you can then:
   pixels, their bounding box, the note, and a rendered image with the strokes drawn on it
   (`list_annotations`). Reading consumes them: once an agent has read your annotations they
   disappear from the canvas, flying into its creature (agents can peek with `keep: true`, and
-  `restore` brings them back within an hour).
+  `restore` brings them back within an hour). **Submit annotations (N)** on a session's frame
+  sends them all to that session as one prompt (notes, pixel boxes, marked images attached),
+  through your paired OpenCode, asking it to update those items in place.
 - **Arrange frames**: drag a frame by its title to move it, or hide it with the eye on its title.
   The frame count at the bottom left opens a list of every frame, hidden ones included, to show,
   hide and reorder them. The arrangement is shared with everyone on the canvas.

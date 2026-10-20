@@ -13,6 +13,7 @@ import { FrameTitles } from '../opencode/frameTitles'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedAnnotations } from '../multiplayer/SharedAnnotations'
+import { SubmitAnnotations } from '../multiplayer/SubmitAnnotations'
 import { SharedNotes } from '../multiplayer/SharedNotes'
 import { Summon } from '../multiplayer/Summon'
 import { AttentionTray, Walkthrough } from './Attention'
@@ -178,7 +179,8 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					if (link.role === 'edit') {
 						const summon = new Summon(editor, spells, container)
 						const frameTitles = new FrameTitles(editor, c.id)
-						disposers.push(() => summon.destroy(), () => frameTitles.destroy())
+						const submit = new SubmitAnnotations(overlayRef.current!, editor, p, spells, c.id, () => canvasTitle)
+						disposers.push(() => summon.destroy(), () => frameTitles.destroy(), () => submit.destroy())
 					}
 					setPresence(p)
 					setConjure(spells)

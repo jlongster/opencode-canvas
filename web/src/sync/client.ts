@@ -1,4 +1,4 @@
-import type { AttentionAction, Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, ServerEvent } from '../../../shared/types'
+import type { AnnotationView, AttentionAction, Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, ServerEvent } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { API_BASE, BASE, url as withBase, wsUrl } from '../base'
 
@@ -56,6 +56,14 @@ export const deleteItem = (id: string) => request<unknown>(`/api/items/${encodeU
 /** Brings deleted items and sessions back from the trash (within an hour of deleting them). */
 export const restoreDeleted = (canvasId: string, ids: { itemIds: string[]; sessionIds: string[] }) =>
 	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/restore`, json('POST', ids))
+
+/** Annotations on a session's items, resolved by the server (pixel bbox, item), without consuming them. */
+export const peekAnnotations = (canvasId: string, sessionId: string) =>
+	request<AnnotationView[]>(`/api/canvases/${encodeURIComponent(canvasId)}/annotations?sessionId=${encodeURIComponent(sessionId)}&keep=true`)
+
+/** Marks annotations delivered to their session (consumed, as when an agent reads them). */
+export const consumeAnnotations = (canvasId: string, ids: string[], sessionId: string) =>
+	request<AnnotationView[]>(`/api/canvases/${encodeURIComponent(canvasId)}/annotations/consume`, json('POST', { ids, sessionId }))
 
 /** Uploads media as an item (multipart). createdAt orders it in its group; sessionTitle names a session this creates. */
 export function uploadItem(

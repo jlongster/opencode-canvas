@@ -289,8 +289,9 @@ export class SharedAnnotations {
 			})
 		}
 		this.recent = { id, itemId: live.itemId, endedAt: performance.now() }
-		this.position()
+		// (the box first: placed right away, so it's showing when it takes focus)
 		this.views.get(id)?.openNote()
+		this.position()
 		// Not drawn on again in time: it's finished (the box stays open for typing meanwhile).
 		this.joinTimer = window.setTimeout(() => this.recent?.id === id && this.finished(), JOIN_MS)
 	}

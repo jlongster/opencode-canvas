@@ -449,7 +449,7 @@ export class Conjure {
 }
 
 /** Which paired OpenCode has the session, and its title, or null when none does. */
-async function findSession(sessionId: string): Promise<{ serverKey: string; title: string } | null> {
+export async function findSession(sessionId: string): Promise<{ serverKey: string; title: string } | null> {
 	const all = pairings.peek()
 	const results = await Promise.allSettled(
 		all.map((p) =>

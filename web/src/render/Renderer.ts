@@ -1094,6 +1094,7 @@ class SectionLabels {
 	private createLabel(id: string) {
 		const el = document.createElement('div')
 		el.className = 'section-label'
+		el.dataset.session = id
 		el.innerHTML = '<span class="title"></span>'
 		if (!this.onHide && !this.onClose) return el
 		// Screen-space buttons at the end of the title row (see frameButtons.css and update's room rule).

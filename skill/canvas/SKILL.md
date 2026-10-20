@@ -278,6 +278,14 @@ act highlight "$SID/2. Cool palette" "These read calmer but lose contrast. Which
 
 ## Reading the user's annotations
 
+**Feedback usually arrives as a prompt from the canvas**: the user presses "Submit annotations" on
+your frame and you get one message starting "Feedback from the canvas on your posted items",
+listing each annotated item (title, id, size), each note (or "(drawing, no text)") with the
+drawing's bounding box in original-image pixels, and the marked images attached in order. Update
+those items in place with `update_item` (same ids) unless a note explicitly asks for something new.
+Submitted annotations are already consumed; `list_annotations` (below) still returns ones the user
+hasn't submitted yet.
+
 The user gives feedback by **drawing on items** with the pencil: freehand strokes (circling,
 underlining, crossing out, arrows) on an image (or video or HTML item), each with an optional
 text note, or a text-only note dropped on a spot. Check them for feedback on what you posted, e.g.

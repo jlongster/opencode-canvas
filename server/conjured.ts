@@ -19,6 +19,8 @@
  * A session that queues something for attention (see attention.ts) without a creature on the canvas
  * gets one without an owner (ownerId and serverKey ""): asleep for good, until someone conjures the
  * session from their browser, which adopts it.
+ *
+ * Deleting a session's frame banishes its creature (see deleteSession in index.ts); hiding it doesn't.
  */
 import { sessionColor } from '../shared/sessionColor'
 import type { ConjuredAgent, ServerEvent } from '../shared/types'
@@ -260,6 +262,12 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 
 		banish(canvasId: string, sessionId: string) {
 			remove(get(canvasId, sessionId))
+		},
+
+		/** Banishes the session's worm if it has one (its frame was deleted). */
+		drop(canvasId: string, sessionId: string) {
+			const r = records.get(key(canvasId, sessionId))
+			if (r) remove(r)
 		},
 
 		/** Throws away every worm on a canvas (it was deleted). */

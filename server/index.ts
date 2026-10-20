@@ -898,7 +898,10 @@ function deleteItem(id: string, opts: { keepSession?: boolean } = {}) {
 	return { deleted: true, sessionDeleted: false }
 }
 
-/** Moves a session and all its items to the trash. */
+/**
+ * Moves a session and all its items to the trash, and banishes its creature (clearing its attention
+ * queue). Restoring the session doesn't bring the creature back: it can be conjured again.
+ */
 function deleteSession(session: Session) {
 	const items = sessionItems(session.canvasId, session.id)
 	for (const item of items) deleteItem(item.id, { keepSession: true })
@@ -907,6 +910,8 @@ function deleteSession(session: Session) {
 	trash.set(trashKey(entry), entry)
 	save()
 	broadcast({ type: 'session_deleted', canvasId: session.canvasId, id: session.id })
+	conjured.drop(session.canvasId, session.id)
+	attention.clear(session.canvasId, session.id)
 }
 
 /** Takes a session out of the trash (with the items deleted along with it). */
@@ -1362,7 +1367,8 @@ const API_INDEX = {
 		'PUT /api/canvases/:cid/order':
 			'Arrange the frames. Body: {"sessionIds": [...]} left to right; sessions left out follow, oldest first, and new ' +
 			'sessions appear on the right. Returns the resulting {"sessionIds"}',
-		'DELETE /api/canvases/:cid/sessions/:sessionId': 'Delete a session and all its items (restorable for an hour, see restore)',
+		'DELETE /api/canvases/:cid/sessions/:sessionId':
+			'Delete a session and all its items (restorable for an hour, see restore), banishing its creature (restoring doesn\'t bring it back)',
 		'POST /api/canvases/:cid/sessions/:sessionId/items':
 			'Add an image, video or HTML page. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
 			'or JSON {"html": "<html source>"} for an HTML item. Plus optional "group", "title", "caption", "name". ' +

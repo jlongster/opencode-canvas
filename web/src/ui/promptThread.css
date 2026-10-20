@@ -20,8 +20,8 @@
 	align-items: flex-start;
 	gap: 6px;
 	color: var(--tx);
-	/* (the same family PromptThread.tsx gives pretext: FONT_FAMILY) */
-	font: 13px/20px Inter, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+	/* (the app's UI font) */
+	font: 13px/20px ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
 	-webkit-font-smoothing: antialiased;
 	text-align: left;
 	/* Positioned with left/top (inline) so this scale-in never animates where it is. */
@@ -99,10 +99,21 @@
 
 .pt-line {
 	display: block;
-	flex: none;
-	max-width: 336px;
+	flex: 0 1 auto;
+	min-width: 0;
 	white-space: nowrap;
 	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* The reply's live end: clipped (with the ellipsis) at its start, the newest words in view. */
+.pt-line.tail {
+	direction: rtl;
+}
+
+.pt-line.tail > span {
+	direction: ltr;
+	unicode-bidi: isolate;
 }
 
 .pt-fill.busy {
@@ -373,12 +384,13 @@ img.pt-th.sm {
 	color: var(--dim);
 }
 
-/* The draft's first line (pretext's), over the textarea while it's collapsed. */
+/* The draft's first line (clipped with an ellipsis), over the textarea while it's collapsed. */
 .pt-ta-line {
 	position: absolute;
 	inset: 0;
 	white-space: nowrap;
 	overflow: hidden;
+	text-overflow: ellipsis;
 	pointer-events: none;
 	color: var(--tx);
 }

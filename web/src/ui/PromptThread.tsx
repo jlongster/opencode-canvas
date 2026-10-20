@@ -1,5 +1,4 @@
-import { clearCache, layout, layoutNextLine, layoutWithLines, measureNaturalWidth, prepare, prepareWithSegments } from '@chenglou/pretext'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react'
 import type { Editor } from '../editor/Editor'
 import { isAskEvent, type Ask } from '../opencode/asks'
 import { onOpenCodeEvents } from '../opencode/events'
@@ -21,22 +20,10 @@ const SIDE_X = 44
 const TOP_ROOM = 100
 /** the widest a bubble gets (the input always is this wide) */
 const BUBBLE_MAX = 360
-/** a bubble's horizontal padding, and the input's border */
-const PAD_X = 12
-const INPUT_BORDER = 3
-/** the text in the bubbles: pretext measures with this, so the CSS uses the same (named fonts measure true on every platform) */
-const FONT_FAMILY = `Inter, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif`
-const FONT = `13px ${FONT_FAMILY}`
 const LINE_PX = 20
-/** room for one line of text in a full-width bubble */
-const LINE_MAX = BUBBLE_MAX - 2 * PAD_X
-/** the textarea's width: the input bubble less its border and padding (10 left, 8 right) */
-const TEXTAREA_W = BUBBLE_MAX - 2 * INPUT_BORDER - 18
 /** the input grows to this many lines while focused, then scrolls */
 const INPUT_MAX_LINES = 8
-/** prompt chips in the one-line bubble: size, gap, how many before "+n" */
-const CHIP_PX = 18
-const CHIP_GAP = 4
+/** prompt chips in the one-line bubble: how many before "+n" */
 const CHIPS_MAX = 3
 const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 const ATTACH_MAX = 8
@@ -83,7 +70,7 @@ type Expanded = null | 'prompt' | 'reply' | 'note'
 
 /**
  * The prompt stack under a clicked conjured worm: three bubbles floating one above the other, each
- * one line until clicked (pretext lays the text out to find that line): your last prompt and its
+ * one line until clicked (the CSS clips it with an ellipsis): your last prompt and its
  * reply in the worm's colour (the reply's live last line while it works), then the input, outlined
  * in that colour, for its owner (send, steer, stop, attach). Everyone else gets a note on whose it is.
  * While its session waits on its owner to answer questions or a permission request, those take the
@@ -155,7 +142,7 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 	const [dragging, setDragging] = useState(false)
 	const [activity, setActivity] = useState<string | null>(null)
 	const [size, setSize] = useState<{ w: number; h: number } | null>(null)
-	const [fonts, setFonts] = useState(0)
+	const [inputLines, setInputLines] = useState(1)
 	const [, setTick] = useState(0)
 	/** what its session waits on us to answer (ours only), as last read from OpenCode */
 	const [asks, setAsks] = useState<Ask[] | null>(null)
@@ -263,18 +250,6 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 	}, [thinking])
 	useEffect(() => () => window.clearTimeout(flashTimer.current), [])
 
-	// Widths measured before a font loaded are the fallback's: lay the lines out again.
-	useEffect(() => {
-		const fontSet = document.fonts
-		if (!fontSet) return
-		const reflow = () => {
-			clearCache()
-			setFonts((n) => n + 1)
-		}
-		fontSet.addEventListener('loadingdone', reflow)
-		return () => fontSet.removeEventListener('loadingdone', reflow)
-	}, [])
-
 	// Focused as soon as there's somewhere to type (again after answering what it asked).
 	const asksShowing = owner && !!asks?.length
 	useEffect(() => {
@@ -353,18 +328,30 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 	}, [turn?.since, exchange, fresh])
 	const replyHtml = useMemo(() => (expanded === 'reply' && reply ? markdownToHtml(reply) : ''), [reply, expanded])
 
-	// One line each, laid out by pretext.
+	// One line each: the CSS clips it (with an ellipsis), and whether it did says there's more to show.
 	const chips = lastPrompt ? Math.min(lastPrompt.images.length, CHIPS_MAX) + (lastPrompt.images.length > CHIPS_MAX ? 1 : 0) : 0
-	const chipsW = chips ? chips * (CHIP_PX + CHIP_GAP) : 0
-	const promptLine = useMemo(() => (lastPrompt ? firstLine(lastPrompt.text, LINE_MAX - chipsW) : null), [lastPrompt?.text, chipsW, fonts])
+	const promptLine = useMemo(() => (lastPrompt ? flatten(lastPrompt.text) : ''), [lastPrompt?.text])
 	const replyPlain = useMemo(() => (reply ? markdownPlain(reply) : ''), [reply])
-	const replyLine = useMemo(() => (replyPlain ? (thinking ? lastLine(replyPlain, LINE_MAX) : firstLine(replyPlain, LINE_MAX)) : null), [replyPlain, thinking, fonts])
-	const replyMore = !!replyLine && (replyLine.cut || /\n/.test(replyPlain))
-	const promptMore = !!lastPrompt && (!!promptLine?.cut || prompts.length > 1 || lastPrompt.images.length > 0 || /\n/.test(lastPrompt.text))
+	// (while it works, the end of what it's writing: clipped at its start instead)
+	const replyTail = thinking && !!replyPlain
+	const replyLine = useMemo(() => (replyTail ? tailOf(replyPlain) : flatten(replyPlain)), [replyPlain, replyTail])
+	const [promptRef, promptClipped] = useClipped<HTMLSpanElement>()
+	const [replyLineRef, replyClipped] = useClipped<HTMLSpanElement>()
+	const [roRef, roClipped] = useClipped<HTMLSpanElement>()
+	const replyMore = !!replyLine && (replyClipped || /\n/.test(replyPlain.trim()) || (replyTail && replyLine.length < flatten(replyPlain).length))
+	const promptMore = !!lastPrompt && (promptClipped || prompts.length > 1 || lastPrompt.images.length > 0 || /\n/.test(lastPrompt.text))
 
-	// The input: one line until it's focused, then as many as it has (pretext counts them), up to a point.
-	const inputLines = useMemo(() => (text ? layout(prepare(text, FONT, { whiteSpace: 'pre-wrap' }), TEXTAREA_W, LINE_PX).lineCount + (text.endsWith('\n') ? 1 : 0) : 1), [text, fonts])
-	const draftLine = useMemo(() => (!typing && inputLines > 1 ? firstLine(text, TEXTAREA_W) : null), [typing, inputLines, text, fonts])
+	// The input: one line until it's focused, then as many as it has (its scrollHeight says), up to a point.
+	useLayoutEffect(() => {
+		const el = inputRef.current
+		if (!el) return
+		el.style.height = `${LINE_PX}px`
+		const lines = text ? Math.max(1, Math.round(el.scrollHeight / LINE_PX)) : 1
+		el.style.height = `${(typing ? Math.min(lines, INPUT_MAX_LINES) : 1) * LINE_PX}px`
+		el.style.overflowY = typing && lines > INPUT_MAX_LINES ? 'auto' : 'hidden'
+		setInputLines(lines)
+	})
+	const draftLine = !typing && inputLines > 1 ? flatten(text) : null
 
 	// The open reply follows new text unless scrolled up.
 	useLayoutEffect(() => {
@@ -539,7 +526,6 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 	const empty = !lastPrompt && !reply && !thinking
 	const ink = readableOn(color)
 	const busyLine = `${stopping ? 'Stopping' : 'Thinking'} ${mmss(Date.now() - turnStart)}${activity ? ` · ${activity}` : ''}`
-	const busyFit = useMemo(() => firstLine(busyLine, LINE_MAX - 18), [busyLine, fonts])
 	const roText =
 		block === 'unowned'
 			? 'Nobody has conjured it: its session called it up to show you something. To talk to it, conjure the session from your OpenCode (Conjure, or C over its frame).'
@@ -547,7 +533,7 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 				? `Only the browser that conjured it can talk to it. ${asleep ? 'It wakes up when its owner opens this canvas.' : 'You can watch it think and reply.'}`
 				: 'You conjured it, but this browser no longer has its OpenCode. Pair it again (Conjure → Servers) to wake it.'
 	const roLabel = `Read-only${asleep ? ' · asleep' : ''} · `
-	const roLine = useMemo(() => firstLine(roLabel + roText, LINE_MAX - 18), [roLabel, roText, fonts])
+	const roLine = roLabel + roText
 
 	return (
 		<div
@@ -610,9 +596,9 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 										{lastPrompt.images.length > CHIPS_MAX && <span className="pt-chip-n">+{lastPrompt.images.length - CHIPS_MAX}</span>}
 									</span>
 								)}
-								{promptLine && promptLine.text && (
-									<span className="pt-line" style={{ width: promptLine.width }}>
-										{promptLine.text}
+								{promptLine && (
+									<span ref={promptRef} className="pt-line">
+										{promptLine}
 									</span>
 								)}
 							</div>
@@ -633,9 +619,7 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 					) : thinking && !replyLine ? (
 						<div className="pt-b pt-fill busy" data-b="reply">
 							<span className="pt-spin" />
-							<span className="pt-line" style={{ width: busyFit.width }}>
-								{busyFit.text}
-							</span>
+							<span className="pt-line">{busyLine}</span>
 						</div>
 					) : replyLine ? (
 						<div
@@ -644,8 +628,8 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 							title={replyMore ? 'Show the whole reply' : undefined}
 							onPointerDown={expandOn('reply', replyMore)}
 						>
-							<span className="pt-line" style={{ width: replyLine.width }}>
-								{replyLine.text}
+							<span ref={replyLineRef} className={`pt-line${replyTail ? ' tail' : ''}`}>
+								{replyTail ? <span>{replyLine}</span> : replyLine}
 							</span>
 						</div>
 					) : (
@@ -659,9 +643,9 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 
 					{block ? (
 						<div
-							className={`pt-b pt-ro${expanded === 'note' ? ' pt-open' : roLine.cut ? ' can' : ''}`}
+							className={`pt-b pt-ro${expanded === 'note' ? ' pt-open' : roClipped ? ' can' : ''}`}
 							data-b="note"
-							onPointerDown={expandOn('note', roLine.cut)}
+							onPointerDown={expandOn('note', roClipped)}
 							title={expanded === 'note' ? undefined : roText}
 						>
 							{expanded === 'note' ? (
@@ -679,8 +663,8 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 							) : (
 								<>
 									<LockIcon />
-									<span className="pt-line" style={{ width: roLine.width }}>
-										{roLine.text}
+									<span ref={roRef} className="pt-line">
+										{roLine}
 									</span>
 								</>
 							)}
@@ -720,11 +704,7 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 									ref={inputRef}
 									value={text}
 									rows={1}
-									style={{
-										height: (typing ? Math.min(inputLines, INPUT_MAX_LINES) : 1) * LINE_PX,
-										overflowY: typing && inputLines > INPUT_MAX_LINES ? 'auto' : 'hidden',
-										color: draftLine ? 'transparent' : undefined,
-									}}
+									style={{ color: draftLine ? 'transparent' : undefined }}
 									placeholder={thinking ? 'Steer it: added to the work in progress…' : `Message ${name}…`}
 									onFocus={() => setTyping(true)}
 									onBlur={(e) => {
@@ -744,7 +724,7 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 										}
 									}}
 								/>
-								{draftLine && <div className="pt-ta-line">{draftLine.text}</div>}
+								{draftLine && <div className="pt-ta-line">{draftLine}</div>}
 							</div>
 							{error && (
 								<div className="pt-error">
@@ -879,48 +859,31 @@ function keepFocus(e: ReactPointerEvent) {
 	e.preventDefault()
 }
 
-// ---------- one line, by pretext ----------
+// ---------- one line ----------
 
-interface Line {
-	text: string
-	/** its width in px, as pretext measured it (the bubble shrink-wraps to it) */
-	width: number
-	/** there's more than this line */
-	cut: boolean
-}
-
-const ELLIPSIS = '…'
-let ellipsisWidth = 0
-function ellipsisPx() {
-	return (ellipsisWidth ||= measureNaturalWidth(prepare(ELLIPSIS, FONT)))
-}
-
-/** The first line `text` (its spaces and line breaks collapsed) takes at `max` px, with … when there's more. */
-function firstLine(text: string, max: number): Line {
+/** `text` on one line: its spaces and line breaks collapsed (the CSS cuts it to fit) */
+function flatten(text: string): string {
 	const flat = text.replace(/\s+/g, ' ').trim()
-	if (!flat) return { text: '', width: 0, cut: false }
-	// (one line never needs more than this much of it)
-	const head = flat.length > 400 ? flat.slice(0, 400) : flat
-	const prepared = prepareWithSegments(head, FONT)
-	const whole = layoutNextLine(prepared, max)
-	if (whole && head === flat && layoutNextLine(prepared, max, whole.end) === null) return { text: flat, width: Math.ceil(whole.width), cut: false }
-	const line = layoutNextLine(prepared, max - ellipsisPx())
-	const kept = (line?.text ?? '').trimEnd().replace(/[\s,;:.\-–—]+$/, '')
-	const cut = kept + ELLIPSIS
-	return { text: cut, width: Math.min(max, Math.ceil(measureNaturalWidth(prepare(cut, FONT)))), cut: true }
+	// (one line never shows more than this much of it)
+	return flat.length > 400 ? flat.slice(0, 400) : flat
 }
 
-/** The last line of `text`'s last paragraph at `max` px (what's being written now), with … before it when there's more. */
-function lastLine(text: string, max: number): Line {
+/** The end of `text`'s last paragraph (what's being written now), on one line: the CSS cuts it at its start. */
+function tailOf(text: string): string {
 	const paragraphs = text.split('\n').map((p) => p.replace(/\s+/g, ' ').trim()).filter(Boolean)
-	const last = paragraphs[paragraphs.length - 1]
-	if (!last) return { text: '', width: 0, cut: false }
-	const earlier = paragraphs.length > 1
-	const one = layoutWithLines(prepareWithSegments(last, FONT), max, LINE_PX)
-	if (one.lineCount <= 1 && !earlier) return { text: last, width: Math.ceil(one.lines[0]?.width ?? 0), cut: false }
-	const { lines } = layoutWithLines(prepareWithSegments(last, FONT), max - ellipsisPx(), LINE_PX)
-	const line = lines[lines.length - 1]
-	return { text: ELLIPSIS + (line?.text ?? '').trim(), width: Math.min(max, Math.ceil((line?.width ?? 0) + ellipsisPx())), cut: true }
+	const last = paragraphs[paragraphs.length - 1] ?? ''
+	return last.length > 200 ? last.slice(-200) : last
+}
+
+/** A ref for a one-line span, and whether the CSS had to clip it (it's wider than it shows). */
+function useClipped<T extends HTMLElement>(): [RefObject<T | null>, boolean] {
+	const ref = useRef<T>(null)
+	const [clipped, setClipped] = useState(false)
+	useLayoutEffect(() => {
+		const el = ref.current
+		setClipped(!!el && el.scrollWidth > el.clientWidth + 1)
+	})
+	return [ref, clipped]
 }
 
 /** Markdown as the plain words it shows (for its one line), paragraphs kept apart. */

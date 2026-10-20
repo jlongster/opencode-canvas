@@ -255,9 +255,14 @@ with the count, a pulsing ring, the "N things want your attention" tray at the t
 interrupting anyone, and the user plays your queue as a walkthrough when they're ready.
 
 - **say**: a Markdown message from your creature.
-- **highlight**: point at something (the canvas outlines it and brings it into view), with an
-  optional Markdown message. Targets: an item id, a group as `<sessionId>/<group name>`, your
-  frame `frame:<sessionId>`, or a sticky note `note:<noteId>`.
+- **highlight**: point at something (the camera glides there and your creature points at it),
+  with an optional Markdown message. Targets: an item id, a group as `<sessionId>/<group name>`,
+  your frame `frame:<sessionId>`, or a sticky note `note:<noteId>`. **Point at what you mean:**
+  pass `point {x,y}` or `region {x,y,w,h}` in the item's image pixels (same units as annotation
+  px/py and get_item's width/height); omit them only to highlight the whole item. A point gets a
+  small pulsing ring, a region a rounded outline, and the camera zooms in just enough to show it.
+  On a frame, group or note, `at {x,y}` (canvas page coordinates) points at a spot on the canvas;
+  without it the whole thing is outlined.
 
 Each call appends one step, in order, so tell a short story: say what you did, highlight what to
 look at, say what you need. Keep steps short. It's fire-and-forget: you aren't told when they're
@@ -265,8 +270,8 @@ read, so don't wait for it; ask in your reply if you need an answer. Don't queue
 post: use it when there's something worth a look or a question.
 
 Over HTTP: `POST $API/canvases/$CID/sessions/$SID/actions` with
-`{"kind": "say", "text"}` or `{"kind": "highlight", "target", "text"}`, plus `"sessionTitle"`
-→ `{id, position, queued}`. `GET` the same path lists your queue; `DELETE` clears it.
+`{"kind": "say", "text"}` or `{"kind": "highlight", "target", "point"? | "region"? | "at"?, "text"}`,
+plus `"sessionTitle"` → `{id, position, queued}`. `GET` the same path lists your queue; `DELETE` clears it.
 
 ```bash
 # BASE, API, CID, SID and SESSION_TITLE set as above
@@ -274,6 +279,16 @@ act() { curl -s -X POST $API/canvases/$CID/sessions/$SID/actions -H 'content-typ
   -d "$(bun -e 'const [k, t, x, s] = process.argv.slice(1); console.log(JSON.stringify({kind: k, target: t || undefined, text: x, sessionTitle: s}))' "$@")"; }
 act say "" "Two palettes are up: **warm** and **cool**." "$SESSION_TITLE"
 act highlight "$SID/2. Cool palette" "These read calmer but lose contrast. Which way?" "$SESSION_TITLE"
+```
+
+Pointing at a spot in an image (here the button at 1400,200 of a 1600×1000 screenshot, then a
+300×200 panel at 100,700):
+
+```bash
+curl -s -X POST $API/canvases/$CID/sessions/$SID/actions -H 'content-type: application/json' \
+  -d '{"kind":"highlight","target":"<itemId>","point":{"x":1400,"y":200},"text":"This button is clipped.","sessionTitle":"…"}'
+curl -s -X POST $API/canvases/$CID/sessions/$SID/actions -H 'content-type: application/json' \
+  -d '{"kind":"highlight","target":"<itemId>","region":{"x":100,"y":700,"w":300,"h":200},"text":"This panel is new.","sessionTitle":"…"}'
 ```
 
 ## Reading the user's annotations
@@ -324,7 +339,7 @@ session take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
 
 - `post_item {canvas, sessionId, sessionTitle, path | url | html, width?, height?, group?, title?, caption?, name?}`:
   post into your frame (`path` must be absolute, on the canvas server's machine). **Always pass `sessionTitle`.**
-- `say {canvas, sessionId, sessionTitle, text}` and `highlight {canvas, sessionId, sessionTitle, target, text?}`:
+- `say {canvas, sessionId, sessionTitle, text}` and `highlight {canvas, sessionId, sessionTitle, target, point? | region? | at?, text?}`:
   queue steps on your creature (see above). Return the step's `id` and `position` in your queue.
 - `update_item {itemId, path | url | html, width?, height?, name?, title?, caption?, group?}`: replace an
   item's file in place (a new version of the same visual; see "Updating an item") and/or change its

@@ -23,6 +23,8 @@ export interface AttentionDeps {
 	broadcast(event: ServerEvent): void
 	/** a highlight target as a selection key, checked to exist on the canvas; throws when it doesn't */
 	resolveTarget(canvasId: string, target: string): Promise<string>
+	/** an item target's original pixel size (null for frames, groups and notes) */
+	itemSize(target: string): { width: number; height: number } | null
 	/** makes sure the session has a creature on the canvas (named after title when it's new or untitled) */
 	ensureCreature(canvasId: string, sessionId: string, title?: string): void
 }
@@ -46,6 +48,46 @@ function textField(value: unknown, required: boolean): string | undefined {
 	}
 	if (text.length > ATTENTION_TEXT_MAX) throw new AttentionError(400, `"text" is longer than ${ATTENTION_TEXT_MAX} characters`)
 	return text
+}
+
+const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+
+/**
+ * A highlight's optional precise spot: point / region on an item (its image pixels, checked against
+ * its width × height), or "at" (a canvas page point) on a frame, group or note.
+ */
+function preciseFields(body: Record<string, unknown> | null, size: { width: number; height: number } | null) {
+	const { point, region, at } = body ?? {}
+	const given = (v: unknown) => v !== undefined && v !== null
+	if (given(point) && given(region)) throw new AttentionError(400, 'send either "point" or "region", not both')
+	const where = size ? `the item's ${size.width}×${size.height} image pixels` : ''
+	if (given(point) || given(region)) {
+		if (!size) throw new AttentionError(400, '"point" and "region" are for items (in the item\'s image pixels); for a frame, group or note pass "at" (a canvas page point) or nothing')
+		if (given(point)) {
+			const p = point as Record<string, unknown>
+			if (typeof p !== 'object' || !finite(p.x) || !finite(p.y)) throw new AttentionError(400, '"point" must be {"x", "y"} (numbers, in the item\'s image pixels)')
+			if (p.x < 0 || p.y < 0 || p.x > size.width || p.y > size.height) {
+				throw new AttentionError(400, `"point" (${p.x}, ${p.y}) is outside ${where} (0..${size.width}, 0..${size.height})`)
+			}
+			return { point: { x: p.x, y: p.y } }
+		}
+		const r = region as Record<string, unknown>
+		if (typeof r !== 'object' || !finite(r.x) || !finite(r.y) || !finite(r.w) || !finite(r.h)) {
+			throw new AttentionError(400, '"region" must be {"x", "y", "w", "h"} (numbers, in the item\'s image pixels)')
+		}
+		if (r.w <= 0 || r.h <= 0) throw new AttentionError(400, '"region" needs a positive "w" and "h"')
+		if (r.x < 0 || r.y < 0 || r.x + r.w > size.width || r.y + r.h > size.height) {
+			throw new AttentionError(400, `"region" (${r.x}, ${r.y}, ${r.w}×${r.h}) doesn't fit in ${where}`)
+		}
+		return { region: { x: r.x, y: r.y, w: r.w, h: r.h } }
+	}
+	if (given(at)) {
+		if (size) throw new AttentionError(400, '"at" is for frames, groups and notes; on an item pass "point" or "region" (in its image pixels)')
+		const p = at as Record<string, unknown>
+		if (typeof p !== 'object' || !finite(p.x) || !finite(p.y)) throw new AttentionError(400, '"at" must be {"x", "y"} (numbers, canvas page coordinates)')
+		return { at: { x: p.x, y: p.y } }
+	}
+	return {}
 }
 
 export function createAttention(deps: AttentionDeps, stored: AttentionAction[]) {
@@ -76,14 +118,16 @@ export function createAttention(deps: AttentionDeps, stored: AttentionAction[]) 
 				throw new AttentionError(400, `session id must be an exact OpenCode session id ("ses_" + 26 characters), got ${JSON.stringify(sessionId)}`)
 			}
 			const kind = body?.kind
-			if (kind !== 'say' && kind !== 'highlight') throw new AttentionError(400, 'send {"kind": "say", "text"} or {"kind": "highlight", "target", "text"?}')
+			if (kind !== 'say' && kind !== 'highlight') throw new AttentionError(400, 'send {"kind": "say", "text"} or {"kind": "highlight", "target", "point"? | "region"? | "at"?, "text"?}')
 			const text = textField(body?.text, kind === 'say')
 			let target: string | undefined
+			let precise: ReturnType<typeof preciseFields> = {}
 			if (kind === 'highlight') {
 				if (typeof body?.target !== 'string' || !body.target.trim()) {
 					throw new AttentionError(400, '"target" is required for highlight: an item id, "<sessionId>/<group name>", "frame:<sessionId>" or "note:<noteId>"')
 				}
 				target = await deps.resolveTarget(canvasId, body.target.trim())
+				precise = preciseFields(body, deps.itemSize(target))
 			}
 			const title = typeof body?.sessionTitle === 'string' ? body.sessionTitle.trim().replace(/\s+/g, ' ').slice(0, TITLE_MAX) : undefined
 			if (!deps.canvasExists(canvasId)) throw new AttentionError(404, `no canvas ${canvasId}`)
@@ -97,6 +141,7 @@ export function createAttention(deps: AttentionDeps, stored: AttentionAction[]) 
 				kind,
 				...(text ? { text } : {}),
 				...(target ? { target } : {}),
+				...precise,
 				createdAt: Date.now(),
 			}
 			actions.push(action)

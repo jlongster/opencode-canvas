@@ -3234,6 +3234,70 @@ button.oc-retry,
 	}
 }
 
+/* a highlight step's exact spot: a small pulsing ring centred on it */
+.attention-point {
+	position: absolute;
+	z-index: 3;
+	width: 0;
+	height: 0;
+	pointer-events: none;
+}
+
+.attention-point::before,
+.attention-point::after {
+	content: '';
+	position: absolute;
+	left: -11px;
+	top: -11px;
+	width: 22px;
+	height: 22px;
+	box-sizing: border-box;
+	border-radius: 50%;
+	border: 3px solid var(--agent-color);
+	box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+	animation: attention-point-in 360ms ease-out;
+}
+
+.attention-point::after {
+	border-width: 2px;
+	box-shadow: none;
+	animation: attention-point-pulse 1.4s ease-out 360ms infinite;
+	opacity: 0;
+}
+
+@keyframes attention-point-in {
+	from {
+		transform: scale(2.6);
+		opacity: 0;
+	}
+}
+
+@keyframes attention-point-pulse {
+	0% {
+		transform: scale(1);
+		opacity: 0.9;
+	}
+	100% {
+		transform: scale(2.8);
+		opacity: 0;
+	}
+}
+
+/* a highlight step's region: a rounded outline around just that part */
+.attention-region {
+	position: absolute;
+	z-index: 3;
+	box-sizing: border-box;
+	border-radius: 8px;
+	outline: 3px solid var(--agent-color);
+	outline-offset: 3px;
+	box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3) inset;
+	pointer-events: none;
+	animation:
+		attention-highlight-in 420ms ease-out,
+		attention-highlight-pulse 1.6s ease-out 420ms infinite;
+}
+
 .walkthrough {
 	position: absolute;
 	z-index: 6;
@@ -3393,7 +3457,10 @@ button.oc-retry,
 @media (prefers-reduced-motion: reduce) {
 	.agent-worm-call-ring,
 	.attention-dots i,
-	.attention-highlight {
+	.attention-highlight,
+	.attention-region,
+	.attention-point::before,
+	.attention-point::after {
 		animation: none;
 	}
 	.agent-worm-call-ring {

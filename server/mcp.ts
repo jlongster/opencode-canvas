@@ -29,6 +29,9 @@ import type {
 import { ATTENTION_TEXT_MAX } from './attention'
 
 /** What the MCP tools need from the canvas server. Functions throw (with a readable message) on bad input. */
+/** A highlight's optional precise spot (see AttentionAction). */
+type Precise = { point?: { x: number; y: number }; region?: { x: number; y: number; w: number; h: number }; at?: { x: number; y: number } }
+
 export interface CanvasMcpDeps {
 	listCanvases(): CanvasSummary[]
 	getCanvas(id: string): Canvas
@@ -258,7 +261,9 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'presence on the canvas yourself. Your OpenCode session has a frame (what you post) and a creature (a small ' +
 					'character beside the frame). To get the user\'s attention, say (a Markdown message) and highlight (point at an ' +
 					'item, group, frame or note) queue steps on your creature, which the user plays through when they look; ' +
-					'queue them in the order they should be read. Pass sessionId and sessionTitle (your OpenCode session\'s ' +
+					'queue them in the order they should be read. Point at what you mean: pass highlight a point {x,y} or ' +
+					'region {x,y,w,h} in the item\'s image pixels (same units as annotation px/py and get_item\'s width/height); ' +
+					'omit them only to highlight the whole item. Pass sessionId and sessionTitle (your OpenCode session\'s ' +
 					'title) on every post_item, say and highlight. The user gives feedback on a specific spot of an image with ' +
 					'annotations: check list_annotations (filter by your sessionId) for feedback on what you posted: freehand ' +
 					'drawings with optional text (strokes and bbox in pixels of the original image; look at markedImageUrl to ' +
@@ -381,7 +386,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 
 		/** Queues one attention action on the caller's creature. */
 		async function queue(
-			args: { canvas: string; sessionId: string; sessionTitle?: string; text?: string; target?: string },
+			args: { canvas: string; sessionId: string; sessionTitle?: string; text?: string; target?: string } & Precise,
 			kind: 'say' | 'highlight',
 			extra: Extra,
 		) {
@@ -391,6 +396,9 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				kind,
 				text: args.text,
 				target: args.target,
+				point: args.point,
+				region: args.region,
+				at: args.at,
 				sessionTitle: args.sessionTitle,
 			})
 			return ok({ id: action.id, position, queued, canvasId: id, ...(action.target ? { target: action.target } : {}), link: canvasLink(deps.getCanvas(id)) })
@@ -419,19 +427,33 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			'highlight',
 			{
 				description:
-					'Queue a step that points the people on the canvas at something: the canvas outlines it and brings it into ' +
-					'view when they reach this step, with your optional Markdown message beside it. Like say, it goes on your ' +
-					'creature\'s queue, in order. Target: an item id, a group as "<sessionId>/<group name>", a session frame ' +
-					'"frame:<sessionId>", or a sticky note "note:<noteId>".',
+					'Queue a step that points the people on the canvas at something: when they reach it, the camera glides there and ' +
+					'your creature points at it, with your optional Markdown message beside it. Point at what you mean: pass point ' +
+					'{x,y} or region {x,y,w,h} in the item\'s image pixels (same units as annotation px/py and get_item\'s ' +
+					'width/height); omit them only to highlight the whole item. Like say, it goes on your creature\'s queue, in ' +
+					'order. Target: an item id, a group as "<sessionId>/<group name>", a session frame "frame:<sessionId>", or a ' +
+					'sticky note "note:<noteId>" (for these, "at" {x,y} in canvas page coordinates points at a spot; else the whole thing is outlined).',
 				inputSchema: {
 					canvas: canvasArg,
 					sessionId: sessionIdArg,
 					sessionTitle: sessionTitleArg,
 					target: z.string().describe('What to point at: an item id, "<sessionId>/<group name>", "frame:<sessionId>" or "note:<noteId>"'),
+					point: z
+						.object({ x: z.number(), y: z.number() })
+						.optional()
+						.describe('Items only: the exact spot, in the item\'s image pixels (0..width, 0..height), like annotation px/py'),
+					region: z
+						.object({ x: z.number(), y: z.number(), w: z.number(), h: z.number() })
+						.optional()
+						.describe('Items only: the part to look at (top-left x, y and size w, h), in the item\'s image pixels'),
+					at: z
+						.object({ x: z.number(), y: z.number() })
+						.optional()
+						.describe('Frames, groups and notes only: a spot on the canvas to point at, in page coordinates'),
 					text: z.string().optional().describe('What to say about it, in Markdown'),
 				},
 			},
-			tool(async (args: { canvas: string; sessionId: string; sessionTitle?: string; target: string; text?: string }, extra) =>
+			tool(async (args: { canvas: string; sessionId: string; sessionTitle?: string; target: string; text?: string } & Precise, extra) =>
 				queue(args, 'highlight', extra),
 			),
 		)

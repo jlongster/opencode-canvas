@@ -170,6 +170,10 @@ const attention = createAttention(
 		save,
 		broadcast: (event) => broadcast(event),
 		resolveTarget: (canvasId, target) => resolveTarget(canvasId, target),
+		itemSize: (target) => {
+			const item = db.items.get(target)
+			return item ? { width: item.width, height: item.height } : null
+		},
 		ensureCreature: (canvasId, sessionId, title) => {
 			// The frame follows the session's title (renames included), when it has a frame.
 			if (title && db.sessions.has(sessionKey(canvasId, sessionId))) ensureSession(canvasId, sessionId, title)
@@ -1612,12 +1616,14 @@ const API_INDEX = {
 		'PATCH /api/canvases/:cid/conjured/:sessionId':
 			'Rename a creature. Body: {"title"} (sending "x"/"y" is refused with 403: only its owner moves it, with POST …/move)',
 		'DELETE /api/canvases/:cid/conjured/:sessionId': 'Banish a creature (and clear its attention queue)',
-		'GET /api/canvases/:cid/actions': 'Every queued attention action on the canvas, oldest first: [{"id", "sessionId", "kind", "text"?, "target"?, "createdAt"}]',
+		'GET /api/canvases/:cid/actions': 'Every queued attention action on the canvas, oldest first: [{"id", "sessionId", "kind", "text"?, "target"?, "point"?, "region"?, "at"?, "createdAt"}]',
 		'GET /api/canvases/:cid/sessions/:sessionId/actions': 'The session\'s queued attention actions, in order',
 		'POST /api/canvases/:cid/sessions/:sessionId/actions':
 			'Queue something for people to look at, on the session\'s creature (made beside its frame if it has none). Body: ' +
 			'{"kind": "say", "text"} (Markdown) or {"kind": "highlight", "target", "text"?} with target an item id, ' +
-			'"<sessionId>/<group name>", "frame:<sessionId>" or "note:<noteId>"; plus "sessionTitle" (names the creature, and the session\'s frame if it has one, after your session). ' +
+			'"<sessionId>/<group name>", "frame:<sessionId>" or "note:<noteId>". Point at what you mean: on an item pass "point": {"x", "y"} or ' +
+			'"region": {"x", "y", "w", "h"} in the item\'s image pixels (same units as annotation px/py and the item\'s width/height); omit them only ' +
+			'to highlight the whole item. On a frame, group or note, "at": {"x", "y"} (canvas page coordinates) points at a spot. Plus "sessionTitle" (names the creature, and the session\'s frame if it has one, after your session). ' +
 			'Returns {"id", "position", "queued", "action"}. Fire-and-forget: people step through the queue on the canvas',
 		'DELETE /api/canvases/:cid/sessions/:sessionId/actions': 'Clear the session\'s queue: {"ok", "cleared"}',
 		'DELETE /api/canvases/:cid/sessions/:sessionId/actions/:actionId': 'Mark one action done (removes it): {"ok", "done"}',

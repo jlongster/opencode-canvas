@@ -1,5 +1,5 @@
 import type { AttentionAction } from '../../../shared/types'
-import { GROUP_OUTLINE_PADDING, type Editor } from '../editor/Editor'
+import { FOCUS_MAX_WIDTH, FOCUS_MAX_ZOOM, GROUP_OUTLINE_PADDING, type Editor } from '../editor/Editor'
 import { Box, type Vec } from '../editor/geometry'
 import { parseSelectionId } from '../editor/selection'
 import { atom, computed, react, type Atom } from '../state/signals'
@@ -14,6 +14,16 @@ export interface Walk {
 	/** the queue as it was when opened, plus whatever was queued since; done steps stay so Back can show them */
 	steps: AttentionAction[]
 	index: number
+}
+
+/**
+ * A highlight step's exact spot on the page: a point (box of no size) or a region, and the box of
+ * what it's on (the item, or the frame / group / note for "at").
+ */
+export interface Focus {
+	kind: 'point' | 'region'
+	box: Box
+	within: Box | undefined
 }
 
 /** One creature calling for attention, as the tray lists it. */
@@ -32,12 +42,23 @@ const REVEAL_PAD = 96
 const TOP_INSET = 116
 /** the part of the screen around a creature brought into view: it, its name and the walkthrough beside it */
 const CREATURE_VIEW = { left: 70, top: 70, right: 400, bottom: 300 }
+/** how long the camera glides to a step's exact spot (ms) */
+const FOCUS_GLIDE_MS = 560
+/** a region is zoomed to at least this big on screen (its longer side, screen px)... */
+const REGION_MIN_PX = 200
+/** ...and at most this share of the room on screen */
+const REGION_MAX_SHARE = 0.7
+/** an item pointed into is zoomed to at least this big on screen (its longer side, screen px) */
+const POINT_CONTEXT_PX = 480
+/** a spot this close to the screen's edge (share of the smaller side) gets centred */
+const EDGE_SHARE = 0.14
 
 /**
  * Attention queues on a canvas (see server/attention.ts): what each session's creature wants people
  * to look at. The badge on a creature and the tray at the top show what's waiting; opening one plays
  * its queue as a walkthrough beside the creature. Each highlight step outlines its target and slides
- * the camera just enough to show it; say steps never move the camera.
+ * the camera just enough to show it, or, with an exact spot (a point or region), glides the camera
+ * to that spot and marks only it; say steps never move the camera.
  *
  * On edit links, stepping past an action marks it done for everyone (it leaves the queue); view
  * links step through the same queue read-only.
@@ -46,6 +67,11 @@ export class Attention {
 	readonly walk = atom<Walk | null>('attentionWalk', null)
 	/** when the current step started, for the highlight's pulse */
 	stepAt = 0
+	/**
+	 * The zoom the camera settles at for the current step (where it went, or stayed): the pointer
+	 * stands off an exact spot by its size at this zoom, worked out once so zooming doesn't move it.
+	 */
+	stepZoom = 1
 	/** queued actions by session, oldest first */
 	readonly bySession = computed<Map<string, AttentionAction[]>>('attentionBySession', () => {
 		const map = new Map<string, AttentionAction[]>()
@@ -193,6 +219,27 @@ export class Attention {
 		return this.editor.getSelectionBounds(target)
 	}
 
+	/** A highlight step's exact spot (point / region on an item, or "at" on anything else), if it has one and its target is here. */
+	focusOf(step: AttentionAction | null | undefined): Focus | undefined {
+		if (step?.kind !== 'highlight' || !step.target) return undefined
+		const { kind, id } = parseSelectionId(step.target)
+		if (kind === 'item' && (step.point || step.region)) {
+			const box = this.editor.layout.get().items.get(id)
+			const item = this.editor.items.get()[id]
+			if (!box || !item?.width || !item.height) return undefined
+			const sx = box.w / item.width
+			const sy = box.h / item.height
+			if (step.point) return { kind: 'point', box: { x: box.x + step.point.x * sx, y: box.y + step.point.y * sy, w: 0, h: 0 }, within: box }
+			const r = step.region!
+			return { kind: 'region', box: { x: box.x + r.x * sx, y: box.y + r.y * sy, w: r.w * sx, h: r.h * sy }, within: box }
+		}
+		if (kind !== 'item' && step.at) {
+			const within = this.targetBox(step.target)
+			return within && { kind: 'point', box: { x: step.at.x, y: step.at.y, w: 0, h: 0 }, within }
+		}
+		return undefined
+	}
+
 	/** A short name for a highlight target, for previews. */
 	targetLabel(target: string): string {
 		const { kind, id } = parseSelectionId(target)
@@ -212,10 +259,50 @@ export class Attention {
 		const step = this.current()
 		if (step?.kind !== 'highlight' || !step.target) return false
 		this.editor.revealKey(step.target)
+		const focus = this.focusOf(step)
+		if (focus) {
+			this.stepZoom = this.revealFocus(focus)
+			return true
+		}
 		const box = this.targetBox(step.target)
 		if (!box) return false
 		this.reveal(box, REVEAL_PAD)
+		this.stepZoom = this.editor.camera.peek().z
 		return true
+	}
+
+	/**
+	 * Glides the camera so an exact spot is comfortably in view: centred if it's off screen or near
+	 * the edge, zoomed in only as needed (a region to at least REGION_MIN_PX, an item pointed into to
+	 * POINT_CONTEXT_PX, never past the focus caps), and out only if a region wouldn't fit in
+	 * REGION_MAX_SHARE of the screen. Returns the zoom it settles at.
+	 */
+	revealFocus(focus: Focus): number {
+		const editor = this.editor
+		const cam = editor.camera.peek()
+		const { w, h } = editor.viewport.peek()
+		const p = Math.min(REVEAL_PAD, w / 6, h / 6)
+		const top = Math.min(Math.max(p, TOP_INSET), h / 4)
+		const roomW = w - p * 2
+		const roomH = h - p - top
+		const { box, within } = focus
+		const cap = Math.min(FOCUS_MAX_ZOOM, within ? FOCUS_MAX_WIDTH / within.w : FOCUS_MAX_ZOOM)
+		let z = cam.z
+		const grow = (need: number) => {
+			if (need > z) z = Math.max(z, Math.min(need, cap))
+		}
+		if (focus.kind === 'region') {
+			grow(REGION_MIN_PX / Math.max(box.w, box.h))
+			z = Math.min(z, REGION_MAX_SHARE * Math.min(roomW / box.w, roomH / box.h))
+		} else if (within) grow(POINT_CONTEXT_PX / Math.max(within.w, within.h))
+		const centre = { x: box.x + box.w / 2, y: box.y + box.h / 2 }
+		const s = editor.pageToScreen(box)
+		const m = Math.max(p, Math.min(w, h) * EDGE_SHARE)
+		const comfy = s.x >= m && s.y >= top && s.x + box.w * z <= w - m && s.y + box.h * z <= h - m
+		if (z === cam.z && comfy) return z
+		editor.stopCameraMotion()
+		editor.setCamera({ x: w / 2 / z - centre.x, y: (top + roomH / 2) / z - centre.y, z }, { animate: true, duration: FOCUS_GLIDE_MS })
+		return z
 	}
 
 	/** Slides the camera to bring the creature (and room for its walkthrough beside it) into view. */

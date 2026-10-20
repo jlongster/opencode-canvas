@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AttentionAction } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
+import { Box } from '../editor/geometry'
 import type { Attention } from '../multiplayer/Attention'
 import type { Conjure } from '../multiplayer/Conjure'
 import type { AskingInfo } from '../multiplayer/Presence'
@@ -15,6 +16,8 @@ const TOP_EDGE = 64
 const GAP = 16
 /** how much of the creature must be on screen for the walkthrough to sit beside it (screen px) */
 const CREATURE_MARGIN = 24
+/** room kept clear around an exact spot for the pointer pointing at it (screen px) */
+const POINTER_ROOM = 64
 
 /**
  * "3 things want your attention" at the top of the screen while any creature has something queued,
@@ -94,7 +97,8 @@ export function AttentionTray({ attention }: { attention: Attention }) {
  * on screen (see place); when a highlight takes the camera somewhere the creature isn't, or the
  * creature's spot would cover the target, it docks beside the highlighted target instead (and
  * otherwise stays pinned at the screen's edge nearest the creature), so it's always in reach. The
- * highlighted target gets a pulsing outline.
+ * highlighted target gets a pulsing outline; a step with an exact spot marks only that: a pulsing
+ * ring on a point, a rounded outline around a region.
  */
 export function Walkthrough({ editor, attention, conjure }: { editor: Editor; attention: Attention; conjure: Conjure }) {
 	const walk = useValue(() => attention.walk.get(), [attention])
@@ -125,9 +129,12 @@ export function Walkthrough({ editor, attention, conjure }: { editor: Editor; at
 		const step = w.steps[w.index]
 		const at = attention.creatureAt(w.sessionId)
 		const c = at ? editor.pageToScreen(at) : null
+		const z = editor.camera.get().z
 		const box = step?.kind === 'highlight' && step.target ? attention.targetBox(step.target) : undefined
-		const t = box ? { ...editor.pageToScreen(box), w: box.w * editor.camera.get().z, h: box.h * editor.camera.get().z } : null
-		return JSON.stringify({ c, t, vw, vh })
+		const t = box ? { ...editor.pageToScreen(box), w: box.w * z, h: box.h * z } : null
+		const focus = attention.focusOf(step)
+		const f = focus ? { kind: focus.kind, ...editor.pageToScreen(focus.box), w: focus.box.w * z, h: focus.box.h * z } : null
+		return JSON.stringify({ c, t, f, vw, vh })
 	}, [editor, attention])
 	const panelRef = useRef<HTMLDivElement>(null)
 	const nextRef = useRef<HTMLButtonElement>(null)
@@ -144,9 +151,11 @@ export function Walkthrough({ editor, attention, conjure }: { editor: Editor; at
 	if (!walk || !geometry) return null
 	const step = walk.steps[walk.index]
 	if (!step) return null
-	const { c, t, vw, vh } = JSON.parse(geometry) as {
+	const { c, t, f, vw, vh } = JSON.parse(geometry) as {
 		c: { x: number; y: number } | null
-		t: { x: number; y: number; w: number; h: number } | null
+		t: Rect | null
+		/** the step's exact spot, if it has one: only it is marked, and the walkthrough keeps clear of it and the pointer there */
+		f: (Rect & { kind: 'point' | 'region' }) | null
 		vw: number
 		vh: number
 	}
@@ -156,7 +165,8 @@ export function Walkthrough({ editor, attention, conjure }: { editor: Editor; at
 	const done = doneIds.split(' ').includes(step.id)
 	const missing = step.kind === 'highlight' && !t
 
-	const { left, top, docked } = place(c, t, vw, vh, height)
+	const spot = f && (f.kind === 'point' ? Box.expand(f, POINTER_ROOM) : Box.expand(f, 10))
+	const { left, top, docked } = place(c, spot ?? t, vw, vh, height)
 	const text = step.text ?? (step.kind === 'highlight' && step.target ? `Have a look at ${attention.targetLabel(step.target)}.` : '')
 	const prompt = () => {
 		const peer = conjure.worms().find((p) => p.user.sessionId === walk.sessionId)
@@ -166,7 +176,18 @@ export function Walkthrough({ editor, attention, conjure }: { editor: Editor; at
 
 	return (
 		<>
-			{t && (
+			{f?.kind === 'point' && (
+				<div key={step.id} className="attention-point" style={{ left: f.x, top: f.y, ['--agent-color' as string]: color }} aria-hidden="true" />
+			)}
+			{f?.kind === 'region' && (
+				<div
+					key={step.id}
+					className="attention-region"
+					style={{ left: f.x, top: f.y, width: f.w, height: f.h, ['--agent-color' as string]: color }}
+					aria-hidden="true"
+				/>
+			)}
+			{t && !f && (
 				<div
 					key={step.id}
 					className="attention-highlight"

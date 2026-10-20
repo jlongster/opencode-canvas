@@ -34,9 +34,9 @@ const INITIAL_ZOOM = { min: 0.3, max: 0.85 }
 const INITIAL_PADDING = 48
 const INITIAL_FIRST_ROW = 0.3
 /** The widest (in screen px) an item gets when focused by double-click */
-const FOCUS_MAX_WIDTH = 1350
+export const FOCUS_MAX_WIDTH = 1350
 /** The highest zoom focusing something (double-click, deep link, zoom-to-selection) goes to */
-const FOCUS_MAX_ZOOM = 2
+export const FOCUS_MAX_ZOOM = 2
 /** How much a dragged frame follows the pointer up and down (it follows it fully left and right) */
 const FRAME_DRAG_Y = 0.3
 /** Page px between a hovered or linked group and its outline */
@@ -545,11 +545,12 @@ export class Editor {
 		return this.camera.peek().z
 	}
 
-	setCamera(camera: Camera, opts: { animate?: boolean } = {}) {
+	/** Moves the camera, or glides it there (eased, over `duration` ms) with `animate`. */
+	setCamera(camera: Camera, opts: { animate?: boolean; duration?: number } = {}) {
 		const next = { x: camera.x, y: camera.y, z: clamp(camera.z, MIN_ZOOM, MAX_ZOOM) }
 		if (opts.animate) {
 			this.panVelocity = null
-			this.cameraAnimation = { from: this.camera.peek(), to: next, start: performance.now(), duration: ANIMATION_MS }
+			this.cameraAnimation = { from: this.camera.peek(), to: next, start: performance.now(), duration: opts.duration ?? ANIMATION_MS }
 			return
 		}
 		this.camera.set(next)

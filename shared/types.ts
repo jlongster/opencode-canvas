@@ -265,6 +265,12 @@ export interface AttentionAction {
 	text?: string
 	/** highlight: a selection key: an item id, "frame:<sessionId>", "note:<noteId>" or "group:<sessionId>/<name>" */
 	target?: string
+	/** highlight of an item: the exact spot meant, in pixels of the item's original image/page (like annotation px/py) */
+	point?: { x: number; y: number }
+	/** highlight of an item: the part meant, in the same pixels as point */
+	region?: { x: number; y: number; w: number; h: number }
+	/** highlight of a frame, group or note: a spot on the canvas (page coordinates) to point at */
+	at?: { x: number; y: number }
 	createdAt: number
 }
 

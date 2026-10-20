@@ -37,3 +37,12 @@
 .agent-worm-labels.far .agent-worm.peek .agent-worm-call-ring {
 	filter: none;
 }
+
+/* Pointing at an exact spot (a highlight step's point or region): its tag and badge would cover what it points at. */
+.agent-worm-labels .agent-worm.pointing:not(.peek) .agent-worm-label,
+.agent-worm-labels .agent-worm.pointing:not(.peek) .agent-worm-attention {
+	opacity: 0;
+	visibility: hidden;
+	pointer-events: none;
+	transition: opacity 150ms, visibility 0s 150ms;
+}

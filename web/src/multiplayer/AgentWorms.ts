@@ -1,6 +1,6 @@
 import type { Editor } from '../editor/Editor'
 import type { Box, Vec } from '../editor/geometry'
-import type { Attention } from './Attention'
+import type { Attention, Focus } from './Attention'
 import type { Conjure } from './Conjure'
 import { Colony, type Baby } from './Babies'
 import { Offscreen } from './Offscreen'
@@ -65,6 +65,9 @@ const FRESH_MS = 15000
 const POINT_AT_PX = 420
 /** a highlight step: it goes this far (screen px) outside the target's edge to point in at it */
 const VISIT_PX = 36
+/** how far its tip stays off an exact spot it points at, and off a region's side (screen px at the step's zoom) */
+const POINT_GAP_PX = 3
+const REGION_GAP_PX = 6
 /**
  * rushing to an item just posted to its session (see ConjuredAgent.rush): a crouch before it sets
  * off, a quicker glide (a base plus so much per screen px, within bounds), its hop's height (screen
@@ -770,27 +773,41 @@ export class AgentWorms {
 
 	/**
 	 * Its walkthrough showing a highlight step: it goes to just outside the target's edge nearest
-	 * where it sits, to point in at it. (Here only: where it is doesn't change.)
+	 * where it sits, to point in at it; for a step with an exact spot, its tip right at the point
+	 * (or at the middle of the region's nearest side, pointing in). (Here only: where it is doesn't change.)
 	 */
 	private syncVisit(worm: Worm) {
 		const a = this.attention
 		const sid = worm.sessionId
 		let box: Box | undefined
+		let focus: Focus | undefined
 		if (a && sid && a.isOpen(sid)) {
 			const walk = a.walk.peek()
 			const step = walk?.steps[walk.index]
-			if (step?.kind === 'highlight' && step.target) box = a.targetBox(step.target)
+			focus = a.focusOf(step)
+			if (!focus && step?.kind === 'highlight' && step.target) box = a.targetBox(step.target)
 		}
 		const spot = sid ? this.reaching.get(sid) : undefined
-		if (!box && spot) box = { x: spot.x, y: spot.y, w: 0, h: 0 }
+		if (!box && !focus && spot) box = { x: spot.x, y: spot.y, w: 0, h: 0 }
+		// (page space, as at 100% zoom, so zooming never moves it)
+		const home = worm.goal ?? worm.root
+		const from = { x: home.x, y: home.y - LIFT }
+		worm.el.classList.toggle('pointing', !!focus)
+		if (focus && a) {
+			// Its tip on the spot at the zoom the step settles at, worked out once for the step, so
+			// zooming afterwards doesn't move it either.
+			const { at, out } = focus.kind === 'point' ? edgeNear(from, focus.box) : sideMiddle(from, focus.box)
+			const z = a.stepZoom
+			const reach = ((focus.kind === 'point' ? POINT_GAP_PX : REGION_GAP_PX) + TIP_REACH * SIZE) / z
+			worm.pointAt = at
+			worm.visit = { x: at.x + out.x * reach, y: at.y + out.y * reach + LIFT / z }
+			return
+		}
 		if (!box) {
 			worm.visit = null
 			worm.pointAt = null
 			return
 		}
-		// (page space, as at 100% zoom, so zooming never moves it)
-		const home = worm.goal ?? worm.root
-		const from = { x: home.x, y: home.y - LIFT }
 		const { at, out } = edgeNear(from, box)
 		const reach = VISIT_PX + TIP_REACH * SIZE
 		worm.pointAt = at
@@ -1502,6 +1519,21 @@ function edgeNear(p: Vec, b: Box): { at: Vec; out: Vec } {
 	if (i === 1) return { at: { x: b.x + b.w, y: p.y }, out: { x: 1, y: 0 } }
 	if (i === 2) return { at: { x: p.x, y: b.y }, out: { x: 0, y: -1 } }
 	return { at: { x: p.x, y: b.y + b.h }, out: { x: 0, y: 1 } }
+}
+
+/**
+ * The middle of the box's side facing `p` (the side it's furthest out past; from inside, the
+ * nearest side), and that side's outward normal.
+ */
+function sideMiddle(p: Vec, b: Box): { at: Vec; out: Vec } {
+	const past = [b.x - p.x, p.x - (b.x + b.w), b.y - p.y, p.y - (b.y + b.h)]
+	// (from inside, every distance is negative and the largest is the nearest side)
+	const i = past.indexOf(Math.max(...past))
+	const mid = { x: b.x + b.w / 2, y: b.y + b.h / 2 }
+	if (i === 0) return { at: { x: b.x, y: mid.y }, out: { x: -1, y: 0 } }
+	if (i === 1) return { at: { x: b.x + b.w, y: mid.y }, out: { x: 1, y: 0 } }
+	if (i === 2) return { at: { x: mid.x, y: b.y }, out: { x: 0, y: -1 } }
+	return { at: { x: mid.x, y: b.y + b.h }, out: { x: 0, y: 1 } }
 }
 
 function bezier(t: Trip, s: number): Vec {

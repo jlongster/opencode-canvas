@@ -12,6 +12,11 @@ import { LIFT, NATIVE, SIZE, TIP_REACH, drawPointer, edgeSpot, hits, openEye, pa
 
 /** Where it sits, relative to the top-right corner of what the agent is working on (page px). */
 const PERCH: Vec = { x: 30, y: -10 }
+/** put down too far from its frame, it stays where it landed this long (ms) before heading back beside it (see landing) */
+const HOME_BEAT_MS = 600
+/** ...having got within this many screen px of there; or it heads back after LANDING_MAX_MS whatever */
+const LANDED_PX = 3
+const LANDING_MAX_MS = 6000
 /** Trips longer than this (screen px), or entirely off-screen, blink out and pop up there instead of gliding. */
 const GLIDE_MAX = 1600
 /** Goal moves smaller than this (screen px) are followed by sliding over rather than a glide. */
@@ -320,8 +325,9 @@ export class AgentWorms {
 			let worm = this.worms.get(peer.clientId)
 			// Hidden until it has somewhere to go.
 			if (!worm && !target) continue
+			const landing = target ? this.landing(peer, worm, now) : null
 			if (!worm) {
-				worm = this.spawn(peer, target!.point, now)
+				worm = this.spawn(peer, landing ?? target!.point, now)
 				worm.rushSeen = target?.rush?.at ?? 0
 				this.arrive(worm, peer, now)
 				this.worms.set(peer.clientId, worm)
@@ -329,7 +335,9 @@ export class AgentWorms {
 			if (worm.leaving) this.revive(worm, now)
 			this.syncCalls(worm)
 			if (target) {
-				const pinned = this.carry.pinned(worm, peer.cursor, now)
+				// (landing where it was put, it's no longer held there till its new position comes back: that's elsewhere)
+				if (landing) this.carry.unpin(worm.sessionId!)
+				const pinned = landing ?? this.carry.pinned(worm, peer.cursor, now)
 				const rush = !pinned && target.rush && target.rush.at !== worm.rushSeen ? target.rush : null
 				// (A rush to a new item waits while its walkthrough is open or it's held. With its box open
 				// it just glides over calmly, staying with the box, which follows where it is.)
@@ -507,6 +515,7 @@ export class AgentWorms {
 				const sessionId = press.worm.sessionId
 				if (sessionId && this.conjure?.canMove(sessionId) && press.worm.mode !== 'vanish') {
 					press.dragging = true
+					this.conjure.landings.delete(sessionId)
 					if (this.conjure.prompting.peek()?.sessionId === sessionId) this.conjure.close()
 					this.container?.classList.add('conjure-dragging')
 					this.carry.pickUp(press.worm, press.start, press.worm.shape?.centre ?? this.centreOf(press.worm))
@@ -570,6 +579,23 @@ export class AgentWorms {
 		const there = standOff(at, out, 1)
 		if (Math.abs(there.x - r.x) > 2 || Math.abs(there.y - r.y) > 2) return null
 		return { point: { x: r.x, y: r.y }, box, rush: r.rush }
+	}
+
+	/**
+	 * Put down (or summoned) too far from its frame, so the server put it back beside it: where it
+	 * was put, until it has been there a beat; then it makes its way back to its record's spot.
+	 */
+	private landing(peer: Peer, worm: Worm | undefined, now: number): Vec | null {
+		const sid = peer.user.sessionId
+		const l = sid ? this.conjure?.landings.get(sid) : undefined
+		if (!l) return null
+		const z = this.editor.camera.peek().z
+		if (!l.arrived && worm && !this.carry.holds(worm) && Math.hypot(worm.root.x - l.at.x, worm.root.y - l.at.y) * z < LANDED_PX) l.arrived = now
+		if (now - l.since > LANDING_MAX_MS || (l.arrived && now - l.arrived > HOME_BEAT_MS)) {
+			this.conjure!.landings.delete(sid!)
+			return null
+		}
+		return l.at
 	}
 
 	/** Whether it may set off on a rush now: not while its walkthrough is open, or while it's held. */

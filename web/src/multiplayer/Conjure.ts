@@ -37,6 +37,14 @@ export interface LastExchange {
 	reply: { text: string; at: number } | null
 }
 
+/** Where one of our worms was put before the server put it back by its frame (see Conjure.landings). */
+export interface Landing {
+	at: Vec
+	/** when (performance.now()), and when it got there (0 until it does) */
+	since: number
+	arrived: number
+}
+
 /** A worm's turn in progress, as seen from here (see Conjure.turns). */
 export interface TurnInfo {
 	/** when it started thinking (or when we first saw it thinking) */
@@ -90,6 +98,11 @@ export class Conjure {
 	readonly stopping = atom<Record<string, number>>('conjureStopping', {})
 	/** when each thinking worm's turn started, by session id, from its presence (gone when it stops thinking) */
 	readonly turns = atom<Record<string, TurnInfo>>('conjureTurns', {})
+	/**
+	 * Our own worms just put (or summoned) too far from their frame, which the server put back beside
+	 * it, by session id: where they were put, to land there a beat before heading back (see AgentWorms).
+	 */
+	readonly landings = new Map<string, Landing>()
 	private host: WormHost | null
 	private unwatchStopping: () => void
 	private unwatchTurns: () => void
@@ -287,7 +300,7 @@ export class Conjure {
 		this.close()
 		try {
 			if (r) await this.move(sessionId, spot, found)
-			else this.put(await conjureSession(this.canvasId, { sessionId, serverKey: found.serverKey, ownerId, title: found.title, ...spot }))
+			else this.put(this.landed(spot, await conjureSession(this.canvasId, { sessionId, serverKey: found.serverKey, ownerId, title: found.title, ...spot })))
 		} catch (e) {
 			// Someone conjured it meanwhile.
 			if ((e as { status?: number }).status === 409 || (e as { status?: number }).status === 403) {
@@ -302,7 +315,8 @@ export class Conjure {
 	/**
 	 * Moves our own worm to a page position for everyone (C, a menu, a drag), or adopts one nobody
 	 * owns there (`found`: its OpenCode, looked up when not given). It starts over right away; if the
-	 * server refuses, it goes back.
+	 * server refuses, it goes back. Too far from its frame, the server puts it beside it instead: it
+	 * lands where it was put first (see landings).
 	 */
 	async move(sessionId: string, at: Vec, found?: { serverKey: string; title: string }) {
 		if (!this.canEdit) return
@@ -314,13 +328,20 @@ export class Conjure {
 			if (!found) throw new Error(pairings.peek().length ? 'No paired OpenCode has this session' : 'Pair an OpenCode (Conjure) to move it')
 		}
 		this.put({ ...r, ...spot })
+		this.landings.delete(sessionId)
 		try {
-			this.put(await moveConjured(this.canvasId, sessionId, { ...spot, ownerId, ...(r.ownerId ? {} : { serverKey: found!.serverKey, title: found!.title }) }))
+			this.put(this.landed(spot, await moveConjured(this.canvasId, sessionId, { ...spot, ownerId, ...(r.ownerId ? {} : { serverKey: found!.serverKey, title: found!.title }) })))
 		} catch (e) {
 			const now = this.record(sessionId)
 			if (now && now.x === spot.x && now.y === spot.y) this.put({ ...now, x: r.x, y: r.y })
 			throw e
 		}
+	}
+
+	/** The server's record for a worm put at `spot`: when it was put somewhere else, it lands at `spot` first. */
+	private landed(spot: Vec, record: ConjuredAgent): ConjuredAgent {
+		if (record.x !== spot.x || record.y !== spot.y) this.landings.set(record.sessionId, { at: spot, since: performance.now(), arrived: 0 })
+		return record
 	}
 
 	/** A record as the server has (or will have) it, without waiting for its event. */

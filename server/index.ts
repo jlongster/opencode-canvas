@@ -7,7 +7,7 @@ import type {
 	SessionView,
 } from '../shared/types'
 import { computeLayout, LAYOUT, orderSessions } from '../web/src/editor/layout'
-import { rushSpot } from '../web/src/multiplayer/Pointer'
+import { homeSpot, rushSpot } from '../web/src/multiplayer/Pointer'
 import { AttentionError, createAttention } from './attention'
 import { ConjureError, createConjured } from './conjured'
 import { imageSize } from './imageSize'
@@ -156,6 +156,10 @@ const conjured = createConjured(
 		canvasExists: (id) => db.canvases.has(id),
 		save,
 		broadcast: (event) => broadcast(event),
+		home: (canvasId, sessionId, at) => {
+			const frame = canvasLayout(canvasId).sections.find((s) => s.id === sessionId)
+			return frame ? homeSpot(at, frame.box) : at
+		},
 	},
 	storedConjured,
 )
@@ -188,14 +192,17 @@ function canvasLayout(canvasId: string) {
 
 /**
  * Runs a change that moves frames (hiding, showing, reordering them), then moves the creatures
- * sitting on a frame (or its title strip) along with it: only the server moves creatures.
+ * along with them: each with its own frame (by which it always stays), or one without a frame with
+ * the frame it sits on (or above, in its title strip). Only the server moves creatures.
  */
 function framesMoving<T>(canvasId: string, change: () => T): T {
 	const before = canvasLayout(canvasId)
 	const result = change()
 	const after = canvasLayout(canvasId)
 	for (const r of conjured.list(canvasId)) {
-		const from = before.sections.find((s) => r.x >= s.box.x && r.x <= s.box.x + s.box.w && r.y >= s.box.y - CREATURE_REACH && r.y <= s.box.y + s.box.h)
+		const from =
+			before.sections.find((s) => s.id === r.sessionId) ??
+			before.sections.find((s) => r.x >= s.box.x && r.x <= s.box.x + s.box.w && r.y >= s.box.y - CREATURE_REACH && r.y <= s.box.y + s.box.h)
 		const to = from && after.sections.find((s) => s.id === from.id)
 		if (to) conjured.shift(canvasId, r.sessionId, to.box.x - from.box.x)
 	}
@@ -994,6 +1001,8 @@ conjured.placeStrays((r) => {
 	const onFrame = layout.sections.some(({ box }) => r.x > box.x && r.x < box.x + box.w && r.y > box.y && r.y < box.y + box.h)
 	return onFrame ? null : creatureSpot(r.canvasId, r.sessionId)
 })
+// Ones left far from their frame (before creatures kept by it) come back beside it.
+conjured.bringHome()
 setInterval(() => purgeTrash().catch((e) => console.error('trash sweep failed:', e)), TRASH_SWEEP_MS)
 
 function idList(value: unknown, name: string): string[] {

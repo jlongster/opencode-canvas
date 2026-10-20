@@ -523,3 +523,18 @@ export function rushSpot(root: Vec, box: Box): Vec {
 	const { at, out } = edgeSpot({ x: root.x, y: root.y - LIFT }, box)
 	return standOff(at, out, 1)
 }
+
+/** how far (page px) outside its session's frame a creature may sit; put down further out, it makes its way back */
+export const HOME_MARGIN = 120
+
+/**
+ * Where a creature put down at `root` (page) ends up, given its session's frame: right there when
+ * that's on the frame or within HOME_MARGIN of it, else just outside the frame's nearest edge,
+ * pointing in (as rushSpot, in page space).
+ */
+export function homeSpot(root: Vec, frame: Box): Vec {
+	const m = HOME_MARGIN
+	if (root.x >= frame.x - m && root.x <= frame.x + frame.w + m && root.y >= frame.y - m && root.y <= frame.y + frame.h + m) return root
+	const at = rushSpot(root, frame)
+	return { x: Math.round(at.x), y: Math.round(at.y) }
+}

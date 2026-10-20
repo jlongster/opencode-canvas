@@ -9,7 +9,8 @@
  * moves along with its frame, and rushes over to an item posted to its session (see rushTo in
  * index.ts). Only its owner moves it from a browser (summoning it with C, picking it
  * in the Conjure menu, dragging it), through `move`, which checks the ownerId; the generic `update`
- * never takes a position.
+ * never takes a position. It stays by its frame: put down too far from it, it goes back to just
+ * outside its edge (deps.home).
  *
  * Everything live happens in the owner's browser tab, which talks to OpenCode directly: it
  * publishes the creature's presence into the canvas's room (thinking, replies, position). With no
@@ -33,6 +34,11 @@ export interface ConjuredDeps {
 	/** persists the index (which reads all() for its conjured records) */
 	save(): void
 	broadcast(event: ServerEvent): void
+	/**
+	 * Where a creature put at `at` ends up: there when that's near its session's frame (or it has no
+	 * frame), else just outside the frame's nearest edge (see homeSpot).
+	 */
+	home(canvasId: string, sessionId: string, at: { x: number; y: number }): { x: number; y: number }
 }
 
 const SESSION_ID = /^ses_[A-Za-z0-9]{26}$/
@@ -136,8 +142,9 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 			if (typeof ownerId !== 'string' || !OWNER_ID.test(ownerId)) {
 				throw new ConjureError(400, '"ownerId" must be the owner\'s browser id (8-64 characters [A-Za-z0-9_-])')
 			}
-			const given = body && ('x' in body || 'y' in body) ? position(body.x, body.y) : null
+			const asked = body && ('x' in body || 'y' in body) ? position(body.x, body.y) : null
 			if (!deps.canvasExists(canvasId)) throw new ConjureError(404, `no canvas ${canvasId}`)
+			const given = asked && deps.home(canvasId, sessionId, asked)
 			const existing = records.get(key(canvasId, sessionId))
 			// One without an owner (made for an agent's attention actions) is adopted.
 			if (existing?.ownerId) throw new ConjureError(409, 'that session is already conjured on this canvas')
@@ -189,6 +196,21 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 			for (const r of moved) deps.broadcast({ type: 'conjured', agent: r })
 		},
 
+		/** Brings any creature sitting too far from its frame back beside it (on load), and saves. */
+		bringHome() {
+			const homed: ConjuredAgent[] = []
+			for (const r of records.values()) {
+				const at = deps.home(r.canvasId, r.sessionId, r)
+				if (at.x === r.x && at.y === r.y) continue
+				const placed = moved(r, { x: Math.round(at.x), y: Math.round(at.y) })
+				records.set(key(r.canvasId, r.sessionId), placed)
+				homed.push(placed)
+			}
+			if (!homed.length) return
+			deps.save()
+			for (const r of homed) deps.broadcast({ type: 'conjured', agent: r })
+		},
+
 		/**
 		 * Its owner moves it (summoned with C, picked in the Conjure menu, dragged): {"x", "y",
 		 * "ownerId"}. One nobody owns is adopted on the way, given "serverKey" (and "title"?) too, as
@@ -200,7 +222,7 @@ export function createConjured(deps: ConjuredDeps, stored: ConjuredAgent[]) {
 			if (typeof owner !== 'string' || !OWNER_ID.test(owner)) {
 				throw new ConjureError(400, '"ownerId" must be the owner\'s browser id (8-64 characters [A-Za-z0-9_-])')
 			}
-			const at = position(body?.x, body?.y)
+			const at = deps.home(canvasId, sessionId, position(body?.x, body?.y))
 			if (r.ownerId && r.ownerId !== owner) throw new ConjureError(403, 'only the browser that conjured this creature can move it')
 			if (!r.ownerId) {
 				const serverKey = body?.serverKey

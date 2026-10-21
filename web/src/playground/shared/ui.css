@@ -1,0 +1,807 @@
+/*
+ * The playground's UI: a full-viewport app shell (the demo is the hero, the panel stays quiet) and a
+ * small control set. Neutral dark palette after Vercel Geist's gray scale; Inter with its dynamic
+ * metrics (tracking = -0.0223 + 0.185·e^(-0.1745·size)): ≈ 0 at 12–13px, +0.005em at 11px,
+ * -0.017em at 20px; spacing on an 8px grid (4px half-steps inside controls).
+ */
+
+:root {
+	--bg: #0a0a0a;
+	--canvas: #111113;
+	--panel: #0c0c0c;
+	--field: #161616;
+	--field-hover: #1c1c1c;
+	--field-active: #222;
+	--line: rgba(255, 255, 255, 0.07);
+	--line-strong: rgba(255, 255, 255, 0.1);
+	--text: #ededed;
+	--text-2: #a1a1a1;
+	--text-3: #707070;
+	--accent: #4c8dff;
+	--focus: 0 0 0 1px var(--bg), 0 0 0 3px rgba(76, 141, 255, 0.75);
+	--ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+	--ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+	--font: 'Inter Variable', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+	color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	height: 100%;
+	overflow: hidden;
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--font);
+	font-size: 13px;
+	line-height: 20px;
+	letter-spacing: -0.003em;
+	font-feature-settings: 'cv11', 'ss01';
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+button,
+input {
+	font: inherit;
+	color: inherit;
+	letter-spacing: inherit;
+}
+
+/* ---------- shell ---------- */
+
+.pg-app {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 296px;
+	height: 100vh;
+	height: 100dvh;
+	overflow: hidden;
+}
+
+.pg-main {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	min-height: 0;
+	padding: 0 16px 16px;
+	gap: 12px;
+}
+
+.pg-toolbar {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 48px;
+}
+
+.pg-toolbar .pg-spacer {
+	flex: 1;
+}
+
+.pg-brand {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-right: 8px;
+	color: var(--text-2);
+	font-weight: 500;
+	text-decoration: none;
+}
+
+.pg-brand svg {
+	color: var(--text-3);
+}
+
+.pg-readout {
+	color: var(--text-3);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	letter-spacing: 0;
+	min-width: 44px;
+	text-align: right;
+}
+
+.pg-demo {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	border-radius: 12px;
+	background: var(--canvas);
+	box-shadow: inset 0 0 0 1px var(--line);
+	overflow: hidden;
+	touch-action: none;
+	user-select: none;
+	-webkit-user-select: none;
+	cursor: grab;
+	outline: none;
+}
+
+.pg-demo:focus-visible {
+	box-shadow: inset 0 0 0 1px var(--line), var(--focus);
+}
+
+.pg-demo.dragging {
+	cursor: grabbing;
+}
+
+.pg-canvas,
+.pg-overlay {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+}
+
+.pg-canvas {
+	display: block;
+}
+
+.pg-overlay {
+	pointer-events: none;
+	overflow: clip;
+}
+
+/* The selected variation's design note, quietly in the corner of the demo */
+.pg-caption {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	padding: 32px 16px 12px;
+	background: linear-gradient(to bottom, rgba(17, 17, 19, 0), rgba(17, 17, 19, 0.92) 55%);
+	display: flex;
+	gap: 8px;
+	align-items: baseline;
+	pointer-events: none;
+	font-size: 12px;
+	line-height: 16px;
+	letter-spacing: 0;
+	color: var(--text-3);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pg-caption b {
+	font-weight: 500;
+	color: var(--text-2);
+}
+
+/* Frame titles and group headings: page-space text placed like the app's SectionLabels */
+.pg-label,
+.pg-group {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: flex;
+	align-items: flex-start;
+	transform-origin: 0 100%;
+	white-space: nowrap;
+	overflow: hidden;
+	will-change: transform;
+}
+
+.pg-label {
+	font-size: 40px;
+	padding-top: 4px;
+}
+
+.pg-group {
+	font-size: 22px;
+	line-height: 1.2;
+}
+
+.pg-group .name {
+	font-weight: 600;
+	color: #d4d4d8;
+	letter-spacing: -0.017em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pg-title {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	max-width: 100%;
+	height: 1.2em;
+	line-height: 1.2;
+}
+
+.pg-title .text {
+	min-width: 0;
+	font-weight: 650;
+	letter-spacing: -0.022em;
+	color: #f4f4f5;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* ---------- panel ---------- */
+
+.pg-panel {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	background: var(--panel);
+	box-shadow: inset 1px 0 0 var(--line);
+}
+
+.pg-panel-head {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	height: 48px;
+	padding: 0 12px 0 16px;
+	box-shadow: inset 1px 0 0 var(--line), inset 0 -1px 0 var(--line);
+}
+
+.pg-panel-head h1 {
+	margin: 0;
+	font-size: 13px;
+	font-weight: 600;
+	letter-spacing: -0.003em;
+}
+
+.pg-panel-body {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-width: thin;
+	scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
+.pg-section {
+	padding: 8px 12px 12px 16px;
+}
+
+.pg-section + .pg-section {
+	box-shadow: inset 0 1px 0 var(--line);
+}
+
+.pg-section-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	height: 32px;
+}
+
+.pg-section-head h2 {
+	margin: 0;
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.005em;
+	color: var(--text-3);
+}
+
+.pg-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.pg-note {
+	margin: 0 0 8px;
+	font-size: 12px;
+	line-height: 18px;
+	letter-spacing: 0;
+	color: var(--text-2);
+	text-wrap: pretty;
+}
+
+/* ---------- controls ---------- */
+
+.c-row {
+	display: grid;
+	grid-template-columns: 84px minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 8px;
+	min-height: 28px;
+}
+
+.c-row.c-row-2 {
+	grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.c-label {
+	font-size: 12px;
+	letter-spacing: 0;
+	color: var(--text-2);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	user-select: none;
+	cursor: default;
+}
+
+/* Slider (after Radix: root, track, range, thumb) */
+.c-slider {
+	position: relative;
+	display: flex;
+	align-items: center;
+	height: 20px;
+	cursor: pointer;
+	touch-action: none;
+	outline: none;
+	border-radius: 4px;
+}
+
+.c-track {
+	position: relative;
+	flex: 1;
+	height: 3px;
+	border-radius: 2px;
+	background: rgba(255, 255, 255, 0.1);
+	overflow: hidden;
+}
+
+.c-range {
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	background: rgba(255, 255, 255, 0.42);
+	border-radius: inherit;
+}
+
+.c-tick {
+	position: absolute;
+	top: 50%;
+	width: 1px;
+	height: 7px;
+	margin: -3.5px 0 0 -0.5px;
+	background: rgba(255, 255, 255, 0.18);
+	pointer-events: none;
+}
+
+.c-thumb {
+	position: absolute;
+	top: 50%;
+	width: 12px;
+	height: 12px;
+	margin: -6px 0 0 -6px;
+	border-radius: 50%;
+	background: #f2f2f2;
+	box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.5);
+	transition: transform 120ms var(--ease-out), box-shadow 120ms;
+}
+
+.c-slider:hover .c-range {
+	background: rgba(255, 255, 255, 0.55);
+}
+
+.c-slider:hover .c-thumb,
+.c-slider.active .c-thumb {
+	transform: scale(1.08);
+}
+
+.c-slider:focus-visible .c-thumb {
+	box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.4), var(--focus);
+}
+
+/* Number field: drag horizontally to scrub (shift ×10, alt ×0.1), click to type */
+.c-num {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 2px;
+	width: 60px;
+	height: 24px;
+	padding: 0 6px;
+	border-radius: 6px;
+	background: var(--field);
+	box-shadow: inset 0 0 0 1px transparent;
+	cursor: ew-resize;
+	transition: background 120ms, box-shadow 120ms;
+}
+
+.c-num:hover {
+	background: var(--field-hover);
+}
+
+.c-num.editing {
+	cursor: text;
+	box-shadow: var(--focus);
+}
+
+.c-num input {
+	width: 100%;
+	min-width: 0;
+	padding: 0;
+	border: none;
+	outline: none;
+	background: none;
+	font-size: 12px;
+	letter-spacing: 0;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	color: var(--text);
+	cursor: inherit;
+	user-select: none;
+	pointer-events: none;
+}
+
+.c-num.editing input {
+	pointer-events: auto;
+	user-select: text;
+}
+
+.c-num .unit {
+	flex: none;
+	font-size: 11px;
+	letter-spacing: 0.005em;
+	color: var(--text-3);
+}
+
+.c-num:has(input:focus-visible) {
+	box-shadow: var(--focus);
+}
+
+/* Segmented control (one sliding indicator) */
+.c-seg {
+	position: relative;
+	display: inline-grid;
+	grid-auto-flow: column;
+	grid-auto-columns: 1fr;
+	justify-self: end;
+	padding: 2px;
+	border-radius: 7px;
+	background: var(--field);
+	min-width: 0;
+}
+
+.c-seg-ind {
+	position: absolute;
+	top: 2px;
+	bottom: 2px;
+	left: 0;
+	border-radius: 5px;
+	background: #2a2a2a;
+	box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.06) inset, 0 1px 2px rgba(0, 0, 0, 0.4);
+	transition: transform 200ms var(--ease-out), width 200ms var(--ease-out);
+	pointer-events: none;
+}
+
+.c-seg button {
+	position: relative;
+	height: 22px;
+	padding: 0 8px;
+	border: none;
+	border-radius: 5px;
+	background: none;
+	font-size: 12px;
+	letter-spacing: 0;
+	color: var(--text-3);
+	cursor: pointer;
+	white-space: nowrap;
+	outline: none;
+	transition: color 120ms;
+}
+
+.c-seg button:hover {
+	color: var(--text-2);
+}
+
+.c-seg button[aria-checked='true'] {
+	color: var(--text);
+}
+
+.c-seg button:focus-visible {
+	box-shadow: var(--focus);
+}
+
+/* Switch */
+.c-switch {
+	position: relative;
+	flex: none;
+	justify-self: end;
+	width: 28px;
+	height: 16px;
+	padding: 0;
+	border: none;
+	border-radius: 8px;
+	background: #2a2a2a;
+	cursor: pointer;
+	outline: none;
+	transition: background 160ms var(--ease-out);
+}
+
+.c-switch::after {
+	content: '';
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	background: #a1a1a1;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+	transition: transform 200ms var(--ease-out), background 160ms;
+}
+
+.c-switch[aria-checked='true'] {
+	background: var(--accent);
+}
+
+.c-switch[aria-checked='true']::after {
+	transform: translateX(12px);
+	background: #fff;
+}
+
+.c-switch:focus-visible {
+	box-shadow: var(--focus);
+}
+
+/* Colour swatch + popover */
+.c-swatch {
+	flex: none;
+	width: 16px;
+	height: 16px;
+	padding: 0;
+	border: none;
+	border-radius: 5px;
+	background: var(--c);
+	box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+	cursor: pointer;
+	outline: none;
+}
+
+.c-swatch:focus-visible {
+	box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14), var(--focus);
+}
+
+.c-pop {
+	position: fixed;
+	z-index: 10;
+	display: grid;
+	grid-template-columns: repeat(5, 20px);
+	gap: 8px;
+	padding: 12px;
+	border-radius: 10px;
+	background: #161616;
+	box-shadow: 0 0 0 1px var(--line-strong), 0 12px 32px rgba(0, 0, 0, 0.5);
+	animation: c-pop-in 160ms var(--ease-out);
+}
+
+.c-pop .c-swatch {
+	width: 20px;
+	height: 20px;
+	border-radius: 6px;
+}
+
+.c-pop .c-swatch[aria-pressed='true'] {
+	box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14), 0 0 0 1px #161616, 0 0 0 2.5px #ededed;
+}
+
+.c-pop .c-hex {
+	grid-column: 1 / -1;
+	height: 24px;
+	padding: 0 8px;
+	border: none;
+	border-radius: 6px;
+	outline: none;
+	background: #0f0f0f;
+	box-shadow: inset 0 0 0 1px var(--line);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	letter-spacing: 0;
+}
+
+.c-pop .c-hex:focus-visible {
+	box-shadow: var(--focus);
+}
+
+@keyframes c-pop-in {
+	from {
+		opacity: 0;
+		transform: translateY(-4px) scale(0.98);
+	}
+}
+
+/* Buttons (after Geist: 28px small, secondary and primary) */
+.c-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	height: 28px;
+	padding: 0 10px;
+	border: none;
+	border-radius: 6px;
+	background: var(--field);
+	box-shadow: inset 0 0 0 1px var(--line);
+	font-size: 12px;
+	font-weight: 500;
+	letter-spacing: 0;
+	color: var(--text);
+	cursor: pointer;
+	white-space: nowrap;
+	outline: none;
+	transition: background 120ms, color 120ms;
+	text-decoration: none;
+}
+
+.c-btn:hover {
+	background: var(--field-hover);
+}
+
+.c-btn:active {
+	background: var(--field-active);
+}
+
+.c-btn.primary {
+	background: #ededed;
+	box-shadow: none;
+	color: #0a0a0a;
+}
+
+.c-btn.primary:hover {
+	background: #fff;
+}
+
+.c-btn.ghost {
+	background: none;
+	box-shadow: none;
+	color: var(--text-3);
+}
+
+.c-btn.ghost:hover {
+	color: var(--text);
+	background: var(--field);
+}
+
+.c-btn.small {
+	height: 24px;
+	padding: 0 8px;
+}
+
+.c-btn:focus-visible {
+	box-shadow: var(--focus);
+}
+
+/* Variation list (a listbox) */
+.c-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	outline: none;
+}
+
+.c-option {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr);
+	align-items: center;
+	gap: 8px;
+	height: 32px;
+	padding: 0 8px;
+	border: none;
+	border-radius: 6px;
+	background: none;
+	text-align: left;
+	font-size: 13px;
+	color: var(--text-2);
+	cursor: pointer;
+	outline: none;
+	transition: background 120ms, color 120ms;
+}
+
+.c-option:hover {
+	background: rgba(255, 255, 255, 0.035);
+	color: var(--text);
+}
+
+.c-option[aria-selected='true'] {
+	background: rgba(255, 255, 255, 0.06);
+	color: var(--text);
+}
+
+.c-option .key {
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+	color: var(--text-3);
+	text-align: center;
+}
+
+.c-option[aria-selected='true'] .key {
+	color: var(--text-2);
+}
+
+.c-option .name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.c-option:focus-visible {
+	box-shadow: var(--focus);
+}
+
+/* Navigation tabs between the two sites */
+.c-tabs {
+	display: inline-flex;
+	gap: 2px;
+	padding: 2px;
+	border-radius: 8px;
+	background: var(--field);
+}
+
+.c-tabs a {
+	display: inline-flex;
+	align-items: center;
+	height: 24px;
+	padding: 0 10px;
+	border-radius: 6px;
+	font-size: 12px;
+	font-weight: 500;
+	letter-spacing: 0;
+	color: var(--text-3);
+	text-decoration: none;
+	outline: none;
+	transition: color 120ms, background 120ms;
+}
+
+.c-tabs a:hover {
+	color: var(--text-2);
+}
+
+.c-tabs a[aria-current='page'] {
+	background: #2a2a2a;
+	color: var(--text);
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.c-tabs a:focus-visible {
+	box-shadow: var(--focus);
+}
+
+/* Frame state rows */
+.pg-frame {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 8px;
+	min-height: 32px;
+}
+
+.pg-frame .t {
+	font-size: 12px;
+	letter-spacing: 0;
+	color: var(--text-2);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pg-frame .controls {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.pg-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding-top: 8px;
+}
+
+.c-visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}

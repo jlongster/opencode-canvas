@@ -1,5 +1,5 @@
-import type { Item, Session } from '../../../shared/types'
-import { computeLayout, shiftSection, type Layout } from '../editor/layout'
+import type { Item, Session } from '../../../../shared/types'
+import { computeLayout, shiftSection, type Layout } from '../../editor/layout'
 
 /** An example session frame and the status it's showing. */
 export interface FrameState {

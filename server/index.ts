@@ -1,5 +1,5 @@
 import { mkdir, rename, rm } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { basename, extname, join, resolve } from 'node:path'
 import * as Y from 'yjs'
 import type {
@@ -2314,12 +2314,14 @@ async function handle(req: Request): Promise<Response> {
 	}
 
 	if (method === 'GET' && existsSync(WEB_DIST) && !p.startsWith('/api/')) {
-		// /playground is a second page of the build: the frame status playground (web/playground.html).
-		const page = p === '/' ? 'index.html' : p === '/playground' || p === '/playground/' ? 'playground.html' : p
-		const path = join(WEB_DIST, page)
-		if (path.startsWith(WEB_DIST) && existsSync(path) && Bun.file(path).size > 0) {
-			return serveFile(req, path, path.includes('/assets/') ? 'public, max-age=31536000, immutable' : 'no-store')
+		// Other pages of the build answer without ".html" too: /playground, /playground/busy (web/playground/*.html).
+		const file = (rel: string) => {
+			const path = join(WEB_DIST, rel)
+			return path.startsWith(WEB_DIST) && existsSync(path) && statSync(path).isFile() && statSync(path).size > 0 ? path : null
 		}
+		const bare = p.replace(/\/+$/, '')
+		const path = p === '/' ? file('index.html') : (file(p) ?? (bare ? (file(`${bare}.html`) ?? file(`${bare}/index.html`)) : null))
+		if (path) return serveFile(req, path, path.includes('/assets/') ? 'public, max-age=31536000, immutable' : 'no-store')
 		return serveFile(req, join(WEB_DIST, 'index.html'), 'no-store')
 	}
 

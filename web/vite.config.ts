@@ -24,6 +24,13 @@ export default defineConfig({
 	build: {
 		outDir: 'dist',
 		emptyOutDir: true,
-		rollupOptions: { input: { main: resolve(__dirname, 'index.html'), playground: resolve(__dirname, 'playground.html') } },
+		rollupOptions: {
+			input: {
+				main: resolve(__dirname, 'index.html'),
+				playground: resolve(__dirname, 'playground/index.html'),
+				'playground-busy': resolve(__dirname, 'playground/busy.html'),
+				'playground-subagents': resolve(__dirname, 'playground/subagents.html'),
+			},
+		},
 	},
 })

@@ -8,7 +8,7 @@ export type ParamDef =
 export type ParamValue = number | string | boolean
 export type ParamValues = Record<string, ParamValue>
 
-export const range = (key: string, label: string, value: number, min: number, max: number, step: number, unit?: string): ParamDef => ({
+export const range = (key: string, label: string, value: number, min: number, max: number, step: number, unit?: string): Extract<ParamDef, { type: 'range' }> => ({
 	key,
 	label,
 	type: 'range',

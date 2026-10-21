@@ -1,22 +1,24 @@
 import { button, el, paramControl, switchControl } from '../shared/controls'
-import { defaults, hexToRgb, pack, range, resolve, toggle, type ParamValues } from '../shared/params'
+import { defaults, hexToRgb, range, resolve, toggle, type ParamValues } from '../shared/params'
 import { frameRows, optionsSection, paramsSection, restoreVariations, shareVariations, variationSection, type VariationSettings } from '../shared/panels'
 import { createShell, defaultFrames, frameFromSaved } from '../shared/shell'
-import { LightPass, type LitFrame } from './light'
-import { VARIANTS } from './variants'
+import { BlockBatch, BlockPass } from './blocks'
+import { easeOut, VARIANTS, type BusyCtx, type Rect } from './variants'
 
 const DONE = [
-	toggle('enabled', 'Flash when done', true),
-	range('duration', 'Duration', 1.3, 0.4, 3, 0.05, 's'),
-	range('travel', 'Travel', 20, 0, 60, 1, 'px'),
-	range('intensity', 'Intensity', 0.6, 0, 1.5, 0.01),
+	toggle('enabled', 'Resolve when done', true),
+	range('fill', 'Fill', 0.16, 0.05, 0.6, 0.01, 's'),
+	range('hold', 'Hold', 0.25, 0, 1, 0.01, 's'),
+	range('fade', 'Fade', 0.5, 0.1, 1.5, 0.05, 's'),
 ]
 
 const OPTIONS = [
 	toggle('reduced', 'Reduced motion', matchMedia('(prefers-reduced-motion: reduce)').matches),
-	toggle('pageUnits', 'Widths in page units', false),
 	toggle('desync', 'Offset frames in time', true),
 ]
+
+/** Enter: the indicator rises from its unlit floor over this long (ease-out). */
+const ENTER = 0.3
 
 interface BusySettings extends VariationSettings {
 	done: ParamValues
@@ -25,7 +27,7 @@ interface BusySettings extends VariationSettings {
 const shell = createShell<BusySettings>({
 	site: 'busy',
 	title: 'Busy',
-	storageKey: 'canvas-playground-busy-v2',
+	storageKey: 'canvas-playground-busy-v4',
 	defaults: () => ({
 		variant: VARIANTS[0].id,
 		params: Object.fromEntries(VARIANTS.map((v) => [v.id, defaults(v.params)])),
@@ -49,14 +51,12 @@ const shell = createShell<BusySettings>({
 	}),
 	exportJson: (s) => {
 		const v = VARIANTS.find((x) => x.id === s.variant)!
-		return { site: 'busy', variant: { id: v.id, name: v.name, params: s.params[v.id] }, done: s.done, pageUnits: s.options.pageUnits }
+		return { site: 'busy', variant: { id: v.id, name: v.name, params: s.params[v.id] }, done: s.done }
 	},
 })
 
 const { settings } = shell
 const variant = () => VARIANTS.find((v) => v.id === settings.variant)!
-const light = new LightPass(shell.gl.gl, shell.gl.quadVao)
-for (const v of VARIANTS) light.prepare(v)
 
 const refreshCaption = () => shell.setCaption(variant().name, variant().note)
 
@@ -76,23 +76,25 @@ const params = paramsSection(
 )
 
 shell
-	.section('Done flash', button('Flash all', () => settings.frames.forEach((_, i) => flash(i)), 'ghost', true))
+	.section('Done', button('Finish all', () => settings.frames.forEach((_, i) => setWorking(i, false)), 'ghost', true))
 	.append(...DONE.map((d) => paramControl(d, settings.done, shell.save)))
 
 // ---------- frames ----------
 
-const work = settings.frames.map((f) => (f.working ? 1 : 0))
-const doneAt = settings.frames.map(() => -1)
 let clock = 0
-
-function flash(i: number) {
-	doneAt[i] = clock
-}
+/** when each frame last started or stopped working (clock s); -Infinity = always so */
+const since = settings.frames.map(() => -Infinity)
+/** whether stopping should play the done resolve (it was working, not just loaded idle) */
+const finished = settings.frames.map(() => false)
 
 function setWorking(i: number, on: boolean) {
 	const f = settings.frames[i]
-	if (f.working && !on) flash(i)
+	if (f.working === on) return
+	finished[i] = f.working && !on
 	f.working = on
+	since[i] = clock
+	renderFrames()
+	shell.save()
 }
 
 const framesBody = shell.section('Frames')
@@ -101,10 +103,7 @@ function renderFrames() {
 		...frameRows(
 			settings.frames,
 			(f, i) => {
-				const sw = switchControl(f.working, (on) => {
-					setWorking(i, on)
-					shell.save()
-				})
+				const sw = switchControl(f.working, (on) => setWorking(i, on))
 				sw.setAttribute('aria-label', `${f.title} is working`)
 				sw.dataset.frame = String(i)
 				return [sw]
@@ -114,21 +113,9 @@ function renderFrames() {
 		el(
 			'div',
 			'pg-buttons',
-			button('Randomise', () => {
-				settings.frames.forEach((_, i) => setWorking(i, Math.random() < 0.6))
-				renderFrames()
-				shell.save()
-			}, '', true),
-			button('All working', () => {
-				settings.frames.forEach((_, i) => setWorking(i, true))
-				renderFrames()
-				shell.save()
-			}, '', true),
-			button('All done', () => {
-				settings.frames.forEach((_, i) => setWorking(i, false))
-				renderFrames()
-				shell.save()
-			}, '', true),
+			button('Randomise', () => settings.frames.forEach((_, i) => setWorking(i, Math.random() < 0.6)), '', true),
+			button('All working', () => settings.frames.forEach((_, i) => setWorking(i, true)), '', true),
+			button('All done', () => settings.frames.forEach((_, i) => setWorking(i, false)), '', true),
 		),
 	)
 }
@@ -137,52 +124,107 @@ renderFrames()
 optionsSection(shell, 'Preview', OPTIONS, settings.options, shell.save)
 refreshCaption()
 
+// ---------- presence ----------
+
+/** How present the indicator is (0..1) and how far the done fill has gone (0..1). */
+function presence(i: number): [number, number] {
+	const dt = clock - since[i]
+	if (settings.frames[i].working) return [easeOut(Math.min(1, dt / ENTER)), 0]
+	if (!finished[i]) return [0, 0]
+	const d = settings.done
+	if (settings.options.reduced || !d.enabled) return [1 - easeOut(Math.min(1, dt / 0.2)), 0]
+	const fill = d.fill as number
+	const hold = d.hold as number
+	const fade = d.fade as number
+	return [1 - easeOut(Math.min(1, Math.max(0, (dt - fill - hold) / fade))), easeOut(Math.min(1, dt / fill))]
+}
+
 // ---------- loop ----------
 
-const packed = new Float32Array(32)
+const pass = new BlockPass(shell.gl.gl)
+const batch = new BlockBatch()
 let time = 0
-shell.onTick((dt) => {
+let paused = false
+const advance = (dt: number) => {
 	clock += dt
-	const values = settings.params[settings.variant]
-	if (!settings.options.reduced) time += dt * (values.speed as number)
-	settings.frames.forEach((f, i) => {
-		const target = f.working ? 1 : 0
-		// Ease in over ~0.5s and out over ~0.8s (exponential approach: no overshoot, no snap).
-		work[i] += (target - work[i]) * (1 - Math.exp(-dt / (target > work[i] ? 0.18 : 0.3)))
-		if (Math.abs(target - work[i]) < 0.002) work[i] = target
-	})
+	if (!settings.options.reduced) time += dt * (settings.params[settings.variant].speed as number)
+}
+shell.onTick((dt) => {
+	if (!paused) advance(dt)
 })
+
+const canvasEl = shell.demo.querySelector('canvas')!
+/** Width reserved after each title, CSS px (so a long title ellipsises before the slot). */
+const reserved = settings.frames.map(() => -1)
 
 shell.onDraw((view) => {
 	const v = variant()
 	const values = settings.params[v.id]
-	pack(v.params, values, packed)
-	const d = settings.done
-	const frames: LitFrame[] = shell.layout.sections.map((s, i) => ({
-		box: s.box,
-		color: hexToRgb(settings.frames[i].color),
-		work: work[i],
-		done: doneAt[i] < 0 || clock - doneAt[i] > (d.duration as number) ? -1 : clock - doneAt[i],
-		offset: settings.options.desync ? i * 1.618 : 0,
-	}))
-	shell.gl.draw(view, shell.layout.sections.map((s) => ({ box: s.box })), [...shell.layout.items.values()], () =>
-		light.draw(view, frames, {
-			variant: v,
-			values,
-			packed,
-			time,
-			pageUnits: !!settings.options.pageUnits,
-			reduced: !!settings.options.reduced,
-			done: [d.duration as number, d.travel as number, d.intensity as number, d.enabled ? 1 : 0],
-		}),
-	)
+	const { dpr, camera } = view
+	const z = camera.z
+	const reduced = !!settings.options.reduced
+	shell.gl.draw(view, shell.layout.sections.map((s) => ({ box: s.box })), [...shell.layout.items.values()])
+
+	const origin = canvasEl.getBoundingClientRect()
+	const dev = (x: number, y: number, w: number, h: number): Rect => ({ x: x * dpr, y: y * dpr, w: w * dpr, h: h * dpr })
+	const [slotW, slotH] = v.slot ? v.slot(values) : [0, 0]
+	const gapPx = 8
+
+	batch.begin()
+	shell.layout.sections.forEach((s, i) => {
+		// Reserve the slot after the title (in the label's own scaled units) so it lays out like text.
+		const label = shell.frameLabels[i]
+		const after = label.slots.after
+		const [pres, fill] = presence(i)
+		// Only while the indicator shows, so idle titles keep their full width.
+		const want = v.slot && pres > 0.001 ? slotW + gapPx : 0
+		const scale = label.outer.getBoundingClientRect().height / (label.outer.offsetHeight || 1)
+		if (reserved[i] !== want * 1000 + scale) {
+			reserved[i] = want * 1000 + scale
+			after.style.flex = 'none'
+			after.style.width = `${want / scale}px`
+			after.style.height = `${(v.slot ? slotH : 0) / scale}px`
+		}
+		if (pres <= 0.001) return
+		const f = settings.frames[i]
+		const col = values.color === 'white' ? [1, 1, 1] : hexToRgb(f.color)
+		const floor = (values.floor as number) ?? 0
+		const peak = (values.peak as number) ?? 1
+		const levels = (values.levels as number) || 0
+		const lit = (level: number) => {
+			let l = Math.max(Math.min(1, Math.max(0, level)), fill)
+			if (levels > 0) l = Math.round(l * levels) / levels
+			return l
+		}
+		const put = (x: number, y: number, w: number, h: number, l: number) => {
+			if (floor > 0) batch.add(x, y, w, h, 1, 1, 1, floor * pres)
+			if (l > 0) batch.add(x, y, w, h, col[0], col[1], col[2], peak * l * pres)
+		}
+		const ab = after.getBoundingClientRect()
+		// Centre on the lowercase x-height rather than the line box (it sits about 0.06em lower).
+		const xh = 0.05 * label.slots.text.getBoundingClientRect().height
+		const ctx: BusyCtx = {
+			frame: dev(s.box.x * z + camera.x, s.box.y * z + camera.y, s.box.w * z, s.box.h * z),
+			slot: dev(ab.left - origin.left + gapPx, ab.top - origin.top + xh, slotW, ab.height),
+			t: reduced ? v.still : time + (settings.options.desync ? i * 1.618 : 0),
+			dpr,
+			z,
+			p: values,
+			seed: i + 1,
+			px: (css) => Math.max(1, Math.round(css * dpr)),
+			cell: (x, y, w, h, level) => put(x, y, w, h, lit(level)),
+		}
+		v.draw(ctx)
+	})
+	pass.draw(batch)
 })
 
 Object.assign(shell.playground, {
 	time: () => time,
+	blocks: () => batch.n,
 	select: (id: string) => document.querySelector<HTMLElement>(`[role="option"][data-id="${id}"]`)?.click(),
-	setWorking: (on: boolean[]) => {
-		on.forEach((w, i) => setWorking(i, w))
-		renderFrames()
-	},
+	setWorking: (on: boolean[]) => on.forEach((w, i) => setWorking(i, w)),
+	/** Scripted captures: stop the clock, then step it by exact amounts. */
+	pause: (on: boolean) => (paused = on),
+	advance,
 })

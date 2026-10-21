@@ -7,8 +7,8 @@ description: >
   video (generated images, edits, renders, screenshots, recordings) and the user has given you a
   canvas URL or id: post each one immediately, as soon as it exists, without waiting to be asked.
   Also use to post HTML (diagrams, flowcharts, charts, annotated explanations, SVG drawings) to
-  tell the user things visually, to put a live website or running deployment on the canvas as a
-  snapshot (page), to point the user at what to look at (say / highlight on your
+  tell the user things visually, to post links to web pages (page, with a screenshot when you
+  have one), to point the user at what to look at (say / highlight on your
   session's creature), and to create, list, rename, delete or restore canvases, sessions, groups
   and items.
 ---
@@ -100,9 +100,8 @@ All bodies are JSON. Paths below are relative to `$API`.
 | `GET` / `DELETE` | `/canvases/$CID/sessions/$SID` | Your session with its groups / delete it |
 | `PATCH` | `/canvases/$CID/sessions/$SID` | Hide or show a frame for everyone: `{"hidden": true\|false}` (only when the user asks) |
 | `GET` / `PUT` | `/canvases/$CID/order` | The frames' order `{"sessionIds"}` / rearrange them (only when the user asks) |
-| `POST` | `/canvases/$CID/sessions/$SID/items` | Add an image/video/HTML: `{"path"}` or `{"url"}`, or multipart `file`, or `{"html", "width", "height"}`, or a web page snapshot `{"page", "width"?, "height"?, "fullPage"?}`; plus `sessionTitle` (always) and optional `group`, `title`, `caption`, `name` |
+| `POST` | `/canvases/$CID/sessions/$SID/items` | Add an image/video/HTML: `{"path"}` or `{"url"}`, or multipart `file`, or `{"html", "width", "height"}`, or a link to a web page `{"page", "path"?}` (path/url/file: its screenshot); plus `sessionTitle` (always) and optional `group`, `title`, `caption`, `name` |
 | `GET` / `PATCH` / `DELETE` | `/items/<itemId>` | Get / change `group`, `title`, `caption` (`null` clears), `name`, and/or **replace its file** (same `{"path"}`, `{"url"}`, `{"html"}` or multipart `file` as posting; see "Updating an item") / delete (`{"sessionDeleted": true}` if it was the session's last item) |
-| `POST` | `/items/<itemId>/refresh` | Take a page item's snapshot again (after the site changed) |
 | `PATCH` / `DELETE` | `/canvases/$CID/sessions/$SID/groups/<name>` | Rename a group `{"name"}` (`null` ungroups) / delete it and its items |
 | `POST` | `/canvases/$CID/restore` | Undo deletes: `{"itemIds": [...], "sessionIds": [...], "annotationIds": [...]}` (any of them; annotationIds: annotations consumed by reading them) → `{sessions, items, annotations}` restored |
 | `GET` | `/canvases/$CID/notes` | Sticky notes: `[{id, text, author, color, x, y, createdAt}]` |
@@ -211,32 +210,26 @@ echo "$BASE/c/$CID"
 
 JSON works too (when the server runs on this machine): `curl -s -X POST $API/canvases/$CID/sessions/$SID/items -H 'content-type: application/json' -d '{"path":"/tmp/out/v2.png","group":"2. Outline","title":"v2","sessionTitle":"Diff panel focus treatments"}'`.
 
-## Web pages: snapshots of live sites
+## Web pages: post links (with a screenshot)
 
-To put a real website or a running deployment (a preview URL, a staging site) on the canvas, post
-its URL as **`page`**, not `url` (`url` downloads a media file):
+To put a website, a dev server or a running deployment (a preview URL, a staging site) on the
+canvas, post its URL as **`page`**, not `url` (`url` downloads a media file). **To post a link, use
+`page` with the URL and include a screenshot of it (`path`/`file`) whenever you can** — take one
+with your browser tooling. The canvas never fetches the URL itself, so any address works
+(localhost, Tailscale, private networks). Without a screenshot it shows as a link card.
 
-- MCP `post_item {canvas, sessionId, sessionTitle, page: "https://…", width?, height?, fullPage?}`;
-  over HTTP, JSON `{"page", "width"?, "height"?, "fullPage"?}` to the items route (plus the usual
-  `sessionTitle`, `group`, `title`, `caption`).
-- The canvas server opens it in a headless browser at `width`×`height` (the viewport, default
-  1280×800; `fullPage: true` for the whole page, up to 6000px tall), waits for it to settle (about
-  15s at most) and stores a PNG. The post returns right away with `"snapshot": "loading"`
-  (`page.status` over HTTP); the snapshot follows live (`"ready"`, or `"failed"` with the error).
-  `get_item {itemId, includeImage: true}` waits for it and shows it to you: check it looks right.
-- The item has `kind: "page"`, `pageUrl` (after redirects), `url` (the snapshot PNG) and
-  `snapshotAt`; its title defaults to the page's `<title>`. On the canvas it's a snapshot with a
-  link badge; people open the real page from it (it isn't interactive there). Annotations work as
-  on images (pixels of the snapshot).
-- **Refresh it after the site changes** (a redeploy, a fix): `update_item {itemId, refresh: true}`
-  or `POST $API/items/<itemId>/refresh`. `update_item {itemId, page}` points it at another URL.
-  Either way it keeps its id and annotations.
-- With no browser on the canvas server, the snapshot is the page's preview image (`og:image`) or
-  a drawn card (`snapshotVia` in MCP results, `page.via: "card"`).
-- Private and local addresses (localhost, 10.x, 192.168.x, …) work when the canvas server only
-  listens on this machine (as `bunx github:jlongster/opencode-canvas` does), so a local dev server
-  can go on the canvas; a shared server refuses them (403). The server finds a browser itself
-  (`$CANVAS_CHROME`, Playwright's Chromium, or Chrome/Chromium where it's usually installed).
+- MCP `post_item {canvas, sessionId, sessionTitle, page: "http://…", path?: "/abs/screenshot.png"}`
+  (`path`, or `url`, is the screenshot, an image); over HTTP, JSON `{"page", "path"?}` or `{"page", "url"?}`
+  to the items route, or multipart `page` + `file` (plus the usual `sessionTitle`, `group`,
+  `title`, `caption`).
+- With a screenshot the item shows it like an image, with the link's domain in a corner. Without
+  one it's a link card (800×500): a globe, the `title` you give (else the URL's host), the URL and
+  "Open ↗". People open the real page from either.
+- The item has `kind: "page"`, `pageUrl` (the link), `screenshot` (true/false in MCP results) and,
+  with one, `url` (the screenshot). Annotations on a screenshot work as on images.
+- **After the site changes, send a new screenshot**: `update_item {itemId, path}` (or PATCH with
+  `{"path"}`/multipart `file`). `update_item {itemId, page}` points it at another URL (keeping its
+  screenshot unless you send a new one with it). Either way it keeps its id and annotations.
 
 ## Updating an item: replace it in place
 
@@ -257,8 +250,8 @@ multipart `file` (other fields as form fields). It can be combined with `title`,
   doesn't move it.
 - HTML pages keep their `width`/`height` unless you send new ones; `width`/`height` alone resize
   an HTML item.
-- Page items: `{"page"}` takes a snapshot of a (new) URL, `{"refresh": true}` re-takes it (see
-  "Web pages" above).
+- Page items: a new image (`path`, `url` or `file`) replaces the screenshot; `{"page"}` points it
+  at another URL (see "Web pages" above).
 
 Post a new item instead only when both versions should be seen side by side (variants the user
 will compare, a before/after pair). Keep the item id from the post's response (or find it with
@@ -368,17 +361,17 @@ the `canvas` MCP server. It only provides tools: you don't appear on the canvas 
 creature does, for say and highlight). Tools take a canvas id or URL; the ones that act for your
 session take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
 
-- `post_item {canvas, sessionId, sessionTitle, path | url | html | page, width?, height?, fullPage?, group?, title?, caption?, name?}`:
+- `post_item {canvas, sessionId, sessionTitle, path | url | html | page (+ path as its screenshot), width?, height?, group?, title?, caption?, name?}`:
   post into your frame (`path` must be absolute, on the canvas server's machine). **Always pass `sessionTitle`.**
 - `say {canvas, sessionId, sessionTitle, text}` and `highlight {canvas, sessionId, sessionTitle, target, point? | region? | at?, text?}`:
   queue steps on your creature (see above). Return the step's `id` and `position` in your queue.
-- `update_item {itemId, path | url | html | page, refresh?, width?, height?, fullPage?, name?, title?, caption?, group?}`: replace an
+- `update_item {itemId, path | url | html | page, width?, height?, name?, title?, caption?, group?}`: replace an
   item's file in place (a new version of the same visual; see "Updating an item") and/or change its
   metadata (`null` clears title, caption, group).
 - `delete_item`, `restore`: soft-delete, undo deletes (and bring back consumed annotations with `annotationIds`).
 - `list_canvases`, `create_canvas`, `get_canvas` (sessions, groups, items, notes, annotations), `find_items`, `list_notes`.
 - `list_annotations {canvas, sessionId?, itemId?, keep?}`: the user's pencil drawings (strokes and bbox in image pixels, optional text, `markedImageUrl` to look at); reading consumes them unless `keep: true` (see above).
-- `get_item {itemId, includeImage?, fullSize?}`: see an image or a page's snapshot (or an HTML item's source).
+- `get_item {itemId, includeImage?, fullSize?}`: see an image or a page's screenshot (or an HTML item's source).
 - `get_selection`: what people on the canvas have selected ("look at this"); `get_presence`: who's there.
 
 Users can also "conjure" OpenCode sessions from the browser, which lets them prompt the session

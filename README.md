@@ -10,8 +10,7 @@ sessions onto the canvas as creatures you can talk to.
 bunx github:jlongster/opencode-canvas
 ```
 
-That's all it needs: [Bun](https://bun.sh) (and optionally `ffmpeg`, for video and thumbnails, and
-Chrome or Chromium, for snapshots of web pages). It
+That's all it needs: [Bun](https://bun.sh) (and optionally `ffmpeg`, for video and thumbnails). It
 starts a canvas server on `http://localhost:4545`, finds the OpenCode running on your machine and
 opens your browser, ready to connect to it: click **Connect** ("Found OpenCode on this machine").
 Canvases are stored in `~/.opencode-canvas`.
@@ -41,10 +40,10 @@ On a canvas you can then:
   sends them all to that session as one prompt (notes, pixel boxes, marked images attached),
   through your paired OpenCode, asking it to update those items in place.
 - **Put a web page on it**: paste a link (Cmd/Ctrl+V of an `http(s)` URL, anywhere on an edit link
-  outside a text field) and a snapshot of that page lands in the canvas's **Pasted links** frame.
-  Page items show the snapshot with the site's domain in a corner; **Open** (hover) opens the real
-  page in a new tab, and Shift-hover → **Refresh snapshot** takes it again. Agents post them too
-  (`page` below). Annotations work on them as on images.
+  outside a text field) and a link card for it lands in the canvas's **Pasted links** frame.
+  Page items show a screenshot when the poster sent one (with the site's domain in a corner), else
+  a link card; **Open** opens the real page in a new tab. Agents post them too (`page` below), with
+  a screenshot. The canvas never fetches the page itself.
 - **Arrange frames**: drag a frame by its title to move it, or hide it with the eye on its title.
   The frame count at the bottom left opens a list of every frame, hidden ones included, to show,
   hide and reorder them. The arrangement is shared with everyone on the canvas.
@@ -110,9 +109,8 @@ ln -s "$PWD/skill/canvas" ~/.config/opencode/skills/canvas
 **The MCP server**: the canvas server is an MCP server (Streamable HTTP) at
 `http://localhost:4545/mcp`, with tools to list and create canvases, post, update and delete items
 (`update_item` replaces an item's image, video or HTML in place: same id, place and comments, moved
-to the top of its group, swapped live on open canvases), put live websites and running deployments
-on a canvas as snapshots (`post_item` with `page`, its URL; `url` is for media files; refresh them
-with `update_item refresh: true` after the site changes), see what people have selected, read sticky notes and annotations (pencil drawings with optional notes,
+to the top of its group, swapped live on open canvases), post links to web pages (`post_item` with
+`page`, its URL, plus a screenshot as `path`; `url` is for media files), see what people have selected, read sticky notes and annotations (pencil drawings with optional notes,
 with the strokes in image pixels and a marked image: `list_annotations`, which consumes them unless `keep: true`), and `say` / `highlight` to queue things for you to
 look at on the session's creature. It's only a tool provider: agents using it don't appear on the
 canvas themselves. In your OpenCode config:
@@ -132,21 +130,13 @@ curl -X POST http://localhost:4545/api/canvases/<canvas id>/sessions/$OPENCODE_S
   -F file=@output.png -F caption="first try"
 ```
 
-### Web page snapshots
+### Web page links
 
-Page items are snapshots taken on the canvas server, in a headless Chromium driven by
-`playwright-core` (it never downloads a browser). It uses the first it finds: `CANVAS_CHROME` (a
-path; `none` turns it off), a Chromium Playwright installed (`bunx playwright install chromium`,
-any version), then Chrome, Chromium, Edge or Brave where they're usually installed. With none of
-those, a page's snapshot is its preview image (`og:image`) or a card with its title, domain and
-description (drawn with `ffmpeg`).
-
-Private and local addresses (localhost, `127.*`, `10.*`, `172.16–31.*`, `192.168.*`, link-local,
-`fc00::/7`, …) can be snapshotted only when the server listens on localhost alone, as
-`bunx github:jlongster/opencode-canvas` does, so your dev servers can go on a canvas. A server
-listening on every interface refuses them (every redirect and request the page makes is checked,
-through a local proxy), so it can't be used to probe its network. `CANVAS_PAGES_PRIVATE=1` or `0`
-decides instead.
+To post a link, use `page` with the URL and include a screenshot of it (`path`/`file`) whenever you
+can — take one with your browser tooling; the canvas never fetches the URL itself. Without a
+screenshot it shows as a link card (the title or host, the URL and **Open ↗**). Since nothing is
+fetched, any address works: localhost, Tailscale, private networks. `update_item` with a new `path`
+swaps the screenshot; with `page`, it points the item at another URL.
 
 ## Self-hosting
 

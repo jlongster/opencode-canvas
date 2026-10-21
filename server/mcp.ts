@@ -55,8 +55,6 @@ export interface CanvasMcpDeps {
 	addItem(canvasId: string, sessionId: string, body: Record<string, unknown>): Promise<Item>
 	/** same JSON body and validation as PATCH /api/items/:itemId: metadata changes and/or a new file */
 	updateItem(id: string, body: Record<string, unknown>): Promise<Item>
-	/** waits up to `ms` for a page item's snapshot in progress (resolves at once if there's none) */
-	snapshotSettled(id: string, ms: number): Promise<void>
 	deleteItem(id: string): { sessionDeleted: boolean }
 	restore(
 		canvasId: string,
@@ -115,10 +113,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			...(item.kind === 'page'
 				? {
 						pageUrl: item.pageUrl,
-						snapshot: item.page?.status,
-						...(item.page?.error ? { snapshotError: item.page.error } : {}),
-						...(item.page?.via === 'card' ? { snapshotVia: 'card (no browser on the canvas server: the page\'s preview image or a drawn card)' } : {}),
-						...(item.snapshotAt ? { snapshotAt: item.snapshotAt } : {}),
+						screenshot: !!item.src,
 					}
 				: {}),
 			...(item.kind === 'video' ? { thumbUrl: mediaUrl(item.thumb) } : {}),
@@ -268,7 +263,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			{ name: 'canvas', version: '1.0.0' },
 			{
 				instructions:
-					'Review canvases where you post images, videos, HTML and snapshots of live web pages for the user. These are tools only: you have no ' +
+					'Review canvases where you post images, videos, HTML and links to web pages for the user. These are tools only: you have no ' +
 					'presence on the canvas yourself. Your OpenCode session has a frame (what you post) and a creature (a small ' +
 					'character beside the frame). To get the user\'s attention, say (a Markdown message) and highlight (point at an ' +
 					'item, group, frame or note) queue steps on your creature, which the user plays through when they look; ' +
@@ -281,8 +276,10 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'see what was circled). Reading annotations consumes them: they disappear from ' +
 					'the canvas once you\'ve read them (pass keep: true to peek; restore brings them back). To show a new version of something you posted, replace ' +
 					'it in place with update_item (path, url, html or page) rather than posting it again: it keeps its place and comments. ' +
-					'To show a live website or a running deployment, post_item with page (its URL): the canvas shows a snapshot ' +
-					'people can open; refresh it (update_item refresh: true) after the site changes. url is for media files.',
+					'To post a link (a website, a dev server, a running deployment), post_item with page (its URL) and include a ' +
+					'screenshot of it (path) whenever you can: take one with your browser tooling. The canvas never fetches the URL ' +
+					'itself (any address works, localhost and Tailscale too); without a screenshot it shows as a link card people ' +
+					'can open. update_item with a new path replaces the screenshot. url is for media files.',
 			},
 		)
 
@@ -534,18 +531,16 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			'get_item',
 			{
 				description:
-					'One item with its absolute media url. With includeImage, images (video poster frames, page snapshots) are returned as image ' +
+					'One item with its absolute media url. With includeImage, images (video poster frames, page screenshots) are returned as image ' +
 					'content so you can see them; HTML items always include their HTML source. Page items (kind "page") have pageUrl ' +
-					'(the web page), url (its snapshot PNG), snapshot ("loading", "ready" or "failed") and snapshotAt; with includeImage ' +
-					'it waits (up to 30s) for a snapshot being taken.',
+					'(the web page), screenshot (whether one was posted) and, with one, url (the screenshot).',
 				inputSchema: {
 					itemId: z.string().describe('Item id'),
-					includeImage: z.boolean().optional().describe('Return the image itself (images, videos and page snapshots)'),
+					includeImage: z.boolean().optional().describe('Return the image itself (images, videos and page screenshots)'),
 					fullSize: z.boolean().optional().describe('With includeImage: send the original image instead of the 512px thumbnail'),
 				},
 			},
 			tool(async ({ itemId, includeImage, fullSize }: { itemId: string; includeImage?: boolean; fullSize?: boolean }) => {
-				if (includeImage && deps.getItem(itemId).kind === 'page') await deps.snapshotSettled(itemId, 30_000)
 				const item = deps.getItem(itemId)
 				const result: CallToolResult = { content: [{ type: 'text', text: JSON.stringify(itemDetail(item)) }] }
 				if (item.kind === 'html') {
@@ -555,7 +550,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					if (html.length > HTML_TEXT_MAX) html = html.slice(0, HTML_TEXT_MAX) + '\n<!-- truncated -->'
 					result.content.push({ type: 'text', text: html })
 				} else if (includeImage && !item.thumb) {
-					result.content.push({ type: 'text', text: item.page?.status === 'failed' ? `no snapshot: ${item.page.error}` : 'the snapshot is not ready yet' })
+					result.content.push({ type: 'text', text: 'this link has no screenshot (it shows as a link card); update_item with path adds one' })
 				} else if (includeImage) {
 					const file = deps.mediaFile((item.kind === 'image' || item.kind === 'page') && fullSize ? item.src : item.thumb)
 					if (!(await file.exists())) throw new ToolError('the image file is missing')
@@ -572,12 +567,11 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				description:
 					'Post an image, video or HTML page to a canvas, into your session\'s frame. Give exactly one of path (an ' +
 					'absolute path of a file on this machine), url (a media file to download), html (inline HTML: diagrams, charts, annotated explanations; ' +
-					'set width/height to the CSS pixel size it is designed for, default 800x600), or page (the URL of a live web page: ' +
-					'a site or a running deployment). A page is snapshotted on the canvas server in a headless browser at width x height ' +
-					'(viewport, default 1280x800; fullPage: true for the whole page, up to 6000px tall): the post returns at once with ' +
-					'snapshot "loading" and the snapshot appears a few seconds later (get_item with includeImage waits for it and shows it); its title ' +
-					'defaults to the page\'s <title>. People see the snapshot and open the real page from it; refresh it with ' +
-					'update_item refresh: true after the site changes. Use group to organise items ' +
+					'set width/height to the CSS pixel size it is designed for, default 800x600), or page (the URL of a web page: a site, ' +
+					'a dev server, a running deployment). To post a link, use page with the URL and include a screenshot of it (path) ' +
+					'whenever you can: take one with your browser tooling. The canvas never fetches the URL itself, so any address works ' +
+					'(localhost, Tailscale, private networks); without a screenshot it shows as a link card (title, or the host, and the URL). ' +
+					'People open the real page from it. Use group to organise items ' +
 					'within the session. Pass sessionTitle (your OpenCode session\'s title) on every post: it keeps your ' +
 					'frame named after your session and follows renames. Posting to a frame people hid ' +
 					'works but doesn\'t unhide it. For a new version of something you already posted, replace that item with ' +
@@ -586,13 +580,12 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					canvas: canvasArg,
 					sessionId: sessionIdArg,
 					sessionTitle: sessionTitleArg,
-					path: z.string().optional().describe('Absolute path of an image/video/HTML file on this machine'),
-					url: z.string().optional().describe('URL of an image/video/HTML file to fetch (for a web page to show as it looks, use page)'),
+					path: z.string().optional().describe('Absolute path of an image/video/HTML file on this machine. With page: the page\'s screenshot (an image)'),
+					url: z.string().optional().describe('URL of an image/video/HTML file to fetch (to post a link to a web page, use page). With page: its screenshot\'s URL'),
 					html: z.string().optional().describe('Inline HTML (a fragment or a full document)'),
-					page: z.string().optional().describe('URL of a live web page to put on the canvas as a snapshot (http/https)'),
-					width: z.number().optional().describe('HTML items: CSS pixel width the page is laid out at. Pages: viewport width (default 1280)'),
-					height: z.number().optional().describe('HTML items: CSS pixel height. Pages: viewport height (default 800)'),
-					fullPage: z.boolean().optional().describe('Pages: snapshot the whole page, not just the first screen (up to 6000px tall)'),
+					page: z.string().optional().describe('URL of a web page to post as a link (http/https; never fetched by the canvas). Send its screenshot as path when you can'),
+					width: z.number().optional().describe('HTML items: CSS pixel width the page is laid out at'),
+					height: z.number().optional().describe('HTML items: CSS pixel height'),
 					group: z.string().optional().describe('Group name within the session'),
 					title: z.string().optional().describe('Shown above the item'),
 					caption: z.string().optional().describe('Longer description, shown on hover'),
@@ -609,14 +602,15 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				page?: string
 				width?: number
 				height?: number
-				fullPage?: boolean
 				group?: string
 				title?: string
 				caption?: string
 				name?: string
 			}, extra) => {
-				const sources = [args.path, args.url, args.html, args.page].filter((s) => s !== undefined)
-				if (sources.length !== 1) throw new ToolError('give exactly one of path, url, html or page')
+				const files = [args.path, args.url, args.html].filter((s) => s !== undefined)
+				if (args.page !== undefined ? args.html !== undefined || files.length > 1 : files.length !== 1) {
+					throw new ToolError('give exactly one of path, url, html or page (with page, path or url is its screenshot)')
+				}
 				if (args.path !== undefined && !isAbsolute(args.path)) {
 					throw new ToolError(`path must be absolute (the canvas server doesn't share your working directory), got ${JSON.stringify(args.path)}`)
 				}
@@ -639,20 +633,18 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'its id, link, place in your frame, group, title, caption and the user\'s annotations, takes the new file\'s ' +
 					'kind, size and file name (unless name is given), and moves to the top of its group like a new post; open ' +
 					'canvases show the new version right away. HTML pages keep their width/height unless you give new ones ' +
-					'(width/height alone resize an HTML item). page (a web page URL) turns the item into a snapshot of that page, ' +
-					'taken again in place; on a page item, refresh: true re-takes its snapshot (after the site changed), as do ' +
-					'width/height/fullPage alone (a new viewport). Post a new item instead only when both versions should be seen ' +
+					'(width/height alone resize an HTML item). On a page item (a link), path or url replaces its screenshot (an image) ' +
+					'and page points it at another URL (keeping its screenshot unless you send a new one); page on any other item ' +
+					'turns it into a link (with path as its screenshot). Post a new item instead only when both versions should be seen ' +
 					'side by side.',
 				inputSchema: {
 					itemId: z.string(),
-					path: z.string().optional().describe('Replace the file: absolute path of an image/video/HTML file on this machine'),
-					url: z.string().optional().describe('Replace the file: URL of an image/video/HTML file to fetch'),
+					path: z.string().optional().describe('Replace the file: absolute path of an image/video/HTML file on this machine (page items: a new screenshot)'),
+					url: z.string().optional().describe('Replace the file: URL of an image/video/HTML file to fetch (page items: a new screenshot)'),
 					html: z.string().optional().describe('Replace the file with inline HTML (a fragment or a full document)'),
-					page: z.string().optional().describe('Make it a snapshot of this web page URL (or point a page item at another URL)'),
-					refresh: z.boolean().optional().describe('Page items: take the snapshot again'),
-					width: z.number().optional().describe('HTML items: CSS pixel width the page is laid out at (default: unchanged). Pages: viewport width'),
-					height: z.number().optional().describe('HTML items: CSS pixel height (default: unchanged). Pages: viewport height'),
-					fullPage: z.boolean().optional().describe('Pages: snapshot the whole page (up to 6000px tall), or false for just the viewport'),
+					page: z.string().optional().describe('Make it a link to this web page URL (or point a page item at another URL)'),
+					width: z.number().optional().describe('HTML items: CSS pixel width the page is laid out at (default: unchanged)'),
+					height: z.number().optional().describe('HTML items: CSS pixel height (default: unchanged)'),
 					name: z.string().optional().describe('File name (defaults to the new file\'s name when replacing)'),
 					title: z.string().nullable().optional(),
 					caption: z.string().nullable().optional(),
@@ -665,18 +657,17 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				url?: string
 				html?: string
 				page?: string
-				refresh?: boolean
 				width?: number
 				height?: number
-				fullPage?: boolean
 				name?: string
 				title?: string | null
 				caption?: string | null
 				group?: string | null
 			}) => {
 				const body = Object.fromEntries(Object.entries(changes).filter(([, v]) => v !== undefined))
-				if (!Object.keys(body).length) throw new ToolError('nothing to change: give path, url, html or page (new content), refresh, and/or name, title, caption or group')
-				if ([changes.path, changes.url, changes.html, changes.page].filter((s) => s !== undefined).length > 1) throw new ToolError('give at most one of path, url, html or page')
+				if (!Object.keys(body).length) throw new ToolError('nothing to change: give path, url, html or page (new content), and/or name, title, caption or group')
+				if ([changes.path, changes.url, changes.html].filter((s) => s !== undefined).length > 1) throw new ToolError('give at most one of path, url or html')
+				if (changes.page !== undefined && changes.html !== undefined) throw new ToolError('give page (with path or url as its screenshot) or html, not both')
 				if (changes.path !== undefined && !isAbsolute(changes.path)) {
 					throw new ToolError(`path must be absolute (the canvas server doesn't share your working directory), got ${JSON.stringify(changes.path)}`)
 				}

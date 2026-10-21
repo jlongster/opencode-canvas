@@ -9,6 +9,7 @@ import { VideoPool } from './VideoPool'
 import { EXTRACT_ICON, VideoControls } from './VideoControls'
 import { LinkHover, loadHtml, makeNonce, parseLinkMessage, withLinkReporter, type FrameTransform } from './HtmlLinks'
 import { EXTERNAL_ICON, PageBadges, pageDomain } from './PageBadges'
+import { linkCardUrl } from './linkCard'
 import { url as withBase } from '../base'
 import './frameButtons.css'
 
@@ -51,8 +52,6 @@ export interface RendererOptions {
 	onCloseSection?: (sectionId: string) => void
 	/** Called when the GPU device is lost other than by destroy() (iOS drops it in background tabs, GPU resets). */
 	onDeviceLost?: (message: string) => void
-	/** Takes a page item's snapshot again (edit links). */
-	onRefreshPage?: (itemId: string) => void
 }
 
 interface Displayed {
@@ -226,15 +225,14 @@ export class Renderer {
 		)
 		this.titles = new ItemTitles(overlay)
 		this.videoControls = new VideoControls(overlay, this.videos, editor, !!options.readOnly)
-		this.pageBadges = new PageBadges(overlay)
+		this.pageBadges = new PageBadges(overlay, (item) => openPage(item))
 		// HTML items open in the side drawer; pages open the real page in a new tab.
 		const open = (id: string) => {
 			const item = editor.items.peek()[id]
 			if (item?.kind === 'page') openPage(item)
 			else editor.openHtmlDrawer(id)
 		}
-		const refresh = options.readOnly || !options.onRefreshPage ? null : options.onRefreshPage
-		this.actions = new ItemActions(overlay, options.readOnly ? null : this.videoControls, open, refresh)
+		this.actions = new ItemActions(overlay, options.readOnly ? null : this.videoControls, open)
 		this.openButton = new HtmlOpenButton(overlay, open)
 
 		const ro = new ResizeObserver(([entry]) => {
@@ -596,7 +594,11 @@ export class Renderer {
 	}
 
 	private pickNewTexture(item: Item, screenPx: number) {
-		// a page whose first snapshot isn't taken yet
+		// a page without a screenshot: its link card
+		if (item.kind === 'page' && !item.thumb) {
+			const card = this.textures.request(linkCardUrl(item))
+			return card.state === 'ready' ? card : undefined
+		}
 		if (!item.thumb) return undefined
 		const thumb = this.textures.request(item.thumb)
 		const originalLarger = Math.max(item.width, item.height) > THUMB_SIZE
@@ -980,7 +982,6 @@ class ItemActions {
 	private download: HTMLAnchorElement
 	private extract: HTMLButtonElement
 	private open: HTMLButtonElement
-	private refresh: HTMLButtonElement
 	private itemId: string | null = null
 	private kind: Item['kind'] | null = null
 	private src = ''
@@ -992,8 +993,6 @@ class ItemActions {
 		/** null on view links */
 		private frames: Pick<VideoControls, 'canExtract' | 'extract'> | null,
 		onOpen: (id: string) => void,
-		/** re-snapshots a page item; null on view links */
-		private onRefresh: ((id: string) => void) | null,
 	) {
 		this.el = document.createElement('div')
 		this.el.className = 'item-actions'
@@ -1017,13 +1016,7 @@ class ItemActions {
 		this.open.title = 'Open in a side panel, to use the page'
 		this.open.innerHTML = OPEN_DRAWER_ICON
 		this.open.addEventListener('click', () => this.itemId && onOpen(this.itemId))
-		this.refresh = document.createElement('button')
-		this.refresh.className = 'item-action item-refresh'
-		this.refresh.title = 'Refresh snapshot (take it again)'
-		this.refresh.innerHTML =
-			'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>'
-		this.refresh.addEventListener('click', () => this.itemId && this.onRefresh?.(this.itemId))
-		this.el.append(this.extract, this.refresh, this.open, this.link, this.download)
+		this.el.append(this.extract, this.open, this.link, this.download)
 		// Keep the click from reaching the canvas (which would select or start a brush).
 		this.el.addEventListener('pointerdown', (e) => e.stopPropagation())
 		this.el.addEventListener('dblclick', (e) => e.stopPropagation())
@@ -1051,13 +1044,11 @@ class ItemActions {
 			this.kind = item.kind
 			this.open.innerHTML = page ? EXTERNAL_ICON_15 : OPEN_DRAWER_ICON
 			this.open.title = page ? 'Open the page in a new tab' : 'Open in a side panel, to use the page'
-			this.download.title = page ? 'Download the snapshot' : 'Download'
+			this.download.title = page ? 'Download the screenshot' : 'Download'
 			this.showCopied(false)
 		}
 		this.extract.style.display = this.frames?.canExtract(item) ? '' : 'none'
 		this.open.style.display = item.kind === 'html' || (page && item.pageUrl) ? '' : 'none'
-		this.refresh.style.display = page && this.onRefresh ? '' : 'none'
-		this.refresh.classList.toggle('busy', page && item.page?.status === 'loading')
 		this.download.style.display = item.src ? '' : 'none'
 		const p = editor.pageToScreen({ x: box.x + box.w, y: box.y })
 		this.el.style.display = 'flex'

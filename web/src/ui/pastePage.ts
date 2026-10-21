@@ -11,7 +11,7 @@ const PASTED_TITLE = 'Pasted links'
 
 /**
  * Edit links: pasting a web address (Cmd/Ctrl+V of plain text that is just an http(s) URL) onto
- * the canvas adds a snapshot of that page to the "Pasted links" frame, then shows it. Pastes into
+ * the canvas adds a link to that page (a link card: nothing fetches it) to the "Pasted links" frame, then shows it. Pastes into
  * text fields, of files, of other text and of OpenCode pairing links are left alone.
  */
 export function listenForPastedPages(editor: Editor, canvasId: string): () => void {
@@ -29,7 +29,7 @@ export function listenForPastedPages(editor: Editor, canvasId: string): () => vo
 		}
 		e.preventDefault()
 		const domain = url.hostname.replace(/^www\./, '')
-		editor.deletions.notify(`Adding a snapshot of ${domain}…`)
+		editor.deletions.notify(`Adding a link to ${domain}…`)
 		postPage(canvasId, PASTED_SESSION_ID, url.href, { sessionTitle: PASTED_TITLE })
 			.then((item) => showWhenLaidOut(editor, item.id))
 			.catch((err: Error) => editor.deletions.notify(`Couldn't add ${domain}: ${err.message}`))

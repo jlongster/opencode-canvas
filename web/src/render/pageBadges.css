@@ -1,4 +1,4 @@
-/* Page items' link badges and loading notes (render/PageBadges.ts) */
+/* Page items' link badges and link cards' Open buttons (render/PageBadges.ts) */
 .page-badges {
 	position: absolute;
 	inset: 0;
@@ -33,55 +33,30 @@
 	text-overflow: ellipsis;
 }
 
-.page-badge .state {
-	color: rgba(255, 255, 255, 0.6);
-	font-weight: 400;
-}
-
 .page-badge svg {
 	flex: none;
 	opacity: 0.75;
 }
 
-.page-badge.failed .state {
-	color: #fca5a5;
-}
-
-.page-note {
+/* over a link card's drawn "Open ↗" (render/linkCard.ts): the card draws the pill, this takes the click */
+.page-card-open {
 	position: absolute;
 	left: 0;
 	top: 0;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	padding: 12px;
-	box-sizing: border-box;
-	text-align: center;
-	color: rgba(255, 255, 255, 0.55);
-	overflow: hidden;
+	padding: 0;
+	border: 0;
+	border-radius: 999px;
+	background: transparent;
+	cursor: pointer;
+	pointer-events: auto;
+	transition: background-color 0.12s;
 }
 
-.page-note.loading {
-	animation: page-note-pulse 1.4s ease-in-out infinite;
+.page-card-open:hover {
+	background: rgba(255, 255, 255, 0.08);
 }
 
-.page-note.failed {
-	color: #fca5a5;
-}
-
-@keyframes page-note-pulse {
-	50% {
-		opacity: 0.45;
-	}
-}
-
-/* the Shift-hover bar's Refresh snapshot button while one is being taken */
-.item-action.item-refresh.busy svg {
-	animation: page-refresh-spin 1s linear infinite;
-}
-
-@keyframes page-refresh-spin {
-	to {
-		transform: rotate(360deg);
-	}
+.page-card-open:focus-visible {
+	outline: 2px solid rgba(87, 143, 255, 0.9);
+	outline-offset: 2px;
 }

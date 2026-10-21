@@ -1,24 +1,13 @@
 export type MediaKind = 'image' | 'video' | 'html' | 'page'
 
 /**
- * A page item's web page and the state of its snapshot (a PNG taken on the canvas server, which is
- * the item's src/thumb once it's ready).
+ * A page item's web page. The canvas server never fetches it: a page item shows the screenshot its
+ * poster sent (the item's src/thumb), or, without one (src ""), a link card drawn in the browser.
+ * Items from before may carry more fields (from when the server took snapshots); they're ignored.
  */
 export interface PageInfo {
 	/** the URL as posted */
 	url: string
-	/** the viewport the page is laid out in (CSS px); fullPage: the whole page, up to 6000px tall */
-	width: number
-	height: number
-	fullPage?: boolean
-	/** loading: being taken (a refreshed page keeps showing its last snapshot meanwhile) */
-	status: 'loading' | 'ready' | 'failed'
-	/** browser: a headless Chromium screenshot; card: no browser on the server, so the page's preview image or a drawn card */
-	via?: 'browser' | 'card'
-	/** why the last snapshot failed */
-	error?: string
-	/** the page's own <title>, which the item's title follows unless someone gave it another */
-	title?: string
 }
 
 /** One canvas: a board of sessions, with an edit link (/c/:id) and a view-only link (/v/:viewKey). */
@@ -105,11 +94,11 @@ export interface Item {
 	/** A frame extracted from a video: the video item it came from, and when in it (seconds) */
 	sourceItemId?: string
 	sourceTime?: number
-	/** Pages: the web page's URL (after redirects, once snapshotted): what "Open" opens */
+	/** Pages: the web page's URL: what "Open" opens */
 	pageUrl?: string
-	/** Pages: the snapshot's settings and state */
+	/** Pages: the web page (src/thumb are its screenshot, or "" for none) */
 	page?: PageInfo
-	/** Pages: when the current snapshot was taken (ms) */
+	/** Pages from before: when the server took their snapshot (ms) */
 	snapshotAt?: number
 	/** When it was posted, or its file last replaced (PATCH with a new file): orders it in its group, newest first */
 	createdAt: number
@@ -172,8 +161,8 @@ export interface AnnotationView {
 		/** pixel size of the original file (CSS px for html) */
 		width: number
 		height: number
-		/** absolute URL of the original file (for a page, its snapshot) */
-		url: string
+		/** absolute URL of the original file (for a page, its screenshot; absent when it has none) */
+		url?: string
 		/** pages: the web page itself */
 		pageUrl?: string
 		/** the item on the canvas */

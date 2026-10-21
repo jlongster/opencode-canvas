@@ -5,7 +5,7 @@ import { atom, react } from '../state/signals'
 import type { AttentionAction, Canvas, ConjuredAgent } from '../../../shared/types'
 import { frameKey } from '../editor/selection'
 import {
-	connectCanvas, deleteItem, deleteSession, editUrl, refreshPage, restoreDeleted, listUrl, renameCanvas, setSessionHidden, setSessionOrder, viewUrl, type CanvasLink,
+	connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, setSessionHidden, setSessionOrder, viewUrl, type CanvasLink,
 } from '../sync/client'
 import { listenForPastedPages } from './pastePage'
 import { Attention } from '../multiplayer/Attention'
@@ -121,7 +121,6 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			Renderer.create(canvasRef.current!, overlayRef.current!, editor, {
 				readOnly: link.role === 'view',
 				onCloseSection: (id) => editor.deletions.delete([frameKey(id)]),
-				onRefreshPage: (id) => void refreshPage(id).catch((e: Error) => editor.deletions.notify(`Couldn't refresh the snapshot: ${e.message}`)),
 				getRemoteSelections: () => live?.peers.get().map((p) => ({ ids: p.selection ?? [], color: p.user.color })) ?? [],
 				onDeviceLost: (message) => {
 					// May be lost before create() resolved; then .then() below cleans up.

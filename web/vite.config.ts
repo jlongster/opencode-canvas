@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { resolve } from 'node:path'
 
 const api = `http://localhost:${process.env.PORT ?? 4410}`
 
@@ -20,5 +21,9 @@ export default defineConfig({
 			'/canvas/media': api,
 		},
 	},
-	build: { outDir: 'dist', emptyOutDir: true },
+	build: {
+		outDir: 'dist',
+		emptyOutDir: true,
+		rollupOptions: { input: { main: resolve(__dirname, 'index.html'), playground: resolve(__dirname, 'playground.html') } },
+	},
 })

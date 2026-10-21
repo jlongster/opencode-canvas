@@ -2314,7 +2314,9 @@ async function handle(req: Request): Promise<Response> {
 	}
 
 	if (method === 'GET' && existsSync(WEB_DIST) && !p.startsWith('/api/')) {
-		const path = join(WEB_DIST, p === '/' ? 'index.html' : p)
+		// /playground is a second page of the build: the frame status playground (web/playground.html).
+		const page = p === '/' ? 'index.html' : p === '/playground' || p === '/playground/' ? 'playground.html' : p
+		const path = join(WEB_DIST, page)
 		if (path.startsWith(WEB_DIST) && existsSync(path) && Bun.file(path).size > 0) {
 			return serveFile(req, path, path.includes('/assets/') ? 'public, max-age=31536000, immutable' : 'no-store')
 		}

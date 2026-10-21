@@ -3,13 +3,13 @@ import { defaults, hexToRgb, range, resolve, toggle, type ParamValues } from '..
 import { frameRows, optionsSection, paramsSection, restoreVariations, shareVariations, variationSection, type VariationSettings } from '../shared/panels'
 import { createShell, defaultFrames, frameFromSaved } from '../shared/shell'
 import { BlockBatch, BlockPass } from './blocks'
-import { easeOut, VARIANTS, type BusyCtx, type Rect } from './variants'
+import { easeOut, VARIANTS, type BusyCtx } from './variants'
 
 const DONE = [
 	toggle('enabled', 'Resolve when done', true),
-	range('fill', 'Fill', 0.16, 0.05, 0.6, 0.01, 's'),
-	range('hold', 'Hold', 0.25, 0, 1, 0.01, 's'),
-	range('fade', 'Fade', 0.5, 0.1, 1.5, 0.05, 's'),
+	range('fill', 'Fill', 0.2, 0.05, 0.6, 0.01, 's'),
+	range('hold', 'Hold', 0.15, 0, 1, 0.01, 's'),
+	range('fade', 'Fade', 0.7, 0.1, 1.5, 0.05, 's'),
 ]
 
 const OPTIONS = [
@@ -153,10 +153,6 @@ shell.onTick((dt) => {
 	if (!paused) advance(dt)
 })
 
-const canvasEl = shell.demo.querySelector('canvas')!
-/** Width reserved after each title, CSS px (so a long title ellipsises before the slot). */
-const reserved = settings.frames.map(() => -1)
-
 shell.onDraw((view) => {
 	const v = variant()
 	const values = settings.params[v.id]
@@ -165,54 +161,31 @@ shell.onDraw((view) => {
 	const reduced = !!settings.options.reduced
 	shell.gl.draw(view, shell.layout.sections.map((s) => ({ box: s.box })), [...shell.layout.items.values()])
 
-	const origin = canvasEl.getBoundingClientRect()
-	const dev = (x: number, y: number, w: number, h: number): Rect => ({ x: x * dpr, y: y * dpr, w: w * dpr, h: h * dpr })
-	const [slotW, slotH] = v.slot ? v.slot(values) : [0, 0]
-	const gapPx = 8
-
 	batch.begin()
 	shell.layout.sections.forEach((s, i) => {
-		// Reserve the slot after the title (in the label's own scaled units) so it lays out like text.
-		const label = shell.frameLabels[i]
-		const after = label.slots.after
 		const [pres, fill] = presence(i)
-		// Only while the indicator shows, so idle titles keep their full width.
-		const want = v.slot && pres > 0.001 ? slotW + gapPx : 0
-		const scale = label.outer.getBoundingClientRect().height / (label.outer.offsetHeight || 1)
-		if (reserved[i] !== want * 1000 + scale) {
-			reserved[i] = want * 1000 + scale
-			after.style.flex = 'none'
-			after.style.width = `${want / scale}px`
-			after.style.height = `${(v.slot ? slotH : 0) / scale}px`
-		}
 		if (pres <= 0.001) return
 		const f = settings.frames[i]
 		const col = values.color === 'white' ? [1, 1, 1] : hexToRgb(f.color)
 		const floor = (values.floor as number) ?? 0
 		const peak = (values.peak as number) ?? 1
 		const levels = (values.levels as number) || 0
-		const lit = (level: number) => {
-			let l = Math.max(Math.min(1, Math.max(0, level)), fill)
-			if (levels > 0) l = Math.round(l * levels) / levels
-			return l
-		}
-		const put = (x: number, y: number, w: number, h: number, l: number) => {
-			if (floor > 0) batch.add(x, y, w, h, 1, 1, 1, floor * pres)
-			if (l > 0) batch.add(x, y, w, h, col[0], col[1], col[2], peak * l * pres)
-		}
-		const ab = after.getBoundingClientRect()
-		// Centre on the lowercase x-height rather than the line box (it sits about 0.06em lower).
-		const xh = 0.05 * label.slots.text.getBoundingClientRect().height
 		const ctx: BusyCtx = {
-			frame: dev(s.box.x * z + camera.x, s.box.y * z + camera.y, s.box.w * z, s.box.h * z),
-			slot: dev(ab.left - origin.left + gapPx, ab.top - origin.top + xh, slotW, ab.height),
+			frame: { x: (s.box.x * z + camera.x) * dpr, y: (s.box.y * z + camera.y) * dpr, w: s.box.w * z * dpr, h: s.box.h * z * dpr },
 			t: reduced ? v.still : time + (settings.options.desync ? i * 1.618 : 0),
+			reduced,
 			dpr,
 			z,
 			p: values,
-			seed: i + 1,
+			key: `${v.id}:${i}`,
 			px: (css) => Math.max(1, Math.round(css * dpr)),
-			cell: (x, y, w, h, level) => put(x, y, w, h, lit(level)),
+			cell: (x, y, w, h, level, weight = 1) => {
+				// Done: the pattern gives way to a bright rim that falls off outward (weight³), then fades.
+				let l = Math.max(Math.min(1, Math.max(0, level)) * (1 - fill), fill * weight * weight * weight)
+				if (levels > 0) l = Math.round(l * levels) / levels
+				if (floor > 0) batch.add(x, y, w, h, 1, 1, 1, floor * pres)
+				if (l > 0) batch.add(x, y, w, h, col[0], col[1], col[2], peak * l * pres)
+			},
 		}
 		v.draw(ctx)
 	})

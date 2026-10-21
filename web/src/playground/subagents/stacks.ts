@@ -4,6 +4,7 @@ import { EASES, type ConceptId } from './concepts'
 import { agentName, deckOrder, relTime, type Frame, type World } from './data'
 import { fanLayout, focusLayout, frameGeom, frameMaxRow, FRAME, type FanKind, type FrameGeom, type Rect } from './geometry'
 import { Stagger } from './motion'
+import { outExtent, outPose, type OutExtra, type OutLayout, type OutParams } from './outlayouts'
 import { copyPose, lerpPose, pose, recede, transformOf, type Pose } from './pose'
 
 export interface Cam {
@@ -25,6 +26,13 @@ interface Card {
 	stripMore: HTMLElement | null
 	ring: HTMLElement
 	flow: HTMLElement | null
+	/** the index tab (zoomed-out "tabs" layout) and the "+N" cover (dock, tabs) */
+	tab: HTMLElement | null
+	tabMore: HTMLElement | null
+	tabFlow: HTMLElement | null
+	plus: HTMLElement | null
+	/** this frame's zoomed-out extras: tab placement, "+N", rank */
+	extra: OutExtra
 	/** 0…1: rises when it starts running, resolves over 600 ms when it stops */
 	busy: number
 	/** its place in the deck this frame, and how many children are hidden below the shown ones */
@@ -56,7 +64,6 @@ interface FocusLevel {
 }
 
 interface DeckParams {
-	style: 'below' | 'pile'
 	depth: number
 	offset: number
 	tilt: number
@@ -64,8 +71,6 @@ interface DeckParams {
 	falloff: number
 	dim: number
 	shadow: number
-	zstep: number
-	lean: number
 }
 
 const COLS = 4
@@ -164,13 +169,21 @@ export class Engine {
 		let stripTime: HTMLElement | null = null
 		let stripMore: HTMLElement | null = null
 		let flow: HTMLElement | null = null
+		let tab: HTMLElement | null = null
+		let tabMore: HTMLElement | null = null
+		let tabFlow: HTMLElement | null = null
+		let plus: HTMLElement | null = null
 		if (child) {
 			meta = el('div', 'sa-meta')
 			stripTime = el('span', 'tm')
 			stripMore = el('span', 'more')
 			flow = el('div', 'sa-flow')
 			strip = el('div', 'sa-strip', el('span', 'sa-dot'), el('span', 'ag', agentName(f.agent)), el('span', 'tt', f.title), stripTime, stripMore, flow)
-			card.append(meta, strip)
+			tabMore = el('span', 'more')
+			tabFlow = el('div', 'sa-flow')
+			tab = el('div', 'sa-tab', el('span', 'sa-dot'), el('span', 'ag', agentName(f.agent)), el('span', 'tt', f.title), tabMore, tabFlow)
+			plus = el('div', 'sa-plus')
+			card.append(meta, strip, tab, plus)
 			if (f.ghost) {
 				card.classList.add('ghost')
 				card.append(el('div', 'sa-empty', 'Running · nothing posted yet'))
@@ -190,6 +203,11 @@ export class Engine {
 			stripMore,
 			ring,
 			flow,
+			tab,
+			tabMore,
+			tabFlow,
+			plus,
+			extra: { tabX: 0, tabW: 0, tabH: 0, plus: 0, rank: 0 },
 			busy: f.status === 'busy' ? 1 : 0,
 			slot: 0,
 			hidden: 0,
@@ -237,7 +255,6 @@ export class Engine {
 		const p = this.p
 		const num = (k: string, d: number) => (typeof p[k] === 'number' ? (p[k] as number) : d)
 		return {
-			style: this.concept === 'zoom' ? 'pile' : 'below',
 			depth: num('depth', 3),
 			// Strips never get thinner than a few screen pixels, so a deck still reads as a deck far out.
 			offset: Math.max(num('offset', 40), num('minOff', 0) / this.cam.z),
@@ -246,8 +263,37 @@ export class Engine {
 			falloff: num('falloff', 0.94),
 			dim: num('dim', 0.12),
 			shadow: num('shadow', 0.6),
-			zstep: num('zstep', 0),
-			lean: num('lean', 0),
+		}
+	}
+
+	/** Semantic zoom's zoomed-out layout. */
+	outLayout(): OutLayout {
+		return (this.params.zoom?.outLayout as OutLayout) ?? 'tucked'
+	}
+
+	private outParams(): OutParams {
+		const p = this.params.zoom
+		const num = (k: string, d: number) => (typeof p[k] === 'number' ? (p[k] as number) : d)
+		const px = 1 / this.cam.z
+		return {
+			px,
+			depth: num('depth', 4),
+			offset: Math.max(num('offset', 34), num('minOff', 12) * px),
+			falloff: num('falloff', 0.975),
+			jitter: num('jitter', 0.5),
+			dim: num('dim', 0.1),
+			shadow: num('shadow', 0.6),
+			perRow: num('perRow', 6),
+			overflow: (p.overflow as string) ?? 'wrap',
+			dockGap: num('dockGap', 28),
+			handSize: num('handSize', 0.26),
+			handStep: num('handStep', 6),
+			arc: num('arc', 4),
+			tuck: num('tuck', 0.22),
+			maxHand: num('maxHand', 9),
+			maxTabs: num('maxTabs', 6),
+			tabStep: num('tabStep', 12),
+			tabH: num('tabH', 40),
 		}
 	}
 
@@ -267,7 +313,7 @@ export class Engine {
 		return EASES[this.timing().ease](clamp(t))
 	}
 
-	/** Semantic zoom: how spread the decks are at zoom z (0 piled … 1 dealt), linear in log zoom. */
+	/** Semantic zoom: how spread the families are at zoom z (0 gathered … 1 dealt), linear in log zoom. */
 	zoomSpread(z = this.cam.z) {
 		if (this.concept !== 'zoom') return 0
 		const lo = Math.log((this.p.zOut as number) / 100)
@@ -588,7 +634,6 @@ export class Engine {
 		if (this.focus.length) return
 		const ex = this.expansionsAt(this.cam.z)
 		ex.e[si] = 1
-		ex.a[si] = 1
 		const homes = this.layoutHomes(ex)
 		const rel = this.familyBox(si, 1)
 		const b = { x: homes[si].x + rel.x, y: homes[si].y + rel.y, w: rel.w, h: rel.h }
@@ -624,35 +669,31 @@ export class Engine {
 		return { w: c.g.w, h: c.g.h + (gk ? this.deckParams().offset * Math.min(gk, 3) + 24 : 0) }
 	}
 
-	/**
-	 * Semantic zoom runs in two phases, so every zoom in between is a coherent resting state:
-	 * A (the first 40%): the pile stops leaning and the deck slides down, rigidly, behind its parent to
-	 * hang below it; B (the rest): the deck deals out into rows, card by card.
-	 */
-	static SPLIT = 0.4
-
-	private phaseA(zs: number) {
-		return this.concept === 'zoom' ? this.ease(zs / Engine.SPLIT) : 1
-	}
-
-	private phaseB(zs: number) {
-		return this.concept === 'zoom' ? this.ease((zs - Engine.SPLIT) / (1 - Engine.SPLIT)) : 0
-	}
-
-	/** Each family's spread (rows) and, for semantic zoom, how far its pile has become a deck. */
+	/** Each family's spread: 0 gathered (zoomed-out layout or deck) … 1 dealt into rows. */
 	private spreadsAt(z: number) {
 		const zs = this.zoomSpread(z)
-		const e = this.world.sessions.map((_, si) => Math.max(this.phaseB(zs), this.fan[si].all(this.now)))
-		const a = this.world.sessions.map((_, si) => Math.max(this.phaseA(zs), this.fan[si].all(this.now)))
-		return { e, a }
+		const e = this.world.sessions.map((_, si) => Math.max(this.concept === 'zoom' ? this.ease(zs) : 0, this.fan[si].all(this.now)))
+		return { e }
 	}
 
 	private expansionsAt(z: number) {
 		return this.spreadsAt(z)
 	}
 
-	/** The family's extent relative to the parent's top-left, at spread e (a: pile → deck, semantic zoom). */
-	private familyBox(si: number, e: number, a = 1): Rect {
+	/** Semantic zoom: every child's zoomed-out pose around a parent pose, with its extras. */
+	private outPoses(P: Pose, kids: Card[], into?: Pose[]) {
+		const layout = this.outLayout()
+		const q = this.outParams()
+		return kids.map((c, i) => {
+			const out = into?.[i] ?? pose()
+			outPose(layout, P, i, kids.length, c.g, q, out, c.extra)
+			if (into) into[i] = out
+			return out
+		})
+	}
+
+	/** The family's extent relative to the parent's top-left, at spread e. */
+	private familyBox(si: number, e: number): Rect {
 		const parent = this.cards.get(this.world.sessions[si].id)!
 		const pw = parent.g.w
 		const ph = parent.g.h
@@ -660,9 +701,13 @@ export class Engine {
 		if (!kids.length) return { x: 0, y: 0, w: pw, h: ph }
 		const d = this.deckParams()
 		const shown = Math.min(kids.length, d.depth)
-		const below: Rect = { x: 0, y: 0, w: pw, h: ph + d.offset * shown + CHIP_SPACE }
-		const pile: Rect = { x: 0, y: -d.offset * shown - ph * 0.04, w: pw, h: ph + d.offset * shown + ph * 0.04 + CHIP_SPACE }
-		const deck = d.style === 'below' ? below : lerpRect(pile, below, a)
+		let deck: Rect = { x: 0, y: 0, w: pw, h: ph + d.offset * shown + CHIP_SPACE }
+		if (this.concept === 'zoom') {
+			const P = pose({ x: pw / 2, y: 0, s: 1, bw: pw, bh: ph })
+			const poses = this.outPoses(P, kids)
+			const ext = outExtent(this.outLayout(), poses, kids.map((k) => ({ ...k.extra })), { w: pw, h: ph })
+			deck = { ...ext, h: ext.h + CHIP_SPACE }
+		}
 		if (e <= 0) return deck
 		const fan = this.fanFor(si, kids).box
 		const spread = { ...fan, h: Math.max(fan.h, ph + CHIP_SPACE) }
@@ -675,11 +720,11 @@ export class Engine {
 		return fanLayout(this.fanKind(kids.length), { w: parent.g.w, h: parent.g.h }, kids.map((k) => this.layoutSize(k)), (p.fanScale as number) ?? 0.6, (p.cols as number) ?? 3)
 	}
 
-	private layoutHomes(ex: { e: number[]; a: number[] }) {
+	private layoutHomes(ex: { e: number[] }) {
 		return this.layout(ex).homes
 	}
 
-	private layoutBounds(ex: { e: number[]; a: number[] }): Rect {
+	private layoutBounds(ex: { e: number[] }): Rect {
 		const { boxes } = this.layout(ex)
 		let x0 = Infinity
 		let y0 = Infinity
@@ -695,9 +740,9 @@ export class Engine {
 	}
 
 	/** Families in rows of four; columns and rows grow and shrink with each family's spread, so neighbours reflow. */
-	private layout(ex: { e: number[]; a: number[] }) {
+	private layout(ex: { e: number[] }) {
 		const n = this.world.sessions.length
-		const rel = this.world.sessions.map((_, si) => this.familyBox(si, ex.e[si], ex.a[si]))
+		const rel = this.world.sessions.map((_, si) => this.familyBox(si, ex.e[si]))
 		const homes: { x: number; y: number }[] = new Array(n)
 		const boxes: Rect[] = new Array(n)
 		let top = 0
@@ -724,7 +769,7 @@ export class Engine {
 
 	// ---------- poses ----------
 
-	private deckPose(P: Pose, i: number, c: Card, d: DeckParams, out: Pose, style = d.style) {
+	private deckPose(P: Pose, i: number, c: Card, d: DeckParams, out: Pose) {
 		const ps = P.s
 		const pw = P.bw * ps
 		const ph = P.bh * ps
@@ -738,30 +783,22 @@ export class Engine {
 		out.bw = w / s
 		out.bh = (ph * k) / s
 		out.ry = 0
+		out.rz = 0
+		out.tab = 0
 		out.pox = P.x
-		out.poy = style === 'pile' ? P.poy : P.y + ph / 2
+		out.poy = P.y + ph / 2
 		out.persp = d.persp * ps
 		out.o = clamp(d.depth - i)
 		out.shade = Math.min(0.85, d.dim * (slot + 1))
 		out.strip = 1
 		out.sh = d.shadow
-		if (style === 'below') {
-			out.y = P.y + ph + off - ph * k
-			out.hy = 1
-			out.rx = d.tilt
-			out.tz = 0
-			out.grx = 0
-			out.gx = P.x
-			out.gy = P.y + ph
-		} else {
-			out.y = P.y - off
-			out.hy = 0.5
-			out.rx = 0
-			out.tz = -d.zstep * ps * (slot + 1)
-			out.grx = P.grx
-			out.gx = P.gx
-			out.gy = P.gy
-		}
+		out.y = P.y + ph + off - ph * k
+		out.hy = 1
+		out.rx = d.tilt
+		out.tz = 0
+		out.grx = 0
+		out.gx = P.x
+		out.gy = P.y + ph
 		return out
 	}
 
@@ -777,7 +814,9 @@ export class Engine {
 		out.hy = 0.5
 		out.rx = 0
 		out.ry = 0
+		out.rz = 0
 		out.tz = 0
+		out.tab = 0
 		out.grx = 0
 		out.gx = out.x
 		out.gy = out.y
@@ -806,6 +845,8 @@ export class Engine {
 		out.hy = 0.5
 		out.rx = 0
 		out.ry = side * (p.angle as number)
+		out.rz = 0
+		out.tab = 0
 		out.tz = 0
 		out.grx = 0
 		out.gx = out.x
@@ -849,28 +890,18 @@ export class Engine {
 		for (const c of this.cards.values()) c.live = false
 		const tmpA = pose()
 		const tmpB = pose()
-		const tmpC = pose()
+		const outs: Pose[] = []
+		this.worldEl.classList.toggle('out-tabs', this.concept === 'zoom' && this.outLayout() === 'tabs')
 
 		this.world.sessions.forEach((s, si) => {
 			const parent = this.cards.get(s.id)!
 			const P = this.homePose(si)
 			const e = this.expansion[si]
-			const a = spreads.a[si]
 			const kids = this.kids(si)
 			const fan = this.fan[si]
 			const dip = fan.dip(now) * this.peek[si].dip(now)
 			const boost = fan.target > 0 || fan.busy(now) || this.peek[si].target > 0 || this.peek[si].busy(now) || this.selected === s.id ? 10000 : 0
 			const B = 100 + si * 1000 + boost
-			// Semantic zoom: far out the whole family leans back as one pile.
-			// Seen from above (vanishing point over the family), so cards further back rise over the parent's top edge.
-			if (d.style === 'pile') {
-				P.grx = d.lean * (1 - a)
-				P.gx = P.x
-				P.gy = P.y + P.bh
-				P.poy = P.y - P.bh * 1.1
-				P.persp = d.persp
-				P.sh = d.shadow * (1 - a) * 0.6
-			}
 			parent.target = P
 			parent.z = B + 900
 			parent.live = true
@@ -883,21 +914,23 @@ export class Engine {
 			// While a side peek is out, the children left in the deck slide up into the slots it vacated.
 			const K = this.concept === 'peek' ? this.peekCount(si) : 0
 			const vacated = K ? K * this.peek[si].all(now) : 0
+			const zoomed = this.concept === 'zoom'
+			if (zoomed) this.outPoses(P, kids, outs)
 			kids.forEach((c, i) => {
 				c.slot = i >= K ? i - vacated : i
 				c.hidden = kids.length - Math.round(vacated) - d.depth
-				let deck = this.deckPose(P, c.slot, c, d, tmpA)
-				if (d.style === 'pile') deck = lerpPose(deck, this.deckPose(P, i, c, { ...d, tilt: 0 }, tmpC, 'below'), a, tmpA)
+				if (!zoomed) c.extra.rank = i
+				const deck = zoomed ? outs[i] : this.deckPose(P, c.slot, c, d, tmpA)
 				const spread = this.placedPose(P, fanLay!.at[i], c, tmpB)
 				let t = fan.value(i, now)
-				if (this.concept === 'zoom') {
-					// Phase B deals the cards one after another (top first) as you zoom in.
-					const zb = (zs - Engine.SPLIT) / (1 - Engine.SPLIT)
-					const zt = clamp((zb - i * peelStep) / Math.max(0.01, 1 - (zsCount - 1) * peelStep))
+				if (zoomed) {
+					// Zooming in deals the cards out of the gathered layout one after another (top first).
+					const zt = clamp((zs - i * peelStep) / Math.max(0.01, 1 - (zsCount - 1) * peelStep))
 					t = Math.max(t, this.reduced ? (zs >= 0.5 ? 1 : 0) : this.ease(zt))
 				}
 				const out = lerpPose(deck, spread, t, c.target)
 				out.o *= dip
+				this.gatheredBy.set(c.f.id, zoomed ? 1 - t : 0)
 				// Side peek
 				if (this.concept === 'peek' && i < this.peekCount(si)) {
 					const q = this.peek[si].value(i, now)
@@ -916,11 +949,11 @@ export class Engine {
 						lerpPose(c.target, pk, q * (1 - t), c.target)
 					}
 				}
-				c.z = B + 800 - i * 20 + (this.liftId === c.f.id ? 400 : 0)
+				c.z = B + 800 - c.extra.rank * 20 + (this.liftId === c.f.id ? 400 : 0)
 				c.live = true
 				this.grandkidPoses(c, d, c.z, t)
 			})
-			this.chipFor(si, P, kids, e, d, B)
+			this.chipFor(si, P, kids, e, d, B, zoomed ? outs : null)
 		})
 
 		this.applyFocus(now)
@@ -933,7 +966,7 @@ export class Engine {
 	private grandkidPoses(c: Card, d: DeckParams, z: number, flat: number) {
 		const gk = this.grandkids(c)
 		if (!gk.length) return
-		const below: DeckParams = { ...d, style: 'below', depth: 3, tilt: 0 }
+		const below: DeckParams = { ...d, depth: 3, tilt: 0 }
 		const P = c.target
 		gk.forEach((g, j) => {
 			this.deckPose(P, j, g, below, g.target)
@@ -944,14 +977,17 @@ export class Engine {
 		})
 	}
 
-	private chipFor(si: number, P: Pose, kids: Card[], e: number, d: DeckParams, B: number) {
+	private chipFor(si: number, P: Pose, kids: Card[], e: number, d: DeckParams, B: number, outs: Pose[] | null) {
 		const chip = this.chips[si]
 		const n = kids.filter((k) => !k.f.ghost).length
 		const running = kids.filter((k) => k.f.status === 'busy').length
 		const ph = P.bh * P.s
 		const shown = Math.min(kids.length, d.depth)
-		const a = d.style === 'below' ? 1 : this.spreadsAt(this.cam.z).a[si]
-		const deckBottom = P.y + ph + d.offset * shown * a
+		let deckBottom = P.y + ph + d.offset * shown
+		if (outs && kids.length) {
+			const ext = outExtent(this.outLayout(), outs.slice(0, kids.length), kids.map((k) => k.extra), { w: P.bw * P.s, h: ph })
+			deckBottom = P.y + ext.y + ext.h
+		}
 		const y = lerp(deckBottom + 28, P.y + ph + 20, e)
 		const focusedHere = this.focus.some((l) => l.si === si) || this.exiting.some((l) => l.si === si)
 		let o = kids.length ? 1 : 0
@@ -1013,7 +1049,7 @@ export class Engine {
 				c.z += lift
 				c.live = true
 				for (const g of this.grandkids(c)) {
-					this.deckPose(c.target, this.grandkids(c).indexOf(g), g, { ...this.deckParams(), style: 'below', depth: 3, tilt: 0 }, g.target)
+					this.deckPose(c.target, this.grandkids(c).indexOf(g), g, { ...this.deckParams(), depth: 3, tilt: 0 }, g.target)
 					g.target.o *= q
 					g.z = c.z - 1 - this.grandkids(c).indexOf(g)
 					g.live = true
@@ -1263,15 +1299,14 @@ export class Engine {
 				L.so = so
 			}
 			if (so > 0) {
-				const d = this.deckParams()
+				const off = this.concept === 'zoom' ? this.outParams().offset : this.deckParams().offset
 				const sw = Math.round(p.bw * p.s)
-				const top = d.style === 'pile'
-				const key = `${sw}|${p.s.toFixed(3)}|${d.offset}|${top}`
+				const key = `${sw}|${p.s.toFixed(3)}|${off.toFixed(1)}`
 				if (L.strip !== key) {
-					c.strip!.classList.toggle('top', top)
 					c.strip!.style.width = `${sw}px`
-					c.strip!.style.height = `${d.offset * (top ? 1 : 1)}px`
-					c.strip!.style.fontSize = `${Math.max(11, Math.min(19, d.offset * 0.48))}px`
+					c.strip!.style.height = `${off.toFixed(1)}px`
+					c.strip!.style.fontSize = `${clamp(off * 0.5, 11, 72).toFixed(1)}px`
+					c.strip!.style.paddingLeft = c.strip!.style.paddingRight = `${clamp(off * 0.6, 22, 80).toFixed(0)}px`
 					c.strip!.style.transform = `scale(${(1 / p.s).toFixed(4)})`
 					L.strip = key
 				}
@@ -1279,13 +1314,66 @@ export class Engine {
 					c.stripTime!.textContent = f.ghost ? 'starting' : time
 					L.time = time
 				}
-				const more = !f.parent?.parent && Math.round(c.slot) === d.depth - 1 && c.hidden > 0 ? `+${c.hidden} more` : ''
+				const depth = this.concept === 'zoom' ? this.outParams().depth : this.deckParams().depth
+				const more = !f.parent?.parent && Math.round(c.slot) === depth - 1 && c.hidden > 0 ? `+${c.hidden} more` : ''
 				if (L.more !== more) {
 					c.stripMore!.textContent = more
 					L.more = more
 				}
 			}
+			// Index tab (zoomed-out "tabs" layout): hangs below the sheet at page size, whatever the card's scale.
+			const to = Math.round(p.tab * 100) / 100
+			if (L.to !== to) {
+				c.tab!.style.opacity = String(to)
+				c.tab!.style.visibility = to > 0 ? 'visible' : 'hidden'
+				L.to = to
+			}
+			if (to > 0) {
+				const x = c.extra
+				const key = `${x.tabX.toFixed(1)}|${x.tabW.toFixed(1)}|${x.tabH.toFixed(1)}|${p.s.toFixed(4)}`
+				if (L.tabk !== key) {
+					c.tab!.style.left = `${(x.tabX / p.s).toFixed(1)}px`
+					c.tab!.style.width = `${x.tabW.toFixed(1)}px`
+					c.tab!.style.height = `${x.tabH.toFixed(1)}px`
+					c.tab!.style.fontSize = `${(x.tabH * 0.46).toFixed(1)}px`
+					c.tab!.style.padding = `0 ${(x.tabH * 0.36).toFixed(1)}px`
+					c.tab!.style.gap = `${(x.tabH * 0.2).toFixed(1)}px`
+					c.tab!.style.transform = `scale(${(1 / p.s).toFixed(4)})`
+					L.tabk = key
+				}
+				const more = x.plus > 0 ? `+${x.plus}` : ''
+				if (L.tmore !== more) {
+					c.tabMore!.textContent = more
+					c.tab!.classList.toggle('has-more', !!more)
+					L.tmore = more
+				}
+			}
+			if (c.tabFlow) {
+				const fl = Math.round(c.busy * to * 100) / 100
+				if (L.tflow !== fl) {
+					c.tabFlow.style.opacity = String(fl)
+					c.tabFlow.style.visibility = fl > 0 ? 'visible' : 'hidden'
+					L.tflow = fl
+				}
+			}
+			// "+N" cover on the last docked card: fades as the dock deals out.
+			const plusN = this.concept === 'zoom' && this.outLayout() === 'dock' ? c.extra.plus : 0
+			const po = plusN > 0 ? Math.round(this.gathered(c) * 100) / 100 : 0
+			if (L.po !== po || L.pn !== plusN) {
+				c.plus!.textContent = plusN > 0 ? `+${plusN}` : ''
+				c.plus!.style.opacity = String(po)
+				c.plus!.style.visibility = po > 0 ? 'visible' : 'hidden'
+				c.plus!.style.fontSize = `${Math.round(p.bh * 0.34)}px`
+				L.po = po
+				L.pn = plusN
+			}
 		}
+	}
+
+	/** How gathered (zoomed-out) a semantic-zoom child is this frame: 1 in its layout … 0 dealt. */
+	private gatheredBy = new Map<string, number>()
+	private gathered(c: Card) {
+		return this.gatheredBy.get(c.f.id) ?? 0
 	}
 
 	/** For captures and tests: a card's box on screen (ignoring its tilt). */

@@ -1,8 +1,9 @@
 import './stacks.css'
-import { button, el, numberField, switchControl } from '../shared/controls'
+import { button, el, numberField, paramControl, segmented, switchControl } from '../shared/controls'
 import { chromeParams, chromeVariations, createChrome, restoreParams, shareParams } from '../shared/chrome'
 import { defaults, range, resolve, toggle, type ParamValues } from '../shared/params'
-import { conceptOf, CONCEPTS, type ConceptId } from './concepts'
+import { conceptOf, CONCEPTS, ZOOM_COMMON, type ConceptId } from './concepts'
+import { OUT_LAYOUTS, type OutLayout } from './outlayouts'
 import { applyCount, buildWorld, defaultCounts, MAX_CHILDREN, seedStatuses } from './data'
 import { Engine } from './stacks'
 
@@ -26,7 +27,7 @@ const world = buildWorld()
 const chrome = createChrome<Settings>({
 	site: 'subagents',
 	title: 'Subagents',
-	storageKey: 'canvas-playground-subagent-stacks-v1',
+	storageKey: 'canvas-playground-subagent-stacks-v2',
 	defaults: () => ({
 		concept: CONCEPTS[0].id,
 		params: Object.fromEntries(CONCEPTS.map((c) => [c.id, defaults(c.params)])),
@@ -117,17 +118,58 @@ const refreshCaption = () => chrome.setCaption(concept().name, concept().note)
 chromeVariations(chrome, CONCEPTS, settings.concept, (id) => {
 	settings.concept = id as ConceptId
 	engine.setConcept(settings.concept)
+	renderLayout()
 	params.render()
 	refreshCaption()
 	chrome.save()
 })
+
+// Semantic zoom: how the subagents sit around the bottom of their frame when zoomed out.
+const zoomValues = () => settings.params.zoom
+const layoutOf = () => OUT_LAYOUTS.find((l) => l.id === zoomValues().outLayout) ?? OUT_LAYOUTS[0]
+const layoutBody = chrome.section('Zoomed-out layout')
+const layoutSection = layoutBody.parentElement as HTMLElement
+const layoutSeg = el('div', 'sa-seg-full')
+const layoutNote = el('p', 'pg-note sa-layout-note')
+const layoutParams = el('div', 'pg-stack')
+layoutBody.append(layoutSeg, layoutNote, layoutParams)
+function setLayout(id: OutLayout) {
+	if (zoomValues().outLayout === id) return
+	zoomValues().outLayout = id
+	engine.startMorph(Number(zoomValues().dur) || 440)
+	renderLayout()
+	chrome.save()
+}
+function renderLayout() {
+	const zoom = settings.concept === 'zoom'
+	layoutSection.hidden = !zoom
+	if (!zoom) return
+	const l = layoutOf()
+	layoutSeg.replaceChildren(
+		segmented(
+			OUT_LAYOUTS.map((o) => o.name),
+			l.name,
+			(name) => setLayout(OUT_LAYOUTS.find((o) => o.name === name)!.id),
+			'Zoomed-out layout',
+		),
+	)
+	layoutNote.textContent = l.note
+	const defs = conceptOf('zoom').params.filter((d) => l.params.includes(d.key))
+	layoutParams.replaceChildren(...defs.map((d) => paramControl(d, zoomValues(), () => chrome.save())))
+}
+renderLayout()
+
 const params = chromeParams(
 	chrome,
 	'Parameters',
-	() => concept().params,
+	() => (settings.concept === 'zoom' ? concept().params.filter((d) => ZOOM_COMMON.includes(d.key)) : concept().params),
 	() => settings.params[settings.concept],
 	() => chrome.save(),
-	() => (settings.params[settings.concept] = defaults(concept().params)),
+	() => {
+		settings.params[settings.concept] = defaults(concept().params)
+		engine.params = settings.params
+		renderLayout()
+	},
 )
 
 const COUNT = range('n', 'Subagents', 0, 0, MAX_CHILDREN, 1)
@@ -247,6 +289,7 @@ const keys: [string, string][] = [
 	['Enter', 'focus the selected session'],
 	['Esc', 'back out, gather, deselect'],
 	['← →  ↑ ↓', 'select another session'],
+	['L', 'next zoomed-out layout (semantic zoom)'],
 	['0', 'fit everything'],
 	['1–4', 'switch concept'],
 ]
@@ -421,6 +464,9 @@ demo.addEventListener('keydown', (e) => {
 		const dy = k === 'ArrowUp' ? -1 : k === 'ArrowDown' ? 1 : 0
 		if (e.shiftKey) engine.pan(-dx * 120, -dy * 120)
 		else if (!engine.focusDepth()) moveSelection(dx, dy)
+	} else if ((k === 'l' || k === 'L') && settings.concept === 'zoom') {
+		const i = OUT_LAYOUTS.findIndex((o) => o.id === layoutOf().id)
+		setLayout(OUT_LAYOUTS[(i + (e.shiftKey ? OUT_LAYOUTS.length - 1 : 1)) % OUT_LAYOUTS.length].id)
 	} else if (k === '0') {
 		engine.animateCamera(engine.fitAll(), 480, 'in-out')
 	} else if (k === '=' || k === '+') engine.zoomAt(engine.viewW / 2, engine.viewH / 2, engine.cam.z * 1.25)
@@ -518,6 +564,7 @@ Object.assign(window, {
 		hover: (id: string | null) => engine.hover(id),
 		zoomAt: (sx: number, sy: number, z: number) => engine.zoomAt(sx, sy, z),
 		fit: () => Object.assign(engine.cam, engine.fitAll()),
+		layout: (id: OutLayout) => setLayout(id),
 		camera: (to: { x: number; y: number; z: number }, ms: number) => engine.animateCamera(to, ms),
 		screenBox: (id: string) => engine.screenBox(id),
 		/** centres a card at zoom z (offset by dx, dy screen px) */

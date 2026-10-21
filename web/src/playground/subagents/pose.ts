@@ -3,7 +3,7 @@
  * (x, y) is the page position of the top-centre of the card's box; the box is bw × bh in the card's
  * own units, drawn at scale s. Rotations are about a horizontal hinge at hy (0 top … 1 bottom of the
  * box), then the whole family's lean (grx about gx, gy), all seen through a perspective of `persp`
- * page units from (pox, poy).
+ * page units from (pox, poy). rz is a flat, in-plane turn about the same hinge point (a fanned hand).
  */
 export interface Pose {
 	x: number
@@ -14,6 +14,8 @@ export interface Pose {
 	hy: number
 	rx: number
 	ry: number
+	/** in-plane rotation (deg), about the box's centre line at the hinge: stays a 2D transform */
+	rz: number
 	tz: number
 	gx: number
 	gy: number
@@ -29,6 +31,8 @@ export interface Pose {
 	strip: number
 	/** drop shadow strength */
 	sh: number
+	/** how present the index tab (zoomed-out "tabs" layout) is */
+	tab: number
 }
 
 export const pose = (o: Partial<Pose> = {}): Pose => ({
@@ -40,6 +44,7 @@ export const pose = (o: Partial<Pose> = {}): Pose => ({
 	hy: 0,
 	rx: 0,
 	ry: 0,
+	rz: 0,
 	tz: 0,
 	gx: 0,
 	gy: 0,
@@ -51,6 +56,7 @@ export const pose = (o: Partial<Pose> = {}): Pose => ({
 	shade: 0,
 	strip: 0,
 	sh: 0,
+	tab: 0,
 	...o,
 })
 
@@ -72,13 +78,17 @@ const sc = (v: number) => v.toFixed(5)
 export function transformOf(p: Pose): string {
 	const w = p.bw * p.s
 	const flat = Math.abs(p.rx) < 0.01 && Math.abs(p.ry) < 0.01 && Math.abs(p.tz) < 0.05 && Math.abs(p.grx) < 0.01
-	if (flat) return `translate(${n(p.x - w / 2)}px,${n(p.y)}px) scale(${sc(p.s)})`
 	const hy = p.hy * p.bh * p.s
+	if (flat) {
+		if (Math.abs(p.rz) < 0.01) return `translate(${n(p.x - w / 2)}px,${n(p.y)}px) scale(${sc(p.s)})`
+		return `translate(${n(p.x)}px,${n(p.y + hy)}px) rotate(${n(p.rz)}deg) translate(${n(-w / 2)}px,${n(-hy)}px) scale(${sc(p.s)})`
+	}
 	let t = `translate(${n(p.pox)}px,${n(p.poy)}px) perspective(${n(p.persp)}px) translate(${n(-p.pox)}px,${n(-p.poy)}px)`
 	if (Math.abs(p.grx) >= 0.01) t += ` translate(${n(p.gx)}px,${n(p.gy)}px) rotateX(${n(p.grx)}deg) translate(${n(-p.gx)}px,${n(-p.gy)}px)`
 	t += ` translate3d(${n(p.x)}px,${n(p.y + hy)}px,${n(p.tz)}px)`
 	if (Math.abs(p.rx) >= 0.01) t += ` rotateX(${n(p.rx)}deg)`
 	if (Math.abs(p.ry) >= 0.01) t += ` rotateY(${n(p.ry)}deg)`
+	if (Math.abs(p.rz) >= 0.01) t += ` rotate(${n(p.rz)}deg)`
 	t += ` translate(${n(-w / 2)}px,${n(-hy)}px) scale(${sc(p.s)})`
 	return t
 }

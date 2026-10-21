@@ -1,9 +1,13 @@
 import { button, el, paramControl, switchControl } from '../shared/controls'
-import { defaults, hexToRgb, range, resolve, toggle, type ParamValues } from '../shared/params'
+import { defaults, hexToRgb, pack, range, resolve, toggle, type ParamValues } from '../shared/params'
 import { frameRows, optionsSection, paramsSection, restoreVariations, shareVariations, variationSection, type VariationSettings } from '../shared/panels'
 import { createShell, defaultFrames, frameFromSaved } from '../shared/shell'
 import { BlockBatch, BlockPass } from './blocks'
-import { easeOut, VARIANTS, type BusyCtx } from './variants'
+import { FLOW_VARIANTS } from './fields'
+import { FlowPass, type FlowFrame } from './flow'
+import { BLOCK_VARIANTS, easeOut, type BusyCtx } from './variants'
+
+const VARIANTS = [...FLOW_VARIANTS, ...BLOCK_VARIANTS]
 
 const DONE = [
 	toggle('enabled', 'Resolve when done', true),
@@ -27,7 +31,7 @@ interface BusySettings extends VariationSettings {
 const shell = createShell<BusySettings>({
 	site: 'busy',
 	title: 'Busy',
-	storageKey: 'canvas-playground-busy-v4',
+	storageKey: 'canvas-playground-busy-v6',
 	defaults: () => ({
 		variant: VARIANTS[0].id,
 		params: Object.fromEntries(VARIANTS.map((v) => [v.id, defaults(v.params)])),
@@ -127,7 +131,7 @@ refreshCaption()
 // ---------- presence ----------
 
 /** How present the indicator is (0..1) and how far the done fill has gone (0..1). */
-function presence(i: number): [number, number] {
+function envelope(i: number): [number, number] {
 	const dt = clock - since[i]
 	if (settings.frames[i].working) return [easeOut(Math.min(1, dt / ENTER)), 0]
 	if (!finished[i]) return [0, 0]
@@ -153,17 +157,45 @@ shell.onTick((dt) => {
 	if (!paused) advance(dt)
 })
 
+const flow = new FlowPass(shell.gl.gl, shell.gl.quadVao)
+const packed = new Float32Array(32)
+
 shell.onDraw((view) => {
 	const v = variant()
 	const values = settings.params[v.id]
 	const { dpr, camera } = view
 	const z = camera.z
 	const reduced = !!settings.options.reduced
-	shell.gl.draw(view, shell.layout.sections.map((s) => ({ box: s.box })), [...shell.layout.items.values()])
+	const offset = (i: number) => (settings.options.desync ? i * 1.618 : 0)
+	const t = reduced ? v.still : time
+
+	// Flow variations: the field behind the dot grid, under the items (frames are translucent, items opaque).
+	const between = v.glsl
+		? () => {
+				pack(v.params, values, packed)
+				const frames: FlowFrame[] = shell.layout.sections.map((s, i) => {
+					const [presence, fill] = envelope(i)
+					return { box: s.box, color: hexToRgb(settings.frames[i].color), offset: reduced ? 0 : offset(i) + i * 37, presence, fill }
+				})
+				const mask = [
+					values.pitch as number,
+					values.dot as number,
+					values.shape === 'square' ? 1 : 0,
+					['brightness', 'halftone', 'dither'].indexOf(values.mode as string),
+					values.levels as number,
+					values.base as number,
+					values.peak as number,
+					values.modulate as number,
+				]
+				flow.draw(view, v.id, v.params, v.glsl!, packed, mask, t, frames)
+			}
+		: undefined
+	shell.gl.draw(view, shell.layout.sections.map((s) => ({ box: s.box })), [...shell.layout.items.values()], between)
+	if (!v.draw) return
 
 	batch.begin()
 	shell.layout.sections.forEach((s, i) => {
-		const [pres, fill] = presence(i)
+		const [pres, fill] = envelope(i)
 		if (pres <= 0.001) return
 		const f = settings.frames[i]
 		const col = values.color === 'white' ? [1, 1, 1] : hexToRgb(f.color)
@@ -172,7 +204,7 @@ shell.onDraw((view) => {
 		const levels = (values.levels as number) || 0
 		const ctx: BusyCtx = {
 			frame: { x: (s.box.x * z + camera.x) * dpr, y: (s.box.y * z + camera.y) * dpr, w: s.box.w * z * dpr, h: s.box.h * z * dpr },
-			t: reduced ? v.still : time + (settings.options.desync ? i * 1.618 : 0),
+			t: reduced ? v.still : time + offset(i),
 			reduced,
 			dpr,
 			z,
@@ -187,7 +219,7 @@ shell.onDraw((view) => {
 				if (l > 0) batch.add(x, y, w, h, col[0], col[1], col[2], peak * l * pres)
 			},
 		}
-		v.draw(ctx)
+		v.draw!(ctx)
 	})
 	pass.draw(batch)
 })

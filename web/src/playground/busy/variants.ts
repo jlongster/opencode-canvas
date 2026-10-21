@@ -1,5 +1,5 @@
 import { range, select, SPEED, type ParamDef, type ParamValues } from '../shared/params'
-import { hash3, noise3 } from './geometry'
+import { hash3 } from './geometry'
 
 /** A rectangle in device pixels (unrounded). */
 export interface Rect {
@@ -39,7 +39,10 @@ export interface BusyVariant {
 	params: ParamDef[]
 	/** reduced motion: the time to freeze at, a pose that still reads as "busy" */
 	still: number
-	draw(c: BusyCtx): void
+	/** block variations draw cells on the CPU */
+	draw?: (c: BusyCtx) => void
+	/** flow variations: `float field(Fx f)` (see flow.ts), seen through the dot grid */
+	glsl?: string
 }
 
 // ---------- timing ----------
@@ -69,13 +72,8 @@ export function bezier(x1: number, y1: number, x2: number, y2: number) {
 }
 
 export const easeOut = bezier(0.23, 1, 0.32, 1)
-const easeInOut = bezier(0.65, 0, 0.35, 1)
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x))
 const mod = (a: number, b: number) => ((a % b) + b) % b
-const smoothstep = (a: number, b: number, x: number) => {
-	const t = clamp01((x - a) / (b - a))
-	return t * t * (3 - 2 * t)
-}
 
 // ---------- the band of cells around a frame ----------
 
@@ -182,33 +180,10 @@ function band(c: BusyCtx, cellCss: number, gapCss: number, depth: number, offset
 	return b
 }
 
-/** Seamless noise around the loop: s is mapped onto a circle so it wraps at L. */
-function loopNoise(s: number, L: number, scale: number, y: number, z: number) {
-	const R = L / (2 * Math.PI * scale)
-	const a = (s / L) * 2 * Math.PI
-	return noise3(Math.cos(a) * R + 31.7, Math.sin(a) * R + 11.3 + y, z)
-}
 
-const BAYER8 = (() => {
-	const m = [
-		[0, 2],
-		[3, 1],
-	]
-	let b = m
-	for (let n = 2; n < 8; n *= 2) {
-		const next: number[][] = []
-		for (let y = 0; y < 2 * n; y++) {
-			next.push([])
-			for (let x = 0; x < 2 * n; x++) next[y].push(4 * b[y % n][x % n] + m[Math.floor(y / n)][Math.floor(x / n)])
-		}
-		b = next
-	}
-	return b.map((row) => row.map((v) => (v + 0.5) / 64))
-})()
 
 const COLOR = select('color', 'Colour', ['session', 'white'], 'session')
 const PEAK = (v: number) => range('peak', 'Intensity', v, 0, 1, 0.01)
-const LEVELS = (v: number) => range('levels', 'Brightness steps', v, 0, 6, 1)
 const CELL = (v: number) => range('cell', 'Cell', v, 1, 10, 1, 'px')
 const GAP = (v: number) => range('gap', 'Gap', v, 0, 4, 1, 'px')
 const DEPTH = (v: number, max = 16) => range('depth', 'Band depth', v, 1, max, 1, 'cells')
@@ -239,60 +214,7 @@ function sim(c: BusyCtx, sig: string, step: number, make: () => Uint8Array[], ad
 	return s
 }
 
-export const VARIANTS: BusyVariant[] = [
-	{
-		id: 'shed',
-		name: 'Pixel shedding',
-		note: 'The whole outline sheds square pixels: every cell of the edge lets go of one now and then, which hops outward a cell at a time (sometimes sideways), stepping down in brightness until it is gone. Positions are always whole cells; nothing glides.',
-		params: [
-			SPEED,
-			CELL(3),
-			GAP(1),
-			DEPTH(9, 20),
-			range('interval', 'Every', 1.3, 0.3, 5, 0.05, 's'),
-			range('density', 'Density', 1, 0.1, 1, 0.01),
-			range('step', 'Hop', 0.09, 0.03, 0.3, 0.01, 's'),
-			range('drift', 'Sideways drift', 0.35, 0, 1, 0.01),
-			range('base', 'Edge glow', 0.5, 0, 1, 0.01),
-			FALLOFF(1),
-			PEAK(0.9),
-			LEVELS(4),
-			COLOR,
-		],
-		still: 2.2,
-		draw(c) {
-			const { p } = c
-			const depth = p.depth as number
-			const b = band(c, p.cell as number, p.gap as number, depth)
-			const n = Math.max(16, Math.floor(b.L / b.pitch))
-			const I = p.interval as number
-			const step = p.step as number
-			const drift = p.drift as number
-			const dens = p.density as number
-			const base = p.base as number
-			for (const q of b.cells) {
-				const row = Math.floor(q.d / b.pitch)
-				const col = Math.floor((q.s / b.L) * n) % n
-				const f = fall(b, q.d, depth, p.falloff as number)
-				let level = row === 0 ? base : 0
-				for (let dc = -2; dc <= 2 && level < 1; dc++) {
-					const src = mod(col - dc, n)
-					const k0 = Math.floor(c.t / I)
-					for (let k = k0 - 1; k <= k0; k++) {
-						if (hash3(src, k, 3) > dens) continue
-						const launch = (k + hash3(src, k, 5)) * I
-						const age = Math.floor((c.t - launch) / step)
-						if (age !== row) continue
-						const dir = hash3(src, k, 9) < 0.5 ? -1 : 1
-						const side = hash3(src, k, 11) < drift ? Math.floor((row * dir) / 3) : 0
-						if (side !== dc) continue
-						level = Math.max(level, 1 - row / depth)
-					}
-				}
-				c.cell(q.x, q.y, b.size, b.size, level, f)
-			}
-		},
-	},
+export const BLOCK_VARIANTS: BusyVariant[] = [
 	{
 		id: 'brain',
 		name: 'Brian’s Brain',
@@ -348,184 +270,6 @@ export const VARIANTS: BusyVariant[] = [
 				const f = fall(b, q.d, depth, p.falloff as number)
 				const lv = st[i] === 1 ? 1 : st[i] === 2 ? dying : q.d < b.pitch ? base : 0
 				c.cell(q.x, q.y, b.size, b.size, lv * (0.35 + 0.65 * f), f)
-			}
-		},
-	},
-	{
-		id: 'dither',
-		name: 'Bayer emanation',
-		note: 'Bands of light leave the whole edge and travel outward, drawn as an 8×8 Bayer ordered dither of 2px cells instead of a gradient: every pixel is fully on or off, and density does the fading.',
-		params: [
-			SPEED,
-			CELL(2),
-			GAP(1),
-			DEPTH(10, 30),
-			range('wavelength', 'Wavelength', 22, 8, 80, 1, 'px'),
-			range('period', 'Period', 1.6, 0.4, 5, 0.05, 's'),
-			range('sharp', 'Band sharpness', 2.5, 0.5, 8, 0.1),
-			range('wobble', 'Wobble', 0.25, 0, 1, 0.01),
-			range('base', 'Edge glow', 0.35, 0, 1, 0.01),
-			FALLOFF(1.2),
-			PEAK(0.85),
-			COLOR,
-		],
-		still: 0.5,
-		draw(c) {
-			const { p } = c
-			const depth = p.depth as number
-			const b = band(c, p.cell as number, p.gap as number, depth)
-			const lambda = p.wavelength as number
-			const base = p.base as number
-			for (const q of b.cells) {
-				const f = fall(b, q.d, depth, p.falloff as number)
-				const wob = (p.wobble as number) * (loopNoise(q.s, b.L, 60, 0, c.t * 0.3) - 0.5)
-				const w = Math.pow(0.5 + 0.5 * Math.cos(2 * Math.PI * (q.d / lambda - c.t / (p.period as number) + wob)), p.sharp as number)
-				const I = f * (base + (1 - base) * w)
-				const thr = BAYER8[mod(q.gy, 8)][mod(q.gx, 8)]
-				c.cell(q.x, q.y, b.size, b.size, I > thr ? 1 : 0, f > thr ? 1 : 0)
-			}
-		},
-	},
-	{
-		id: 'rule',
-		name: 'Cellular border',
-		note: 'An elementary cellular automaton (rule 30) wrapped around the perimeter: each step the newest generation appears at the edge and older ones are pushed outward, fading, so the whole outline grows crisp, ever-changing lace.',
-		params: [
-			SPEED,
-			CELL(3),
-			GAP(1),
-			DEPTH(7),
-			range('step', 'Step', 0.11, 0.04, 0.5, 0.01, 's'),
-			range('rule', 'Rule', 30, 0, 255, 1),
-			range('noise', 'Mutation', 0.004, 0, 0.05, 0.001),
-			FALLOFF(1),
-			PEAK(0.9),
-			LEVELS(4),
-			COLOR,
-		],
-		still: 4,
-		draw(c) {
-			const { p } = c
-			const depth = p.depth as number
-			const b = band(c, p.cell as number, p.gap as number, depth)
-			const n = Math.max(16, Math.floor(b.L / b.pitch))
-			const rule = p.rule as number
-			const mut = p.noise as number
-			const s = sim(
-				c,
-				`${n}:${depth}:${rule}`,
-				p.step as number,
-				() => Array.from({ length: depth + 1 }, (_, r) => Uint8Array.from({ length: n }, (_, i) => (hash3(i, r, 7) < 0.5 ? 1 : 0))),
-				(sm) => {
-					const prev = sm.data[sm.data.length - 1]
-					const next = new Uint8Array(n)
-					for (let i = 0; i < n; i++) {
-						const k = (prev[(i + n - 1) % n] << 2) | (prev[i] << 1) | prev[(i + 1) % n]
-						next[i] = (rule >> k) & 1
-						if (mut && hash3(i, sm.gen, 13) < mut) next[i] ^= 1
-					}
-					sm.data.push(next)
-					if (sm.data.length > depth + 1) sm.data.shift()
-				},
-				depth + 2,
-			)
-			const rows = s.data.length
-			for (const q of b.cells) {
-				const row = Math.floor(q.d / b.pitch)
-				if (row >= rows) continue
-				const gen = s.data[rows - 1 - row]
-				const f = fall(b, q.d, depth, p.falloff as number)
-				c.cell(q.x, q.y, b.size, b.size, gen[Math.floor((q.s / b.L) * n) % n] ? 0.25 + 0.75 * f : 0, f)
-			}
-		},
-	},
-	{
-		id: 'flip',
-		name: 'Split-flap ring',
-		note: 'Two rings of 6px tiles round the frame flip like a split-flap board: flips set off from four points at once and run both ways round the perimeter, each tile turning edge-on in whole pixels from its dim face to its lit one and back.',
-		params: [
-			SPEED,
-			CELL(6),
-			GAP(2),
-			DEPTH(2, 4),
-			range('origins', 'Start points', 4, 1, 8, 1),
-			range('period', 'Cycle', 2.4, 0.8, 6, 0.05, 's'),
-			range('travel', 'Travel speed', 260, 40, 1200, 10, 'px/s'),
-			range('flip', 'Flip time', 0.22, 0.06, 0.6, 0.01, 's'),
-			range('hold', 'Lit for', 0.3, 0.1, 0.9, 0.01),
-			range('dim', 'Dim face', 0.28, 0, 1, 0.01),
-			range('spin', 'Start drift', 0.04, 0, 0.3, 0.005),
-			PEAK(0.9),
-			COLOR,
-		],
-		still: 0.9,
-		draw(c) {
-			const { p } = c
-			const b = band(c, p.cell as number, p.gap as number, p.depth as number, 2)
-			const K = p.origins as number
-			const P = p.period as number
-			const flip = p.flip as number
-			const dim = p.dim as number
-			const shift = (c.t * (p.spin as number)) % 1
-			for (const q of b.cells) {
-				// Distance (along the outline) to the nearest start point.
-				const u = mod(q.s / b.L - shift, 1 / K) * K
-				const dist = Math.min(u, 1 - u) * (b.L / K) + Math.floor(q.d / b.pitch) * b.pitch * 0.5
-				const local = mod(c.t - dist / (p.travel as number), P)
-				// Turn to the lit face, hold it for part of the cycle, then turn back.
-				const back = (p.hold as number) * P
-				let ang: number
-				let lit: boolean
-				if (local < back) {
-					const k = clamp01(local / flip)
-					ang = Math.PI * easeInOut(k)
-					lit = k >= 0.5
-				} else {
-					const k = clamp01((local - back) / flip)
-					ang = Math.PI * easeInOut(k)
-					lit = k < 0.5
-				}
-				const scale = Math.abs(Math.cos(ang))
-				const along = Math.abs(q.ny) > Math.abs(q.nx)
-				const full = b.size
-				const sz = Math.round(full * scale)
-				if (sz <= 0) continue
-				const off = Math.floor((full - sz) / 2)
-				const level = lit ? 1 : dim
-				if (along) c.cell(q.x, q.y + off, full, sz, level, 1)
-				else c.cell(q.x + off, q.y, sz, full, level, 1)
-			}
-		},
-	},
-	{
-		id: 'aura',
-		name: 'Pixel aura',
-		note: 'A band of 3px cells all the way round the frame, lit by slow noise that flows outward from the edge and snapped to four brightness steps: a dithered, pixel-art aura that never repeats exactly.',
-		params: [
-			SPEED,
-			CELL(3),
-			GAP(1),
-			DEPTH(7),
-			range('scale', 'Noise size', 26, 6, 120, 1, 'px'),
-			range('flow', 'Outward flow', 16, 0, 80, 1, 'px/s'),
-			range('churn', 'Churn', 0.25, 0, 2, 0.01),
-			range('base', 'Edge glow', 0.16, 0, 1, 0.01),
-			FALLOFF(1.5),
-			PEAK(0.9),
-			LEVELS(4),
-			COLOR,
-		],
-		still: 3,
-		draw(c) {
-			const { p } = c
-			const depth = p.depth as number
-			const b = band(c, p.cell as number, p.gap as number, depth)
-			const sc = p.scale as number
-			const base = p.base as number
-			for (const q of b.cells) {
-				const f = fall(b, q.d, depth, p.falloff as number)
-				const n = loopNoise(q.s, b.L, sc, (q.d - c.t * (p.flow as number)) / sc, c.t * (p.churn as number))
-				c.cell(q.x, q.y, b.size, b.size, f * (base + (1 - base) * smoothstep(0.42, 0.85, n)), f)
 			}
 		},
 	},

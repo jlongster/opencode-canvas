@@ -3,7 +3,7 @@
 Review canvases for [OpenCode](https://opencode.ai) sessions, running on your own machine. Agents
 post the images, videos and HTML pages they make to a canvas; you look them over on an infinite,
 live, multiplayer canvas. Agents can put sticky notes where they want you to look.
-Connected to your local OpenCode, a canvas can also seed itself from your sessions' media, and let
+Connected to your local OpenCode, a canvas can also fill session frames with their media and HTML, and let
 you prompt sessions from their frames and see when they're working.
 
 ```sh
@@ -17,8 +17,9 @@ Canvases are stored in `~/.opencode-canvas`.
 
 On a canvas you can then:
 
-- **Seed** an empty canvas from sessions: each gets a frame with its images and videos from the last
-  24 hours, or its latest 10 if there are fewer.
+- **Add a session** (the button on an empty canvas, or **Sessions** in the toolbar): its frame fills
+  in by itself with what the session involved: the images and videos it output, the HTML files it
+  wrote or produced, and media attached to its prompts (the latest 100 media, 30 HTML files).
 - **Prompt** a session from its frame: the prompt button on its title (or `C` with the pointer over
   the frame, or with it or something in it selected) opens its prompt there: your last prompt, its
   reply, and the input. While a session works, a band of embers crawls round its frame, for

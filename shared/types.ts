@@ -18,8 +18,6 @@ export interface Canvas {
 	createdAt: number
 	/** secret for the view-only link; 16 characters [A-Za-z0-9] */
 	viewKey: string
-	/** when a browser claimed its one automatic seeding from OpenCode (POST /api/canvases/:cid/autoseed) */
-	autoSeededAt?: number
 	/**
 	 * The order of the session frames, left to right, as people arranged them (PUT
 	 * /api/canvases/:cid/order). Sessions not in it follow, oldest first; ids of sessions that are
@@ -76,6 +74,8 @@ export interface Session {
 	hidden?: boolean
 	/** when it was hidden (ms): items posted since show as new in the frames list */
 	hiddenAt?: number
+	/** when a browser claimed populating it from OpenCode (POST /api/canvases/:cid/sessions/:sid/populate) */
+	populatedAt?: number
 }
 
 export interface Item {
@@ -269,19 +269,6 @@ export interface OpenCodeSessionSummary {
 	updatedAt: number
 	/** running a prompt right now */
 	busy: boolean
-}
-
-/** One session's outcome of seeding a canvas from it (done in the browser, see web/src/opencode/seed.ts). */
-export interface SeedResult {
-	sessionId: string
-	/** the OpenCode session's title ("" when it couldn't be read) */
-	title: string
-	/** items added to its frame */
-	added: number
-	/** media it output that couldn't be added (file gone, failed to process, over the cap) */
-	skipped: number
-	/** set when nothing was added: no media found, OpenCode unreachable, … */
-	error?: string
 }
 
 /**

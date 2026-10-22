@@ -1295,7 +1295,7 @@ class SectionLabels {
 		if (onHide) {
 			const hide = document.createElement('button')
 			hide.className = 'hide-frame'
-			hide.title = 'Hide this frame (for everyone; show it again from the frames list, bottom left)'
+			hide.title = 'Hide this frame (for everyone; show it again from Sessions, top right)'
 			hide.innerHTML = EYE_OFF_ICON
 			hide.addEventListener('pointerdown', (e) => e.stopPropagation())
 			hide.addEventListener('dblclick', (e) => e.stopPropagation())
@@ -1401,6 +1401,7 @@ class SectionLabels {
 			const title = el.children[0] as HTMLElement
 			const status = editor.frameChrome?.status(s.id) ?? null
 			this.showStatus(el, status)
+			el.classList.toggle('ended', !!status?.ended)
 			// Sessions posted without a title (or titled with their id) get a placeholder; the id shows on hover.
 			const untitled = !s.title.trim() || s.title === s.id
 			const label = untitled ? 'Untitled session' : s.title

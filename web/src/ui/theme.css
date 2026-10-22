@@ -35,4 +35,7 @@
 	--text-dim: #93939c;
 	/* not text: grips, idle dots, disabled marks */
 	--text-faint: #5f5f68;
+
+	/* the accent: focus rings, selected rows */
+	--accent-rgb: 87 143 255;
 }

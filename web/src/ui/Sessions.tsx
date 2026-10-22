@@ -353,31 +353,6 @@ function SkeletonRows() {
 	)
 }
 
-/**
- * Frames whose session OpenCode deleted are marked as ended: their title dimmed, after a quiet
- * "Ended ·". (Styled from here, by session id, until the renderer marks them itself.)
- */
-export function EndedFrameMarks({ editor }: { editor: Editor }) {
-	const ended = useValue(
-		() =>
-			Object.values(editor.sessions.get())
-				.filter((s) => s.opencode?.deleted)
-				.map((s) => s.id)
-				.sort()
-				.join(' '),
-		[editor],
-	)
-	if (!ended) return null
-	const sel = (suffix: string) =>
-		ended
-			.split(' ')
-			.map((id) => `.section-label[data-session="${id}"] > .title${suffix}`)
-			.join(',\n')
-	return (
-		<style>{`${sel('')} { opacity: 0.6; }\n${sel('::before')} { content: "Ended · "; font-weight: 400; }`}</style>
-	)
-}
-
 function Caret({ open }: { open: boolean }) {
 	return (
 		<svg className={`sp-caret${open ? ' is-open' : ''}`} viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">

@@ -1,20 +1,19 @@
 import { easeOut } from '../../render/busy/ember'
-import { clamp01, hexToRgb, noise3, smoothstep, type KidLook, type KidState, type RGB } from '../../render/subagents/field'
+import { clamp01, hexToRgb, type KidLook, type KidState, type RGB } from '../../render/subagents/field'
 import { sessionColor } from '../../../../shared/sessionColor'
 import { rng, type DemoFamily, type DemoKid } from './data'
-import type { KidView } from './reps'
 
 /*
  * What every subagent is doing, over time: its state, when that changed and what it was before (so
- * looks crossfade), its run times (elapsed, progress), and a smooth activity curve for sparklines.
- * Live, it moves on by itself every few seconds (deterministically: seeded, on performance.now).
+ * looks crossfade), and its run times. Live, it moves on by itself every few seconds
+ * (deterministically: seeded, on performance.now).
  */
 
 /** a state change crossfades over this long (s) */
 const FADE_S = 0.45
-/** done after running: the bright fill rises, holds, then settles (s), like a frame's done band */
+/** done after running: a brief brightening rises, holds, then settles (s), like a frame's done band */
 const FLASH = { fill: 0.2, hold: 0.15, fade: 0.7 }
-const BREATH_S = 1.8
+const BREATH_S = 2.4
 
 export interface Kid {
 	demo: DemoKid
@@ -29,10 +28,23 @@ export interface Kid {
 	/** when its current (or last) run started, and when it finished */
 	started: number
 	finished: number | null
-	/** its field clock: runs while working or waiting */
-	clockBase: number
-	clockFrom: number | null
-	history: { at: number; state: KidState }[]
+}
+
+/** A subagent as the indicators see it. */
+export interface KidView {
+	id: string
+	title: string
+	agent: string
+	task: string
+	/** 1-based, in the order the session started them */
+	index: number
+	/** its own session colour */
+	own: RGB
+	seed: number
+	state: KidState
+	look: KidLook
+	/** "1m 04s" (its current or last run) */
+	elapsed: string
 }
 
 export class Sim {
@@ -40,8 +52,6 @@ export class Sim {
 	live = false
 	private next = 0
 	private r = rng(42)
-	/** bumped whenever a state changes */
-	version = 0
 
 	constructor(
 		readonly families: DemoFamily[],
@@ -51,9 +61,8 @@ export class Sim {
 			f.kids.forEach((d, i) => {
 				const working = d.state === 'running' || d.state === 'waiting'
 				const started = now - d.startedAgo
-				const finished = working ? null : started + d.ran
 				const seed = 1 + ((i * 7919 + f.parentId.length * 104729 + d.id.charCodeAt(23) * 31) % 997)
-				const kid: Kid = {
+				this.kids.set(d.id, {
 					demo: d,
 					parentId: f.parentId,
 					index: i + 1,
@@ -63,14 +72,8 @@ export class Sim {
 					prev: d.state,
 					since: now - 60,
 					started,
-					finished,
-					clockBase: working ? 0 : d.ran,
-					clockFrom: working ? now - d.startedAgo : null,
-					history: [{ at: started, state: 'running' }],
-				}
-				if (d.state === 'waiting') kid.history.push({ at: now - 8, state: 'waiting' })
-				if (finished !== null) kid.history.push({ at: finished, state: d.state })
-				this.kids.set(d.id, kid)
+					finished: working ? null : started + d.ran,
+				})
 			})
 		}
 		this.next = now + 2.5
@@ -85,21 +88,12 @@ export class Sim {
 		if (!k || k.state === state) return
 		const working = (s: KidState) => s === 'running' || s === 'waiting'
 		if (working(state) && !working(k.state)) {
-			// a new run
 			k.started = now
 			k.finished = null
-			k.clockFrom = now
-		} else if (!working(state) && working(k.state)) {
-			k.finished = now
-			k.clockBase += now - (k.clockFrom ?? now)
-			k.clockFrom = null
-		}
+		} else if (!working(state) && working(k.state)) k.finished = now
 		k.prev = k.state
 		k.state = state
 		k.since = now
-		k.history.push({ at: now, state })
-		if (k.history.length > 40) k.history.splice(0, k.history.length - 40)
-		this.version++
 	}
 
 	/** Live: every few seconds something finishes, fails, asks, gets its answer, or runs again. */
@@ -120,7 +114,7 @@ export class Sim {
 		if (idle) this.set(idle.demo.id, 'running', now)
 	}
 
-	look(k: Kid, now: number, open: number, hover: number, out: KidLook): KidLook {
+	look(k: Kid, now: number, open: number, hover: number, out: KidLook, reduced: boolean): KidLook {
 		const e = easeOut(clamp01((now - k.since) / FADE_S))
 		out.run = out.done = out.fail = out.wait = 0
 		const add = (s: KidState, w: number) => {
@@ -133,51 +127,29 @@ export class Sim {
 		add(k.prev, 1 - e)
 		const dt = now - k.since
 		out.flash =
-			k.state === 'done' && k.prev === 'running'
+			!reduced && k.state === 'done' && k.prev === 'running'
 				? dt < FLASH.fill
 					? easeOut(dt / FLASH.fill)
 					: 1 - easeOut(clamp01((dt - FLASH.fill - FLASH.hold) / FLASH.fade))
 				: 0
-		out.clock = k.clockBase + (k.clockFrom === null ? 0 : now - k.clockFrom)
 		out.open = open
 		out.hover = hover
-		out.breath = 0.5 - 0.5 * Math.cos(((now - k.since) / BREATH_S) * 2 * Math.PI)
+		out.breath = reduced ? 0.6 : 0.5 - 0.5 * Math.cos((dt / BREATH_S) * 2 * Math.PI)
 		return out
 	}
 
-	/** How busy it was `ago` s before its now (its finish, once finished). */
-	activity(k: Kid, now: number) {
-		const end = k.finished ?? now
-		const seed = k.seed
-		return (ago: number) => {
-			const t = end - ago
-			let s: KidState | null = null
-			for (const h of k.history) {
-				if (h.at > t) break
-				s = h.state
-			}
-			if (s === 'running') return 0.08 + 0.92 * smoothstep(0.3, 0.9, noise3(t * 0.6, seed * 1.37, 0.5)) * smoothstep(0.15, 0.7, noise3(t * 0.13, seed, 3.5))
-			if (s === 'waiting') return 0.04
-			return 0
-		}
-	}
-
-	view(k: Kid, now: number, rgb: RGB, look: KidLook): KidView {
-		const ran = (k.finished ?? now) - k.started
+	view(k: Kid, now: number, look: KidLook): KidView {
 		return {
 			id: k.demo.id,
 			title: k.demo.title,
 			agent: k.demo.agent,
 			task: k.demo.task,
 			index: k.index,
-			rgb,
+			own: k.own,
 			seed: k.seed,
 			state: k.state,
 			look,
-			activity: this.activity(k, now),
-			ran,
-			sinceChange: now - k.since,
-			elapsed: k.state === 'failed' ? 'failed' : k.state === 'waiting' ? 'waiting' : k.state === 'done' ? duration(ran) : duration(ran),
+			elapsed: duration((k.finished ?? now) - k.started),
 		}
 	}
 }

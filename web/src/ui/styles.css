@@ -320,8 +320,7 @@ body,
 	animation: chat-fade 1.4s forwards;
 }
 
-.toolbar,
-.status {
+.toolbar {
 	position: absolute;
 	display: flex;
 	align-items: center;
@@ -348,7 +347,7 @@ body,
 	top: calc(12px + var(--safe-top));
 	left: calc(12px + var(--safe-left));
 	right: calc(12px + var(--safe-right));
-	/* its popovers (Sessions, Share…) open over the attention bar and the auto-seed bar */
+	/* its popovers (Sessions, Share…) open over the attention bar */
 	z-index: 7;
 	display: flex;
 	align-items: flex-start;
@@ -915,154 +914,6 @@ body,
 	animation: chat-fade 5s forwards;
 }
 
-/* ---------- the Sessions panel (adding OpenCode sessions to the canvas) ---------- */
-
-@keyframes sessions-dot-blink {
-	50% {
-		opacity: 0;
-	}
-}
-
-.toolbar .sessions-button {
-	display: inline-flex;
-	align-items: center;
-	gap: 5px;
-}
-
-.share-popover.sessions-popover {
-	flex-direction: column;
-	align-items: stretch;
-	gap: 8px;
-	width: 380px;
-	max-width: calc(100vw - 24px);
-	padding: 10px 10px 12px 14px;
-	white-space: normal;
-}
-
-.sessions-heading {
-	display: inline-flex;
-	align-items: center;
-	gap: 6px;
-	color: var(--text);
-	font-weight: 600;
-}
-
-.sessions-hint {
-	margin: 0;
-	color: var(--text-muted);
-	font-size: 12px;
-}
-
-.sessions-search {
-	height: 30px;
-	padding: 0 10px;
-	border: 1px solid var(--border-strong);
-	border-radius: 7px;
-	background: rgba(0, 0, 0, 0.3);
-	color: inherit;
-	font: inherit;
-	outline: none;
-}
-
-.sessions-list {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	max-height: min(360px, 55vh);
-	overflow-y: auto;
-	margin-right: -4px;
-	padding-right: 4px;
-}
-
-.toolbar .sessions-row {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	height: auto;
-	padding: 6px 8px;
-	text-align: left;
-}
-
-.sessions-row-main {
-	flex: 1;
-	min-width: 0;
-	display: flex;
-	flex-direction: column;
-}
-
-.sessions-row-title,
-.sessions-row-meta {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.sessions-row-title {
-	color: var(--text);
-}
-
-.sessions-row-meta {
-	color: var(--text-dim);
-	font-size: 11px;
-}
-
-.sessions-row.here .sessions-row-title {
-	color: #c4b5fd;
-}
-
-.sessions-tag {
-	flex: none;
-	padding: 1px 6px;
-	border-radius: 6px;
-	background: rgba(196, 181, 253, 0.15);
-	color: #c4b5fd;
-	font-size: 11px;
-}
-
-.sessions-dot {
-	flex: none;
-	width: 8px;
-	height: 8px;
-	border-radius: 50%;
-	background: var(--text-faint);
-}
-
-.sessions-dot.busy {
-	background: #4ade80;
-	box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.2);
-	animation: sessions-dot-blink 1.4s steps(1) infinite;
-}
-
-.sessions-empty {
-	padding: 10px 0;
-	color: var(--text-muted);
-}
-
-.sessions-error {
-	display: flex;
-	flex-direction: column;
-	align-items: flex-start;
-	gap: 4px;
-	color: #fca5a5;
-	font-size: 12px;
-}
-
-.sessions-error strong {
-	font-size: 13px;
-}
-
-.toolbar .sessions-error button {
-	margin-top: 4px;
-	border: 1px solid var(--border-strong);
-	color: var(--text);
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.sessions-dot.busy {
-		animation: none;
-	}
-}
-
 @keyframes chat-fade {
 	0%,
 	85% {
@@ -1271,16 +1122,6 @@ body,
 	background: rgba(255, 255, 255, 0.1);
 }
 
-.status {
-	left: calc(12px + var(--safe-left));
-	bottom: calc(12px + var(--safe-bottom));
-	gap: 10px;
-	padding: 6px 12px;
-	color: var(--text-muted);
-	pointer-events: none;
-	max-width: calc(100% - 24px - var(--safe-left) - var(--safe-right));
-}
-
 /* "Deleted 3 items · Undo", bottom centre */
 .toast {
 	position: absolute;
@@ -1388,311 +1229,7 @@ body,
 	color: #fca5a5;
 }
 
-/* ---------- seeding an empty canvas from OpenCode sessions ---------- */
-
-.empty.seeding {
-	width: min(520px, calc(100% - 32px));
-	gap: 14px;
-	text-align: left;
-	z-index: 4;
-}
-
-.seed-picker {
-	display: flex;
-	flex-direction: column;
-	gap: 10px;
-	padding: 14px;
-	border: 1px solid var(--border);
-	border-radius: 12px;
-	background: rgb(var(--panel-rgb) / 0.96);
-	box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
-	pointer-events: auto;
-	user-select: none;
-}
-
-.seed-head h2 {
-	margin: 0;
-	color: var(--text);
-	font-size: 15px;
-}
-
-.seed-head p {
-	margin: 4px 0 0;
-	color: var(--text-muted);
-}
-
-.seed-filters {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-}
-
-.seed-search {
-	flex: 1;
-	min-width: 0;
-	height: 30px;
-	padding: 0 10px;
-	border: 1px solid var(--border-strong);
-	border-radius: 7px;
-	background: rgba(0, 0, 0, 0.3);
-	color: inherit;
-	font: inherit;
-	outline: none;
-}
-
-.seed-search:focus {
-	border-color: rgba(196, 181, 253, 0.6);
-}
-
-.seed-list {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	max-height: min(340px, 45vh);
-	overflow-y: auto;
-	margin-right: -6px;
-	padding-right: 6px;
-}
-
-.seed-row {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	padding: 6px 8px;
-	border-radius: 7px;
-}
-
-label.seed-row {
-	cursor: pointer;
-}
-
-label.seed-row:hover {
-	background: rgba(255, 255, 255, 0.05);
-}
-
-.seed-row.selected {
-	background: rgba(196, 181, 253, 0.1);
-}
-
-.seed-row input {
-	flex: none;
-	margin: 0;
-	accent-color: #a78bfa;
-}
-
-.seed-row-main {
-	flex: 1;
-	min-width: 0;
-	display: flex;
-	flex-direction: column;
-}
-
-.seed-row-title,
-.seed-row-meta {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.seed-row-title {
-	color: var(--text);
-}
-
-.seed-row-meta {
-	color: var(--text-dim);
-	font-size: 11px;
-}
-
-.seed-row.failed .seed-row-meta {
-	color: #fca5a5;
-	white-space: normal;
-}
-
-.seed-state {
-	flex: none;
-	width: 16px;
-	display: flex;
-	justify-content: center;
-	color: var(--text-dim);
-	font-weight: 600;
-}
-
-.seed-done .seed-state {
-	color: #4ade80;
-}
-
-.seed-row.failed .seed-state {
-	color: #fca5a5;
-}
-
-.seed-spinner {
-	width: 12px;
-	height: 12px;
-	border: 2px solid rgba(196, 181, 253, 0.25);
-	border-top-color: #c4b5fd;
-	border-radius: 50%;
-	animation: seed-spin 0.8s linear infinite;
-}
-
-@keyframes seed-spin {
-	to {
-		transform: rotate(360deg);
-	}
-}
-
-.seed-progress {
-	height: 4px;
-	border-radius: 2px;
-	background: rgba(255, 255, 255, 0.08);
-	overflow: hidden;
-}
-
-.seed-progress div {
-	height: 100%;
-	background: #a78bfa;
-	transition: width 0.3s;
-}
-
-/* seeding a new canvas by itself: a status bar under the toolbar, the canvas stays usable around it */
-.empty.seeding:has(> .seed-auto) {
-	top: 64px;
-	transform: translateX(-50%);
-	width: max-content;
-	min-width: min(420px, calc(100% - 32px));
-	max-width: min(900px, calc(100% - 32px));
-}
-
-.seed-picker.seed-auto {
-	gap: 6px;
-	padding: 6px 8px 8px 12px;
-	border-radius: 10px;
-	transition: opacity 0.5s;
-}
-
-.seed-auto.fading {
-	opacity: 0;
-}
-
-.seed-bar {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	min-width: 0;
-}
-
-.seed-bar-text {
-	flex: 1;
-	min-width: 0;
-	overflow: hidden;
-	color: var(--text);
-	white-space: nowrap;
-	text-overflow: ellipsis;
-}
-
-.seed-bar-current {
-	color: var(--text-muted);
-}
-
-.seed-auto.done .seed-state {
-	color: #a78bfa;
-}
-
-.seed-picker .seed-bar button {
-	flex: none;
-	height: 26px;
-	padding: 0 10px;
-}
-
-.seed-picker .seed-bar button.seed-bar-toggle {
-	width: 26px;
-	padding: 0;
-	border-color: transparent;
-	color: var(--text-muted);
-}
-
-.seed-picker .seed-bar button.seed-bar-toggle:hover {
-	background: rgba(255, 255, 255, 0.06);
-	color: var(--text);
-}
-
-.seed-auto .seed-progress {
-	height: 2px;
-}
-
-.seed-auto .seed-list {
-	max-height: min(260px, 40vh);
-}
-
-.seed-row.seed-skip {
-	opacity: 0.55;
-}
-
-.seed-note {
-	color: #fcd34d !important;
-}
-
-.seed-message {
-	padding: 10px 8px;
-	color: var(--text-muted);
-}
-
-.seed-message.error {
-	color: #fca5a5;
-}
-
-.seed-actions {
-	display: flex;
-	justify-content: flex-end;
-	gap: 8px;
-}
-
-.seed-picker button {
-	height: 30px;
-	padding: 0 12px;
-	border: 1px solid var(--border-strong);
-	border-radius: 7px;
-	background: transparent;
-	color: var(--text);
-	font: inherit;
-	cursor: pointer;
-}
-
-.seed-picker button.seed-primary {
-	border-color: transparent;
-	background: #7c3aed;
-	color: #fff;
-	font-weight: 500;
-}
-
-.seed-picker button:disabled {
-	opacity: 0.5;
-	cursor: default;
-}
-
-.seed-curl {
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
-	font-size: 12px;
-}
-
-.seed-curl p {
-	margin: 0;
-}
-
-.seed-curl pre {
-	margin: 0;
-	font-size: 11px;
-	overflow-x: auto;
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.seed-spinner {
-		animation-duration: 2.4s;
-	}
-}
-
-/* ---------- pairing OpenCode servers (Sessions popover, seed picker) ---------- */
+/* ---------- pairing OpenCode servers (Sessions popover) ---------- */
 
 .oc-pair {
 	display: flex;
@@ -1987,8 +1524,7 @@ label.seed-row:hover {
 
 .oc-pair button.oc-link,
 .oc-servers button.oc-link,
-.connect-status button.oc-link,
-.seed-picker .oc-pair button.oc-link {
+.connect-status button.oc-link {
 	align-self: flex-start;
 	height: auto;
 	min-width: 0;
@@ -2004,34 +1540,6 @@ label.seed-row:hover {
 .toolbar .oc-pair button.oc-link:hover:not(:disabled) {
 	background: none;
 	color: #c4b5fd;
-}
-
-.oc-manage {
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
-	padding-top: 6px;
-	border-top: 1px solid var(--border);
-}
-
-.toolbar .oc-manage-toggle {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	height: 24px;
-	padding: 0 4px;
-	color: var(--text-muted);
-	font-size: 12px;
-	text-align: left;
-}
-
-.oc-manage-caret {
-	width: 10px;
-}
-
-.oc-manage-warn {
-	margin-left: auto;
-	color: #fca5a5;
 }
 
 .oc-servers {
@@ -2187,7 +1695,13 @@ label.seed-row:hover {
 	border: 2px solid rgba(161, 161, 170, 0.25);
 	border-top-color: var(--text-muted);
 	border-radius: 50%;
-	animation: seed-spin 0.8s linear infinite;
+	animation: oc-spin 0.8s linear infinite;
+}
+
+@keyframes oc-spin {
+	to {
+		transform: rotate(360deg);
+	}
 }
 
 button.oc-retry,
@@ -2296,15 +1810,6 @@ button.oc-retry,
 	.toolbar.tools {
 		top: auto;
 		bottom: calc(12px + var(--safe-bottom));
-	}
-
-	/* Just the connection dot, so it clears the tool picker. */
-	.status {
-		padding: 10px;
-	}
-
-	.status .counts {
-		display: none;
 	}
 
 	.toast,
@@ -2873,7 +2378,7 @@ button.oc-retry,
 
 /* ---------- attention: what sessions want you to look at (their sticky notes, what they ask) ---------- */
 
-/* under the top bar, centred: the auto-seed progress first, then the attention bar */
+/* under the top bar, centred: the attention bar */
 .top-stack {
 	position: absolute;
 	top: calc(64px + var(--safe-top));
@@ -2895,14 +2400,6 @@ button.oc-retry,
 
 .top-stack > * {
 	pointer-events: auto;
-}
-
-.top-stack > .seed-auto {
-	order: -1;
-	box-sizing: border-box;
-	min-width: min(420px, calc(100vw - 32px));
-	max-width: min(900px, calc(100vw - 32px));
-	text-align: left;
 }
 
 .attention-tray {

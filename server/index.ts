@@ -977,6 +977,12 @@ function mirrorSessions(canvasId: string, entries: ReturnType<typeof mirrorEntry
 	return updated
 }
 
+/** Marks a session populated from OpenCode (POST .../populate), or unmarks it. */
+function setPopulated(session: Session, populatedAt: number | undefined): Session {
+	const { populatedAt: _, ...rest } = session
+	return commitSession(populatedAt ? { ...rest, populatedAt } : rest)
+}
+
 async function removeItemFiles(item: Pick<Item, 'src' | 'thumb'>) {
 	for (const src of new Set([item.src, item.thumb])) {
 		if (src?.startsWith('/media/')) await rm(join(MEDIA_DIR, basename(src)), { force: true })
@@ -1619,10 +1625,6 @@ const API_INDEX = {
 		'GET /api/canvases/:cid': 'One canvas with all its sessions and items',
 		'PATCH /api/canvases/:cid': 'Rename a canvas. Body: {"title"}',
 		'DELETE /api/canvases/:cid': 'Delete a canvas with all its sessions, items and notes',
-		'GET /api/canvases/:cid/autoseed': 'Whether the canvas has been seeded automatically: {"autoSeededAt"} (ms, or null)',
-		'POST /api/canvases/:cid/autoseed':
-			'Claim the canvas\'s one automatic seeding (browsers do this before seeding a new canvas with their latest ' +
-			'OpenCode sessions): {"ok": true, "autoSeededAt"} for the first caller, 409 for anyone after',
 		'GET /api/view/:viewKey': 'A canvas by its view-only key (same body as GET /api/canvases/:cid)',
 		'GET /api/canvases/:cid/sessions':
 			'The canvas\'s sessions, each with its groups and their items, in frame order (left to right; hidden ones ' +
@@ -1646,6 +1648,9 @@ const API_INDEX = {
 			'sessions appear on the right. Returns the resulting {"sessionIds"}',
 		'DELETE /api/canvases/:cid/sessions/:sessionId':
 			'Delete a session and all its items (restorable for an hour, see restore), dropping its link to OpenCode (restoring doesn\'t bring it back)',
+		'POST /api/canvases/:cid/sessions/:sessionId/populate':
+			'Claim populating an empty session frame with what its OpenCode session involved (browsers do this when a session ' +
+			'is added): {"ok": true, "populatedAt"} for the first caller, 409 once populated or when it has items. DELETE gives the claim back',
 		'POST /api/canvases/:cid/sessions/:sessionId/items':
 			'Add an image, video or HTML page. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
 			'or JSON {"html": "<html source>"} for an HTML item, or {"page": "<URL>"} for a link to a web page, with its ' +
@@ -1921,21 +1926,6 @@ async function handle(req: Request): Promise<Response> {
 		}
 	}
 
-	m = /^\/api\/canvases\/([^/]+)\/autoseed$/.exec(p)
-	if (m) {
-		const canvas = getCanvas(decodeURIComponent(m[1]))
-		if (method === 'GET') return json({ autoSeededAt: canvas.autoSeededAt ?? null })
-		if (method === 'POST') {
-			// Once per canvas, ever: emptying it later doesn't seed it again.
-			if (canvas.autoSeededAt) return json({ error: 'this canvas was already seeded automatically', autoSeededAt: canvas.autoSeededAt }, 409)
-			const next: Canvas = { ...canvas, autoSeededAt: Date.now() }
-			db.canvases.set(next.id, next)
-			save()
-			broadcast({ type: 'canvas', canvas: next })
-			return json({ ok: true, autoSeededAt: next.autoSeededAt })
-		}
-	}
-
 	m = /^\/api\/view\/([^/]+)$/.exec(p)
 	if (m && method === 'GET') {
 		const key = decodeURIComponent(m[1])
@@ -1950,6 +1940,20 @@ async function handle(req: Request): Promise<Response> {
 	if (m && method === 'GET') {
 		const canvas = getCanvas(decodeURIComponent(m[1]))
 		return json(orderedSessions(canvas.id).map(sessionView))
+	}
+
+	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/populate$/.exec(p)
+	if (m && (method === 'POST' || method === 'DELETE')) {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		const session = getSession(canvas.id, decodeURIComponent(m[2]))
+		if (method === 'POST') {
+			// Once per session per canvas, and only into an empty frame.
+			if (session.populatedAt) return json({ error: 'this session was already populated', populatedAt: session.populatedAt }, 409)
+			if (sessionItems(canvas.id, session.id).length) return json({ error: 'this session already has items' }, 409)
+			return json({ ok: true, populatedAt: setPopulated(session, Date.now()).populatedAt })
+		}
+		setPopulated(session, undefined)
+		return json({ ok: true })
 	}
 
 	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)$/.exec(p)

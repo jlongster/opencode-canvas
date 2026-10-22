@@ -5,6 +5,7 @@ import { frameTitleBox } from '../editor/layout'
 import { parseSelectionId } from '../editor/selection'
 import { answerQuestion, dismissQuestion, listAsks, replyPermission, type Ask, type AskValue, type PermissionAsk, type QuestionAsk } from '../opencode/asks'
 import { ownerId, pairing, pairings, withServer } from '../opencode/pairings'
+import { populateSession } from '../opencode/populate'
 import { atom, computed, react, type Atom } from '../state/signals'
 import { addSessionFrame, linkSession, unlinkSession } from '../sync/client'
 import type { Peer, Presence } from './Presence'
@@ -249,6 +250,7 @@ export class SessionControl {
 			const found = await findSession(sessionId)
 			if (!found) return fail(pairings.peek().length ? 'No OpenCode paired in this browser has this session.' : 'Pair the OpenCode it runs on (Sessions, top right) to prompt it from here.')
 			this.put(await linkSession(this.canvasId, { sessionId, serverKey: found.serverKey, ownerId }))
+			this.populateIfEmpty(sessionId, found.serverKey)
 		} catch (e) {
 			// Someone linked it meanwhile: theirs.
 			if ((e as { status?: number }).status === 409) return fail('Another browser linked it meanwhile.')
@@ -272,10 +274,17 @@ export class SessionControl {
 				if ((e as { status?: number }).status !== 409) throw e
 			}
 		}
+		this.populateIfEmpty(sessionId, found.serverKey)
 		this.editor.revealKey(`frame:${sessionId}`)
 		this.prompting.set(sessionId)
 		this.bringIntoView(sessionId)
 		return null
+	}
+
+	/** A frame with nothing in it yet fills in with what its session involved (once per session per canvas, see populate.ts). */
+	private populateIfEmpty(sessionId: string, serverKey: string) {
+		if (Object.values(this.editor.items.peek()).some((i) => i.sessionId === sessionId)) return
+		void populateSession(this.canvasId, serverKey, sessionId).then((r) => r?.error && console.warn(`populating ${sessionId}: ${r.error}`))
 	}
 
 	/** Pans to the session's frame title (with room above it for the prompt) once its frame is laid out, if it's off screen. */

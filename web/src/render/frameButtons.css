@@ -97,3 +97,13 @@
 .section-label:not(.roomy) .frame-buttons button {
 	pointer-events: none;
 }
+
+/* OpenCode deleted the frame's session: its title dims, after a quiet "Ended ·". */
+.section-label.ended .title {
+	opacity: 0.6;
+}
+
+.section-label.ended .title::before {
+	content: 'Ended · ';
+	font-weight: 400;
+}

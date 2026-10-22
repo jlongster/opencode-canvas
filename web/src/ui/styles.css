@@ -37,8 +37,8 @@ body,
 .overlay {
 	position: absolute;
 	inset: 0;
-	/* its own stacking context: notes, annotations and creatures (with their labels) keep their order
-	   among themselves but all sit under the UI chrome (top bar and its popovers, tray, walkthrough…) */
+	/* its own stacking context: notes, annotations and cursors keep their order among themselves but
+	   all sit under the UI chrome (top bar and its popovers, tray, walkthrough…) */
 	z-index: 0;
 	pointer-events: none;
 	/* clip, not hidden: a hidden-overflow box can still be scrolled programmatically (focus, scrollIntoView) */
@@ -346,7 +346,7 @@ body,
 	top: calc(12px + var(--safe-top));
 	left: calc(12px + var(--safe-left));
 	right: calc(12px + var(--safe-right));
-	/* its popovers (Conjure, Share…) open over the tray, the auto-seed bar and walkthroughs */
+	/* its popovers (Sessions, Share…) open over the tray, the auto-seed bar and walkthroughs */
 	z-index: 7;
 	display: flex;
 	align-items: flex-start;
@@ -413,78 +413,6 @@ body,
 
 .avatar.me {
 	margin-left: 6px;
-}
-
-/* creatures: an eye pointer on a dark disc instead of initials (see PointerGlyph), and a slow pulsing ring, so they read as non-human */
-.avatar.agent {
-	background: #222228;
-}
-
-.avatar.agent::after {
-	content: '';
-	position: absolute;
-	inset: -2px;
-	border-radius: 50%;
-	pointer-events: none;
-	animation: agent-pulse 2.4s ease-out infinite;
-}
-
-@keyframes agent-pulse {
-	0% {
-		box-shadow: 0 0 0 0 color-mix(in srgb, var(--ring) 70%, transparent);
-	}
-	70%,
-	100% {
-		box-shadow: 0 0 0 7px color-mix(in srgb, var(--ring) 0%, transparent);
-	}
-}
-
-.agent-glyph {
-	display: block;
-	flex: none;
-}
-
-.agent-glyph-body {
-	fill: currentColor;
-	stroke: rgba(0, 0, 0, 0.35);
-	stroke-width: 0.8;
-	stroke-linejoin: round;
-	paint-order: stroke;
-}
-
-.agent-glyph-eye {
-	fill: #f8fafc;
-}
-
-.agent-glyph-pupil {
-	fill: #111113;
-	animation: agent-look 7s ease-in-out infinite;
-}
-
-.agent-glyph-glint {
-	fill: #fff;
-}
-
-@keyframes agent-look {
-	0%,
-	30% {
-		transform: translate(0, 0);
-	}
-	38%,
-	55% {
-		transform: translate(-1px, 0.4px);
-	}
-	63%,
-	100% {
-		transform: translate(0, 0);
-	}
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.avatar.agent::after,
-	.agent-glyph-pupil {
-		animation: none;
-	}
 }
 
 .avatar.more {
@@ -790,129 +718,21 @@ body,
 	animation: chat-fade 5s forwards;
 }
 
-/* ---------- agent worms ---------- */
+/* ---------- the Sessions panel (adding OpenCode sessions to the canvas) ---------- */
 
-.agent-worms {
-	position: absolute;
-	left: 0;
-	top: 0;
-	pointer-events: none;
-}
-
-.agent-worm-labels {
-	position: absolute;
-	inset: 0;
-	pointer-events: none;
-}
-
-.agent-worm {
-	position: absolute;
-	left: 0;
-	top: 0;
-	will-change: transform;
-	transition: opacity 250ms;
-}
-
-.agent-worm.leaving {
-	opacity: 0;
-}
-
-.agent-worm-label {
-	left: 14px;
-	top: 10px;
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-}
-
-.agent-worm-label.chatting {
-	border-radius: 4px 14px 14px 14px;
-}
-
-/* a finished reply this viewer hasn't seen in its prompt box yet: a dot on the name tag's corner */
-.agent-worm-label.unread::after {
-	content: '';
-	position: absolute;
-	top: -3px;
-	right: -3px;
-	width: 7px;
-	height: 7px;
-	border-radius: 50%;
-	background: var(--agent-color, #22d3ee);
-	box-shadow: 0 0 0 1.5px rgba(24, 24, 27, 0.9);
-}
-
-/* the name stays; only the activity message fades out after a while */
-.agent-worm-label .peer-cursor-message.sent {
-	animation: chat-fade 5s forwards;
-}
-
-@keyframes agent-speech-in {
-	from {
-		opacity: 0;
-		transform: scale(0.6);
-	}
-}
-
-@keyframes agent-speech-caret {
+@keyframes sessions-dot-blink {
 	50% {
 		opacity: 0;
 	}
 }
 
-/* ---------- conjured worms (OpenCode sessions you can talk to) ---------- */
-
-.canvas-container.conjure-hover {
-	cursor: pointer !important;
-}
-
-.canvas-container.conjure-panning,
-.canvas-container.conjure-dragging {
-	cursor: grabbing !important;
-}
-
-/* under the creature, on the ground */
-.agent-worm.conjured .agent-worm-label {
-	left: -22px;
-	top: 12px;
-}
-
-/* the title of the subagent whose tiny worm is under the pointer */
-.agent-worm-tiny-tip {
-	position: absolute;
-	left: 0;
-	top: 0;
-	z-index: 1;
-	max-width: 260px;
-	padding: 3px 8px;
-	border-radius: 6px;
-	background: rgba(28, 28, 32, 0.94);
-	color: #e4e4e7;
-	font-size: 11px;
-	line-height: 1.35;
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-	pointer-events: none;
-}
-
-.agent-worm-tiny-tip[hidden] {
-	display: none;
-}
-
-@keyframes conjure-prompt-in {
-	from {
-		opacity: 0;
-		transform: scale(0.96);
-	}
-}
-
-.toolbar .conjure-button {
+.toolbar .sessions-button {
 	display: inline-flex;
 	align-items: center;
 	gap: 5px;
 }
 
-.share-popover.conjure-popover {
+.share-popover.sessions-popover {
 	flex-direction: column;
 	align-items: stretch;
 	gap: 8px;
@@ -922,22 +742,7 @@ body,
 	white-space: normal;
 }
 
-/* the same panel opened by C next to the pointer (a toolbar only for its buttons' styles) */
-.toolbar.conjure-picker {
-	z-index: 8;
-	padding: 0;
-	background: none;
-	border: 0;
-	border-radius: 10px;
-	backdrop-filter: none;
-	box-shadow: none;
-}
-
-.conjure-picker > .share-popover {
-	position: static;
-}
-
-.conjure-heading {
+.sessions-heading {
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
@@ -945,13 +750,13 @@ body,
 	font-weight: 600;
 }
 
-.conjure-hint {
+.sessions-hint {
 	margin: 0;
 	color: #a1a1aa;
 	font-size: 12px;
 }
 
-.conjure-search {
+.sessions-search {
 	height: 30px;
 	padding: 0 10px;
 	border: 1px solid rgba(255, 255, 255, 0.12);
@@ -962,7 +767,7 @@ body,
 	outline: none;
 }
 
-.conjure-list {
+.sessions-list {
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
@@ -972,7 +777,7 @@ body,
 	padding-right: 4px;
 }
 
-.toolbar .conjure-row {
+.toolbar .sessions-row {
 	display: flex;
 	align-items: center;
 	gap: 10px;
@@ -981,34 +786,34 @@ body,
 	text-align: left;
 }
 
-.conjure-row-main {
+.sessions-row-main {
 	flex: 1;
 	min-width: 0;
 	display: flex;
 	flex-direction: column;
 }
 
-.conjure-row-title,
-.conjure-row-meta {
+.sessions-row-title,
+.sessions-row-meta {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-.conjure-row-title {
+.sessions-row-title {
 	color: #e4e4e7;
 }
 
-.conjure-row-meta {
+.sessions-row-meta {
 	color: #71717a;
 	font-size: 11px;
 }
 
-.conjure-row.here .conjure-row-title {
+.sessions-row.here .sessions-row-title {
 	color: #c4b5fd;
 }
 
-.conjure-tag {
+.sessions-tag {
 	flex: none;
 	padding: 1px 6px;
 	border-radius: 6px;
@@ -1017,7 +822,7 @@ body,
 	font-size: 11px;
 }
 
-.conjure-dot {
+.sessions-dot {
 	flex: none;
 	width: 8px;
 	height: 8px;
@@ -1025,18 +830,18 @@ body,
 	background: #52525b;
 }
 
-.conjure-dot.busy {
+.sessions-dot.busy {
 	background: #4ade80;
 	box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.2);
-	animation: agent-speech-caret 1.4s steps(1) infinite;
+	animation: sessions-dot-blink 1.4s steps(1) infinite;
 }
 
-.conjure-empty {
+.sessions-empty {
 	padding: 10px 0;
 	color: #a1a1aa;
 }
 
-.conjure-error {
+.sessions-error {
 	display: flex;
 	flex-direction: column;
 	align-items: flex-start;
@@ -1045,18 +850,18 @@ body,
 	font-size: 12px;
 }
 
-.conjure-error strong {
+.sessions-error strong {
 	font-size: 13px;
 }
 
-.toolbar .conjure-error button {
+.toolbar .sessions-error button {
 	margin-top: 4px;
 	border: 1px solid rgba(255, 255, 255, 0.12);
 	color: #e4e4e7;
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.conjure-dot.busy {
+	.sessions-dot.busy {
 		animation: none;
 	}
 }
@@ -1690,7 +1495,7 @@ label.seed-row:hover {
 	}
 }
 
-/* ---------- pairing OpenCode servers (Conjure popover, seed picker) ---------- */
+/* ---------- pairing OpenCode servers (Sessions popover, seed picker) ---------- */
 
 .oc-pair {
 	display: flex;
@@ -2715,72 +2520,7 @@ button.oc-retry,
 	}
 }
 
-/* ---------- sleeping worms (no owner tab open) and the OpenCode hint ---------- */
-
-.agent-worm.asleep .agent-worm-label {
-	opacity: 0.55;
-}
-
-.agent-worm-zzz {
-	display: none;
-	position: absolute;
-	left: 8px;
-	bottom: 8px;
-	/* rising off the curled-up body */
-	translate: var(--mx, 0) var(--my, 0);
-	pointer-events: none;
-	font: italic 700 13px/1 system-ui, sans-serif;
-	color: var(--agent-color, #22d3ee);
-	text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
-}
-
-.agent-worm.asleep .agent-worm-zzz {
-	display: block;
-}
-
-.agent-worm-zzz i {
-	position: absolute;
-	left: 0;
-	bottom: 0;
-	opacity: 0;
-	font-style: italic;
-	animation: agent-zzz 3s ease-out infinite;
-}
-
-.agent-worm-zzz i:nth-child(2) {
-	animation-delay: 1s;
-}
-
-.agent-worm-zzz i:nth-child(3) {
-	animation-delay: 2s;
-}
-
-@keyframes agent-zzz {
-	0% {
-		transform: translate(0, 0) scale(0.6);
-		opacity: 0;
-	}
-	20% {
-		opacity: 0.9;
-	}
-	100% {
-		transform: translate(14px, -26px) scale(1.25);
-		opacity: 0;
-	}
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.agent-worm-zzz i {
-		animation: none;
-		opacity: 0.8;
-	}
-	.agent-worm-zzz i:nth-child(2) {
-		transform: translate(7px, -10px);
-	}
-	.agent-worm-zzz i:nth-child(3) {
-		transform: translate(14px, -20px);
-	}
-}
+/* ---------- the OpenCode hint ---------- */
 
 .pair-notice {
 	position: fixed;
@@ -2829,68 +2569,68 @@ button.oc-retry,
 
 /* ---------- Markdown in walkthrough steps (agents' say) ---------- */
 
-.agent-worm-speech-text {
+.md-text {
 	white-space: normal;
 }
 
-.agent-worm-speech-text > :first-child {
+.md-text > :first-child {
 	margin-top: 0;
 }
 
-.agent-worm-speech-text > :last-child {
+.md-text > :last-child {
 	margin-bottom: 0;
 }
 
-.agent-worm-speech-text p,
-.agent-worm-speech-text ul,
-.agent-worm-speech-text ol,
-.agent-worm-speech-text pre,
-.agent-worm-speech-text blockquote,
-.agent-worm-speech-text table {
+.md-text p,
+.md-text ul,
+.md-text ol,
+.md-text pre,
+.md-text blockquote,
+.md-text table {
 	margin: 0 0 0.5em;
 }
 
-.agent-worm-speech-text h1,
-.agent-worm-speech-text h2,
-.agent-worm-speech-text h3,
-.agent-worm-speech-text h4,
-.agent-worm-speech-text h5,
-.agent-worm-speech-text h6 {
+.md-text h1,
+.md-text h2,
+.md-text h3,
+.md-text h4,
+.md-text h5,
+.md-text h6 {
 	margin: 0.6em 0 0.3em;
 	font-size: 1em;
 	font-weight: 700;
 	line-height: 1.3;
 }
 
-.agent-worm-speech-text h1 {
+.md-text h1 {
 	font-size: 1.2em;
 }
 
-.agent-worm-speech-text h2 {
+.md-text h2 {
 	font-size: 1.1em;
 }
 
-.agent-worm-speech-text ul,
-.agent-worm-speech-text ol {
+.md-text ul,
+.md-text ol {
 	padding-left: 1.3em;
 }
 
-.agent-worm-speech-text li + li {
+.md-text li + li {
 	margin-top: 0.15em;
 }
 
-.agent-worm-speech-text li > p {
+.md-text li > p {
 	margin: 0;
 }
 
-.agent-worm-speech-text code {
+.md-text code {
 	padding: 0.05em 0.3em;
 	border-radius: 4px;
 	background: rgba(0, 0, 0, 0.12);
 	font: 0.88em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-.agent-worm-speech-text pre {
+.md-text pre {
 	padding: 6px 8px;
 	border-radius: 6px;
 	background: rgba(0, 0, 0, 0.16);
@@ -2898,43 +2638,43 @@ button.oc-retry,
 	overflow-wrap: anywhere;
 }
 
-.agent-worm-speech-text pre code {
+.md-text pre code {
 	padding: 0;
 	background: none;
 	font-size: 0.85em;
 }
 
-.agent-worm-speech-text a {
+.md-text a {
 	color: inherit;
 	text-decoration: underline;
 	text-underline-offset: 2px;
 	pointer-events: auto;
 }
 
-.agent-worm-speech-text blockquote {
+.md-text blockquote {
 	padding-left: 0.6em;
 	border-left: 3px solid rgba(0, 0, 0, 0.25);
 }
 
-.agent-worm-speech-text hr {
+.md-text hr {
 	margin: 0.6em 0;
 	border: 0;
 	border-top: 1px solid rgba(0, 0, 0, 0.25);
 }
 
-.agent-worm-speech-text table {
+.md-text table {
 	border-collapse: collapse;
 	font-size: 0.92em;
 }
 
-.agent-worm-speech-text th,
-.agent-worm-speech-text td {
+.md-text th,
+.md-text td {
 	padding: 2px 6px;
 	border: 1px solid rgba(0, 0, 0, 0.2);
 	text-align: left;
 }
 
-/* ---------- attention: creatures calling for it, the tray, walkthroughs ---------- */
+/* ---------- attention: sessions calling for it, the tray, walkthroughs ---------- */
 
 /* under the top bar, centred: the auto-seed progress first, then the attention tray */
 .top-stack {
@@ -3142,99 +2882,38 @@ button.oc-retry,
 	text-align: center;
 }
 
-/* on a creature with something queued: its count, and a soft ring pulsing out from it */
-.agent-worm-attention {
-	position: absolute;
-	left: 8px;
-	bottom: 12px;
-	translate: var(--hx, 0) var(--hy, 0);
-	min-width: 22px;
-	height: 22px;
-	padding: 0 6px;
-	box-sizing: border-box;
-	border: 2px solid #111113;
-	border-radius: 11px;
-	background: var(--agent-color, #a78bfa);
-	color: rgba(0, 0, 0, 0.85);
-	font: 800 12px/18px system-ui, sans-serif;
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
-	pointer-events: auto;
-	cursor: pointer;
-	animation: attention-badge-in 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.agent-worm-attention:hover {
-	transform: scale(1.12);
-}
-
-@keyframes attention-badge-in {
-	from {
-		transform: scale(0);
-	}
-}
-
-.agent-worm-call-ring {
-	position: absolute;
-	/* centred on the creature's body */
-	left: -30px;
-	top: -30px;
-	translate: var(--mx, 0) var(--my, 0);
-	width: 60px;
-	height: 60px;
-	box-sizing: border-box;
-	border: 2px solid var(--agent-color, #a78bfa);
-	border-radius: 50%;
-	pointer-events: none;
-	opacity: 0;
-	animation: attention-ring 1.7s ease-out infinite;
-}
-
-.agent-worm.attending .agent-worm-call-ring {
-	display: none;
-}
-
-@keyframes attention-ring {
-	0% {
-		transform: scale(0.55);
-		opacity: 0.75;
-	}
-	100% {
-		transform: scale(1.5);
-		opacity: 0;
-	}
-}
-
-/* what a highlight step points at */
-.attention-highlight {
+/*
+ * What a highlight step points at, outlined crisply in the session's colour over a thin dark
+ * keyline (so it reads on light and dark images alike): the whole target, or a region of it.
+ */
+.attention-outline {
 	position: absolute;
 	z-index: 3;
 	box-sizing: border-box;
 	border-radius: 10px;
-	outline: 3px solid var(--agent-color);
+	outline: 2px solid var(--agent-color);
 	outline-offset: 4px;
+	box-shadow: 0 0 0 4px rgba(10, 10, 12, 0.55);
 	pointer-events: none;
-	animation:
-		attention-highlight-in 420ms ease-out,
-		attention-highlight-pulse 1.6s ease-out 420ms infinite;
+	animation: attention-outline-in 240ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-@keyframes attention-highlight-in {
+.attention-outline.region {
+	border-radius: 6px;
+	outline-offset: 2px;
+	box-shadow:
+		0 0 0 2px rgba(10, 10, 12, 0.55),
+		inset 0 0 0 1px rgba(10, 10, 12, 0.35);
+}
+
+@keyframes attention-outline-in {
 	from {
-		outline-offset: 28px;
+		outline-offset: 14px;
 		opacity: 0;
 	}
 }
 
-@keyframes attention-highlight-pulse {
-	0% {
-		box-shadow: 0 0 0 4px color-mix(in srgb, var(--agent-color) 55%, transparent);
-	}
-	100% {
-		box-shadow: 0 0 0 22px transparent;
-	}
-}
-
-/* a highlight step's exact spot: a small pulsing ring centred on it */
+/* A highlight step's exact spot: a crisp ring round it, with a dot on the spot itself. */
 .attention-point {
 	position: absolute;
 	z-index: 3;
@@ -3247,55 +2926,36 @@ button.oc-retry,
 .attention-point::after {
 	content: '';
 	position: absolute;
-	left: -11px;
-	top: -11px;
-	width: 22px;
-	height: 22px;
 	box-sizing: border-box;
 	border-radius: 50%;
-	border: 3px solid var(--agent-color);
-	box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
-	animation: attention-point-in 360ms ease-out;
+}
+
+.attention-point::before {
+	left: -13px;
+	top: -13px;
+	width: 26px;
+	height: 26px;
+	border: 2px solid var(--agent-color);
+	box-shadow:
+		0 0 0 1.5px rgba(10, 10, 12, 0.6),
+		inset 0 0 0 1.5px rgba(10, 10, 12, 0.6);
+	animation: attention-point-in 240ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 .attention-point::after {
-	border-width: 2px;
-	box-shadow: none;
-	animation: attention-point-pulse 1.4s ease-out 360ms infinite;
-	opacity: 0;
+	left: -3px;
+	top: -3px;
+	width: 6px;
+	height: 6px;
+	background: var(--agent-color);
+	box-shadow: 0 0 0 1.5px rgba(10, 10, 12, 0.6);
 }
 
 @keyframes attention-point-in {
 	from {
-		transform: scale(2.6);
+		transform: scale(1.8);
 		opacity: 0;
 	}
-}
-
-@keyframes attention-point-pulse {
-	0% {
-		transform: scale(1);
-		opacity: 0.9;
-	}
-	100% {
-		transform: scale(2.8);
-		opacity: 0;
-	}
-}
-
-/* a highlight step's region: a rounded outline around just that part */
-.attention-region {
-	position: absolute;
-	z-index: 3;
-	box-sizing: border-box;
-	border-radius: 8px;
-	outline: 3px solid var(--agent-color);
-	outline-offset: 3px;
-	box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3) inset;
-	pointer-events: none;
-	animation:
-		attention-highlight-in 420ms ease-out,
-		attention-highlight-pulse 1.6s ease-out 420ms infinite;
 }
 
 .walkthrough {
@@ -3312,8 +2972,20 @@ button.oc-retry,
 	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
 	color: #e4e4e7;
 	font: 13px system-ui, sans-serif;
-	animation: conjure-prompt-in 140ms ease-out;
+	animation: walkthrough-in 140ms ease-out;
 	transform-origin: 24px 0;
+}
+
+@keyframes walkthrough-in {
+	from {
+		opacity: 0;
+		transform: scale(0.96);
+	}
+}
+
+/* At its session's frame (a say step): a little heavier, so it reads as the frame speaking. */
+.walkthrough.at-frame {
+	border-width: 2px;
 }
 
 .walkthrough button {
@@ -3397,13 +3069,20 @@ button.oc-retry,
 	overscroll-behavior: contain;
 	border-radius: 12px;
 	background: var(--agent-color);
-	color: rgba(0, 0, 0, 0.85);
+	color: var(--agent-ink, rgba(0, 0, 0, 0.85));
 	font-size: 14px;
 	line-height: 1.4;
 	user-select: text;
 	overflow-wrap: anywhere;
-	animation: agent-speech-in 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
+	animation: walkthrough-bubble-in 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
 	transform-origin: 20px 0;
+}
+
+@keyframes walkthrough-bubble-in {
+	from {
+		opacity: 0;
+		transform: scale(0.6);
+	}
 }
 
 .walkthrough .walkthrough-target {
@@ -3431,7 +3110,7 @@ button.oc-retry,
 
 .walkthrough .walkthrough-next {
 	background: var(--agent-color);
-	color: rgba(0, 0, 0, 0.85);
+	color: var(--agent-ink, rgba(0, 0, 0, 0.85));
 	font-weight: 600;
 }
 
@@ -3455,15 +3134,97 @@ button.oc-retry,
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.agent-worm-call-ring,
 	.attention-dots i,
-	.attention-highlight,
-	.attention-region,
+	.attention-outline,
 	.attention-point::before,
-	.attention-point::after {
+	.walkthrough,
+	.walkthrough-bubble {
 		animation: none;
 	}
-	.agent-worm-call-ring {
-		opacity: 0.6;
-	}
+}
+
+/* ---------- what sessions ask, at their frames (see FrameAsks) ---------- */
+
+.frame-asks {
+	width: 360px;
+	max-width: calc(100vw - 16px);
+}
+
+/* It shows up by itself, so its × (Later) is always there. */
+.frame-asks .pt-ctl {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+.frame-asks-who {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	max-width: 100%;
+	padding: 0 4px;
+	color: #e4e4e7;
+	font-weight: 600;
+	text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+.frame-asks-who i {
+	flex: none;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	background: var(--c);
+	box-shadow: 0 0 0 2px rgba(17, 17, 19, 0.9);
+}
+
+.frame-asks-who span {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+/* A session asking something with its frame off screen: a chip at the edge, toward the frame. */
+.frame-ask-chip {
+	position: absolute;
+	z-index: 4;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	box-sizing: border-box;
+	height: 30px;
+	padding: 0 10px 0 4px;
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 15px;
+	background: rgba(28, 28, 32, 0.96);
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+	color: #e4e4e7;
+	font: 500 12px system-ui, sans-serif;
+	cursor: pointer;
+}
+
+.frame-ask-chip:hover {
+	background: rgba(40, 40, 46, 0.98);
+}
+
+.frame-ask-chip-q {
+	flex: none;
+	display: grid;
+	place-items: center;
+	width: 22px;
+	height: 22px;
+	border-radius: 50%;
+	background: var(--c);
+	color: var(--ink);
+	font-weight: 800;
+}
+
+.frame-ask-chip-name {
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.frame-ask-chip-arrow {
+	flex: none;
+	color: #a1a1aa;
 }

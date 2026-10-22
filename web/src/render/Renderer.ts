@@ -1,9 +1,9 @@
 import type { Item } from '../../../shared/types'
-import { GROUP_OUTLINE_PADDING, type Editor, type HtmlLink } from '../editor/Editor'
+import { GROUP_OUTLINE_PADDING, type Editor, type FrameStatus, type HtmlLink } from '../editor/Editor'
 import { Box, clamp } from '../editor/geometry'
 import { LAYOUT, type SectionLayout } from '../editor/layout'
 import { frameKey } from '../editor/selection'
-import { imageShader, rectShader, videoShader } from './shaders'
+import { dotShader, imageShader, rectShader, videoShader } from './shaders'
 import { TextureCache } from './TextureCache'
 import { VideoPool } from './VideoPool'
 import { EXTRACT_ICON, VideoControls } from './VideoControls'
@@ -11,6 +11,8 @@ import { LinkHover, loadHtml, makeNonce, parseLinkMessage, withLinkReporter, typ
 import { EXTERNAL_ICON, PageBadges, pageDomain } from './PageBadges'
 import { linkCardUrl } from './linkCard'
 import { url as withBase } from '../base'
+import { sessionColor } from '../../../shared/sessionColor'
+import { DONE, DOT_FLOATS, EMBER, EMBER_STILL, ENTER_S, EmberDots, doneDuration, envelope, frameSeed, type BusyState, type EmberFrame } from './busy/ember'
 import './frameButtons.css'
 
 const THUMB_SIZE = 512
@@ -30,6 +32,9 @@ const MIN_HTML_PX = 24
 
 const RECT_FLOATS = 16
 const IMAGE_FLOATS = 8
+/** While nothing else moves, busy bands animate at this rate (ms per frame). */
+const BUSY_FRAME_MS = 1000 / 30
+const NO_SESSIONS: ReadonlySet<string> = new Set()
 
 type RGBA = [number, number, number, number]
 const BG: GPUColor = { r: 0.067, g: 0.067, b: 0.075, a: 1 }
@@ -52,6 +57,10 @@ export interface RendererOptions {
 	onCloseSection?: (sectionId: string) => void
 	/** Called when the GPU device is lost other than by destroy() (iOS drops it in background tabs, GPU resets). */
 	onDeviceLost?: (message: string) => void
+	/** Frames drawn last, back to front, each opaque over a soft shadow (0–1), so they can overlap like a stack (a dragged frame goes on top). */
+	getRaisedSections?: () => readonly { id: string; shadow: number }[]
+	/** The sessions working right now (see SessionControl.busy): their frames get the busy band. */
+	busySessions?: () => ReadonlySet<string>
 }
 
 interface Displayed {
@@ -76,6 +85,7 @@ export class Renderer {
 	private rectPipeline: GPURenderPipeline
 	private imagePipeline: GPURenderPipeline
 	private videoPipeline: GPURenderPipeline
+	private dotPipeline: GPURenderPipeline
 	private videoLayout: GPUBindGroupLayout
 	private imageLayout: GPUBindGroupLayout
 	/** Zero-copy video via importExternalTexture; false once it's missing or has failed, then frames are copied. */
@@ -86,6 +96,14 @@ export class Renderer {
 	private rectData = new Float32Array(RECT_FLOATS * 256) as Float32Array<ArrayBuffer>
 	private imageBuffer: GPUBuffer | null = null
 	private imageData = new Float32Array(IMAGE_FLOATS * 256) as Float32Array<ArrayBuffer>
+	private dotBuffer: GPUBuffer | null = null
+	private dots = new EmberDots()
+	/** each session's busy band, while it works and as it resolves after (see trackBusy) */
+	private busy = new Map<string, BusyState & { seed: number; offset: number }>()
+	/** whether a busy band in view needs animating, and when it was last drawn */
+	private busyAnimating = false
+	private busyDrawnAt = 0
+	private reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
 	private textures: TextureCache
 	private videos: VideoPool
 	private labels: SectionLabels
@@ -210,6 +228,7 @@ export class Renderer {
 		this.rectPipeline = pipeline(rectShader, [globalsLayout], [0, 1, 2, 3].map(vec4), RECT_FLOATS * 4)
 		this.imagePipeline = pipeline(imageShader, [globalsLayout, imageLayout], [0, 1].map(vec4), IMAGE_FLOATS * 4)
 		this.videoPipeline = pipeline(videoShader, [globalsLayout, this.videoLayout], [0, 1].map(vec4), IMAGE_FLOATS * 4)
+		this.dotPipeline = pipeline(dotShader, [globalsLayout], [0, 1, 2].map(vec4), DOT_FLOATS * 4)
 
 		this.imageLayout = imageLayout
 		this.textures = new TextureCache(device, imageLayout)
@@ -301,10 +320,13 @@ export class Renderer {
 
 		const uploaded = this.textures.update()
 		const epoch = editor.getEpoch()
+		const busyChanged = this.trackBusy(this.options.busySessions?.() ?? NO_SESSIONS, now / 1000)
 		const needsFrame =
 			epoch !== this.lastEpoch ||
 			this.animating ||
 			uploaded ||
+			busyChanged ||
+			(this.busyAnimating && now - this.busyDrawnAt >= BUSY_FRAME_MS) ||
 			this.videos.takeDirty() ||
 			this.videos.isPlaying ||
 			editor.isCameraMoving()
@@ -320,10 +342,12 @@ export class Renderer {
 		}
 
 		const { w: vw, h: vh } = editor.viewport.get()
-		this.globalsData.set([camera.x, camera.y, camera.z, this.dpr, vw, vh, now / 1000, 0])
+		// (the drawing buffer's pixels per CSS px: what the canvas really has, which can differ from devicePixelRatio)
+		this.globalsData.set([camera.x, camera.y, camera.z, this.canvas.width / vw, vw, vh, now / 1000, 0])
 		this.device.queue.writeBuffer(this.globals, 0, this.globalsData)
 
 		const cull = Box.expand(viewBounds, 64 / camera.z)
+		const dots = this.busyBands(layout.sections, camera, now)
 
 		// ---- build instance data ----
 		let rects = 0
@@ -346,9 +370,11 @@ export class Renderer {
 
 		// A dragged frame and its items are drawn last, over everything else (see the draw calls below).
 		const liftedId = editor.frameDrag.get()?.sessionId ?? null
+		const raised = [...(this.options.getRaisedSections?.() ?? []).filter((r) => r.id !== liftedId), ...(liftedId ? [{ id: liftedId, shadow: 1 }] : [])]
+		const raisedIds = new Set(raised.map((r) => r.id))
 		for (const section of layout.sections) {
 			const d = this.displayedSections.get(section.id)
-			if (!d || !Box.intersects(d, cull) || section.id === liftedId) continue
+			if (!d || !Box.intersects(d, cull) || raisedIds.has(section.id)) continue
 			pushRect(d, withAlpha(SECTION_FILL, d.opacity), withAlpha(SECTION_STROKE, d.opacity), 1, SECTION_RADIUS, false)
 			const key = frameKey(section.id)
 			const remote = remoteSelected.get(key)
@@ -434,23 +460,27 @@ export class Renderer {
 			if (selected.has(id)) overlays.push(() => pushRect(d, NONE, ACCENT, 2, ITEM_RADIUS, false))
 			else if (hovered === id) overlays.push(() => pushRect(d, NONE, withAlpha(ACCENT, 0.7), 1.5, ITEM_RADIUS, false))
 		}
-		for (const [id, d] of this.displayedItems) if (!liftedId || layout.sectionOf.get(id) !== liftedId) pushItem(id, d)
+		for (const [id, d] of this.displayedItems) if (!raisedIds.has(layout.sectionOf.get(id)!)) pushItem(id, d)
 
-		// The lifted frame: a soft shadow (stacked translucent rects), the frame, then its items.
-		const liftedRects = rects
-		const liftedImages = images
-		const lifted = liftedId ? this.displayedSections.get(liftedId) : undefined
-		if (lifted) {
+		// Raised frames, in order: each a soft shadow (stacked translucent rects), the opaque frame, then its items.
+		const layers: number[][] = []
+		for (const r of raised) {
+			const lifted = this.displayedSections.get(r.id)
+			if (!lifted) continue
+			const from = [rects, images]
 			const unit = 1 / camera.z
-			for (let i = 4; i >= 1; i--) {
+			for (let i = 4; i >= 1 && r.shadow > 0; i--) {
 				const spread = i * 6 * unit
 				const b = { x: lifted.x - spread, y: lifted.y - spread + 10 * unit, w: lifted.w + spread * 2, h: lifted.h + spread * 2 }
-				pushRect(b, SHADOW, NONE, 0, SECTION_RADIUS + spread, false)
+				pushRect(b, withAlpha(SHADOW, r.shadow * lifted.opacity), NONE, 0, SECTION_RADIUS + spread, false)
 			}
-			pushRect(lifted, LIFTED_FILL, LIFTED_STROKE, 1, SECTION_RADIUS, false)
-			if (selected.has(frameKey(liftedId!))) overlays.push(() => pushRect(lifted, NONE, ACCENT, 2, SECTION_RADIUS, false))
-			for (const [id, d] of this.displayedItems) if (layout.sectionOf.get(id) === liftedId) pushItem(id, d)
+			pushRect(lifted, withAlpha(LIFTED_FILL, lifted.opacity), withAlpha(r.id === liftedId ? LIFTED_STROKE : SECTION_STROKE, lifted.opacity), 1, SECTION_RADIUS, false)
+			if (selected.has(frameKey(r.id))) overlays.push(() => pushRect(lifted, NONE, ACCENT, 2, SECTION_RADIUS, false))
+			for (const [id, d] of this.displayedItems) if (layout.sectionOf.get(id) === r.id) pushItem(id, d)
+			layers.push([from[0], rects, from[1], images])
 		}
+		const liftedRects = layers[0]?.[0] ?? rects
+		const liftedImages = layers[0]?.[2] ?? images
 
 		const backgroundRects = rects
 		for (const o of overlays) o()
@@ -470,6 +500,7 @@ export class Renderer {
 		// ---- upload & draw ----
 		this.rectBuffer = this.upload(this.rectBuffer, this.rectData, rects * RECT_FLOATS)
 		this.imageBuffer = this.upload(this.imageBuffer, this.imageData, images * IMAGE_FLOATS)
+		this.dotBuffer = this.upload(this.dotBuffer, dots.data as Float32Array<ArrayBuffer>, dots.n * DOT_FLOATS)
 
 		const encoder = this.device.createCommandEncoder()
 		const pass = encoder.beginRenderPass({
@@ -478,6 +509,13 @@ export class Renderer {
 			],
 		})
 		pass.setBindGroup(0, this.globalsBindGroup)
+
+		// Busy bands first: behind every frame and what's in it.
+		if (dots.n) {
+			pass.setPipeline(this.dotPipeline)
+			pass.setVertexBuffer(0, this.dotBuffer)
+			pass.draw(6, dots.n)
+		}
 
 		const drawRects = (from: number, to: number) => {
 			if (to <= from) return
@@ -499,8 +537,10 @@ export class Renderer {
 		}
 		drawRects(0, liftedRects)
 		drawImages(0, liftedImages)
-		drawRects(liftedRects, backgroundRects)
-		drawImages(liftedImages, images)
+		for (const [r0, r1, i0, i1] of layers) {
+			drawRects(r0, r1)
+			drawImages(i0, i1)
+		}
 		for (const [id, copy] of this.videoCopies) {
 			if (drawnVideos.has(id)) continue
 			copy.texture.destroy()
@@ -525,6 +565,64 @@ export class Renderer {
 
 		this.frameTimes.push(performance.now() - t0)
 		if (this.frameTimes.length > 120) this.frameTimes.shift()
+	}
+
+	/**
+	 * Keeps each session's band state in step with which sessions are working: a session that starts
+	 * works from now; one that stops resolves (done) from now, and is forgotten once that's over.
+	 * Returns whether anything changed.
+	 */
+	private trackBusy(working: ReadonlySet<string>, now: number) {
+		let changed = false
+		for (const id of working) {
+			const b = this.busy.get(id)
+			if (b?.working) continue
+			this.busy.set(id, { ...(b ?? frameSeed(id)), working: true, since: now, finished: false })
+			changed = true
+		}
+		const over = doneDuration(DONE, this.reducedMotion.matches)
+		for (const [id, b] of this.busy) {
+			if (b.working && !working.has(id)) {
+				b.working = false
+				b.finished = true
+				b.since = now
+				changed = true
+			} else if (!b.working && now - b.since > over) {
+				this.busy.delete(id)
+				changed = true
+			}
+		}
+		return changed
+	}
+
+	/**
+	 * The busy bands of the frames in view (see render/busy/ember.ts), following the frames' eased
+	 * boxes. Reduced motion freezes the field (the bands still come and go).
+	 */
+	private busyBands(sections: SectionLayout[], camera: { x: number; y: number; z: number }, now: number) {
+		const dots = this.dots
+		const reduced = this.reducedMotion.matches
+		const t = now / 1000
+		const frames: EmberFrame[] = []
+		let settling = false
+		for (const s of sections) {
+			const b = this.busy.get(s.id)
+			const d = b && this.displayedSections.get(s.id)
+			if (!b || !d) continue
+			// (coming or going: animates even while it's still at nothing, the moment it starts)
+			if (!b.working || t - b.since < ENTER_S) settling = true
+			const [presence, fill] = envelope(b, t, DONE, reduced)
+			if (presence <= 0.001) continue
+			const [r, g, bl] = hexToRgba(sessionColor(s.id))
+			frames.push({ box: d, color: [r, g, bl], offset: reduced ? 0 : b.offset, seed: b.seed, presence: presence * d.opacity, fill })
+		}
+		const { w, h } = this.editor.viewport.peek()
+		// Snapped to the drawing buffer's own pixels (see globals).
+		const dpr = this.canvas.width / w
+		dots.fill({ x: camera.x * camera.z, y: camera.y * camera.z, z: camera.z, width: w, height: h, dpr }, frames, EMBER, reduced ? EMBER_STILL : t * EMBER.speed)
+		this.busyAnimating = settling || (dots.framesInView > 0 && !reduced)
+		this.busyDrawnAt = now
+		return dots
 	}
 
 	/**
@@ -640,6 +738,11 @@ export class Renderer {
 		step(this.displayedItems, layout.items)
 		step(this.displayedSections, layout.sections.map((s) => [s.id, s.box] as [string, Box]))
 		return moving
+	}
+
+	/** Where a frame is drawn right now (it eases toward its layout box) and its opacity. */
+	sectionBox(id: string): Readonly<Displayed> | undefined {
+		return this.displayedSections.get(id)
 	}
 
 	private upload(buffer: GPUBuffer | null, data: Float32Array<ArrayBuffer>, length: number) {
@@ -1110,8 +1213,13 @@ const EYE_OFF_ICON =
 	'<path d="M10.7 5.1a10.7 10.7 0 0 1 11.2 6.6 1 1 0 0 1 0 .7 10.7 10.7 0 0 1-1.4 2.5"/><path d="M14.1 14.2a3 3 0 0 1-4.2-4.2"/>' +
 	'<path d="M17.5 17.5a10.8 10.8 0 0 1-15.4-5.2 1 1 0 0 1 0-.7 10.8 10.8 0 0 1 4.4-5.1"/><path d="m2 2 20 20"/></svg>'
 
-/** On-screen size of a frame title's hide and remove buttons (keep in step with frameButtons.css). */
+/** On-screen size of a frame title's prompt, hide and remove buttons (keep in step with frameButtons.css). */
 const BUTTON_PX = 24
+/** Room a frame title's badge takes on screen, with its gap (see .frame-badge in frameButtons.css). */
+const BADGE_PX = 30
+const PROMPT_ICON =
+	'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+	'<path d="M20 12.5a7.5 7.5 0 0 1-11.1 6.6L4 20l1-4.4A7.5 7.5 0 1 1 20 12.5z"/><path d="M9 11.5h6M9 14.5h3.5"/></svg>'
 /** Page-space height of the title line: 1.2 × LAYOUT.frameTitlePx. */
 const TITLE_LINE_PX = 48
 const MIN_FRAME_PX_FOR_BUTTONS = 220
@@ -1137,16 +1245,38 @@ class SectionLabels {
 		parent.appendChild(this.host)
 	}
 
-	private createLabel(id: string) {
+	private createLabel(id: string, editor: Editor) {
 		const el = document.createElement('div')
 		el.className = 'section-label'
 		el.dataset.session = id
 		el.innerHTML = '<span class="title"></span>'
+		// Right after the title: unread walkthrough steps, or that it's asking something (see FrameChrome).
+		const badge = document.createElement('button')
+		badge.className = 'frame-badge'
+		badge.hidden = true
+		badge.addEventListener('pointerdown', (e) => e.stopPropagation())
+		badge.addEventListener('dblclick', (e) => e.stopPropagation())
+		badge.addEventListener('click', (e) => {
+			e.stopPropagation()
+			editor.frameChrome?.attend(id)
+		})
+		el.appendChild(badge)
 		if (!this.onHide && !this.onClose) return el
 		// Screen-space buttons at the end of the title row (see frameButtons.css and update's room rule).
 		const buttons = document.createElement('span')
 		buttons.className = 'frame-buttons'
 		el.appendChild(buttons)
+		const prompt = document.createElement('button')
+		prompt.className = 'prompt-frame'
+		prompt.hidden = true
+		prompt.innerHTML = PROMPT_ICON
+		prompt.addEventListener('pointerdown', (e) => e.stopPropagation())
+		prompt.addEventListener('dblclick', (e) => e.stopPropagation())
+		prompt.addEventListener('click', (e) => {
+			e.stopPropagation()
+			editor.frameChrome?.prompt(id)
+		})
+		buttons.appendChild(prompt)
 		const onHide = this.onHide
 		if (onHide) {
 			const hide = document.createElement('button')
@@ -1190,6 +1320,33 @@ class SectionLabels {
 		})
 		button.addEventListener('pointerleave', disarm)
 		return el
+	}
+
+	/** The session's badge and prompt button, as its FrameChrome status says. */
+	private showStatus(el: HTMLElement, status: FrameStatus | null) {
+		const badge = el.querySelector<HTMLButtonElement>('.frame-badge')!
+		const asking = status?.asking ?? null
+		const unread = status?.unread ?? 0
+		const text = asking ? '?' : unread ? String(unread) : ''
+		badge.hidden = !text
+		if (text) {
+			if (badge.textContent !== text) badge.textContent = text
+			badge.title = asking
+				? asking === 'permission'
+					? 'Waiting for permission: show it'
+					: 'Asking a question: show it'
+				: `${unread} step${unread === 1 ? '' : 's'} to look at: play ${unread === 1 ? 'it' : 'them'}`
+			badge.classList.toggle('asking', !!asking)
+			badge.style.setProperty('--c', status!.color)
+			badge.style.setProperty('--ink', readableInk(status!.color))
+		}
+		const prompt = el.querySelector<HTMLButtonElement>('.prompt-frame')
+		if (!prompt) return
+		prompt.hidden = !status?.canPrompt
+		if (!status?.canPrompt) return
+		prompt.title = status.prompting ? 'Close its prompt (Esc)' : 'Prompt this session (C)'
+		prompt.classList.toggle('active', status.prompting)
+		prompt.style.setProperty('--c', status.color)
 	}
 
 	/** The row under a frame's groups: how many older items it leaves out, and buttons to show them. */
@@ -1239,11 +1396,13 @@ class SectionLabels {
 			seen.add(s.id)
 			let el = this.els.get(s.id)
 			if (!el) {
-				el = this.createLabel(s.id)
+				el = this.createLabel(s.id, editor)
 				this.host.appendChild(el)
 				this.els.set(s.id, el)
 			}
 			const title = el.children[0] as HTMLElement
+			const status = editor.frameChrome?.status(s.id) ?? null
+			this.showStatus(el, status)
 			// Sessions posted without a title (or titled with their id) get a placeholder; the id shows on hover.
 			const untitled = !s.title.trim() || s.title === s.id
 			const label = untitled ? 'Untitled session' : s.title
@@ -1256,12 +1415,14 @@ class SectionLabels {
 			}
 			const scale = Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx)
 			place(el, shift(s.header), scale)
+			// The badge and buttons keep a constant screen size inside the scaled label.
+			el.style.setProperty('--u', String(1 / scale))
 			if (this.onHide || this.onClose) {
-				// The buttons keep a constant screen size inside the scaled label, and only show when the
-				// frame is wide enough, the title line is tall enough, and the title keeps enough room.
-				el.style.setProperty('--u', String(1 / scale))
+				// The buttons only show when the frame is wide enough, the title line is tall enough, and
+				// the title keeps enough room.
 				const width = s.header.w * z
-				const buttons = (this.onHide ? BUTTON_PX : 0) + (this.onClose ? BUTTON_PX : 0) + 2 + 16 * scale
+				const buttons =
+					(status?.canPrompt ? BUTTON_PX : 0) + (this.onHide ? BUTTON_PX : 0) + (this.onClose ? BUTTON_PX : 0) + 2 + 16 * scale + (status && (status.unread || status.asking) ? BADGE_PX : 0)
 				const titleWidth = (this.titleWidths.get(s.id) ?? 0) * scale
 				const roomy =
 					s.box.w * z >= MIN_FRAME_PX_FOR_BUTTONS &&
@@ -1410,4 +1571,10 @@ function css([r, g, b, a]: RGBA) {
 
 function withAlpha([r, g, b, a]: RGBA, k: number): RGBA {
 	return [r, g, b, a * k]
+}
+
+/** Dark or white text, whichever reads better on a session colour. */
+function readableInk(hex: string) {
+	const [r, g, b] = hexToRgba(hex)
+	return 0.2126 * r * r + 0.7152 * g * g + 0.0722 * b * b > 0.18 ? '#0d0d0f' : '#ffffff'
 }

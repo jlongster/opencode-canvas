@@ -41,9 +41,9 @@ export interface CanvasData {
 	canvas: Canvas
 	sessions: Session[]
 	items: Item[]
-	/** OpenCode sessions on it as creatures (conjured from a browser, or called up by an agent's say/highlight) */
-	conjured: ConjuredAgent[]
-	/** what sessions' creatures want people to look at, oldest first (see AttentionAction) */
+	/** which OpenCode session each linked frame talks to (see SessionLink) */
+	links: SessionLink[]
+	/** what sessions want people to look at, oldest first (see AttentionAction) */
 	attention: AttentionAction[]
 }
 
@@ -186,8 +186,8 @@ export interface AnnotationView {
 /** Someone on a canvas right now, from the room's Yjs awareness (GET /api/canvases/:cid/presence). */
 export interface PresenceEntry {
 	clientId: number
-	/** agent: not a person (no pointer); conjured: a creature for an OpenCode session you can talk to (see ConjuredAgent) */
-	user: { name: string; color: string; agent?: boolean; conjured?: boolean; sessionId?: string; serverKey?: string }
+	/** agent: not a person (no pointer); with sessionId, a linked session's live state, published by its owner's tab */
+	user: { name: string; color: string; agent?: boolean; sessionId?: string; serverKey?: string }
 	/** item ids as they are, "frame:<sessionId>" for session frames, "note:<noteId>" for sticky notes */
 	selection: string[]
 	/** page coordinates, or null when their pointer is off the canvas */
@@ -197,7 +197,7 @@ export interface PresenceEntry {
 	chat: string | null
 	/** false while the chat message is still being typed (or, for agents, streamed) */
 	chatSent?: boolean
-	/** conjured worms: their OpenCode session is working (on a canvas prompt or anything else) */
+	/** linked sessions: working (on a canvas prompt or anything else) */
 	thinking?: boolean
 }
 
@@ -228,31 +228,24 @@ export interface SeedResult {
 }
 
 /**
- * An OpenCode session on a canvas as a creature (at most one per session per canvas). It sits at
- * (x, y) in page coordinates. The canvas server keeps only this record, with no credentials: the
- * owner's browser (ownerId) talks to OpenCode and publishes the creature's presence into the room
- * while its tab is open; otherwise it sleeps. Creatures the server made for an agent's say/highlight
- * have no owner (ownerId and serverKey ""), until someone conjures that session and adopts it.
+ * Which OpenCode session a canvas's session frame talks to (at most one per session per canvas).
+ * The canvas server keeps only this record, with no credentials: the owner's browser (ownerId)
+ * talks to OpenCode, runs prompts from the frame, and reports whether the session is working.
  */
-export interface ConjuredAgent {
+export interface SessionLink {
 	canvasId: string
 	sessionId: string
 	/** non-secret id of the OpenCode server the session lives on (a hash of its URL) */
 	serverKey: string
 	title: string
 	color: string
-	x: number
-	y: number
 	createdAt: number
-	/** random id kept in the owner browser's localStorage; only that browser can prompt it ("" for none) */
+	/** random id kept in the owner browser's localStorage; only that browser can prompt it */
 	ownerId: string
-	/**
-	 * It rushed (server-side) to point at an item just posted to (or replaced in) its session: the item
-	 * and when. x/y are then just outside that item's nearest edge (at 100% zoom); moving it clears this.
-	 */
-	rush?: { itemId: string; at: number }
-	/** in list responses: an owner tab is publishing its presence right now */
-	awake?: boolean
+	/** in list responses: an owner tab is running it right now */
+	online?: boolean
+	/** in list responses: the session is working */
+	busy?: boolean
 }
 
 /** One person's selection, resolved into objects (GET /api/canvases/:cid/selection). */
@@ -270,7 +263,7 @@ export interface ResolvedSelection {
 }
 
 /**
- * One thing a session's creature wants people on the canvas to look at, queued with the MCP say /
+ * One thing a session wants people on the canvas to look at, queued with the MCP say /
  * highlight tools (or POST /api/canvases/:cid/sessions/:sid/actions). The queue plays in order;
  * stepping past an action on an edit link marks it done, which removes it for everyone.
  */
@@ -299,12 +292,14 @@ export type ServerEvent =
 	| { type: 'session_deleted'; canvasId: string; id: string }
 	| { type: 'item'; item: Item }
 	| { type: 'item_deleted'; canvasId: string; id: string }
-	| { type: 'conjured'; agent: ConjuredAgent }
-	| { type: 'conjured_deleted'; canvasId: string; sessionId: string }
+	| { type: 'link'; link: SessionLink }
+	| { type: 'link_deleted'; canvasId: string; sessionId: string }
+	/** a linked session started or stopped working */
+	| { type: 'status'; canvasId: string; sessionId: string; busy: boolean }
 	| { type: 'attention'; action: AttentionAction }
 	| { type: 'attention_done'; canvasId: string; ids: string[] }
 	/**
 	 * Annotations an agent just read, sent right before they're removed from the room document, so
-	 * open canvases can animate them away (into the reading session's creature, if it has one).
+	 * open canvases can animate them away (into the reading session's frame).
 	 */
 	| { type: 'annotations_consumed'; canvasId: string; sessionId?: string; ids: string[] }

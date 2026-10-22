@@ -1,7 +1,9 @@
+import { EMBER, EMBER_STILL, type EmberSettings } from '../../render/busy/ember'
 import { range, select, SPEED, type ParamDef } from '../shared/params'
 import type { BusyVariant } from './variants'
 
 interface FieldDefaults {
+	speed?: number
 	pitch?: number
 	dot?: number
 	shape?: 'round' | 'square'
@@ -9,6 +11,7 @@ interface FieldDefaults {
 	levels?: number
 	base?: number
 	rim?: number
+	modulate?: number
 	scale?: number
 	warp?: number
 	drift?: number
@@ -22,7 +25,7 @@ interface FieldDefaults {
 /** Every flow variation's controls: the dot grid, then the field, then colour. */
 function params(d: FieldDefaults, extra: ParamDef[] = []): ParamDef[] {
 	return [
-		SPEED,
+		d.speed === undefined ? SPEED : { ...SPEED, value: d.speed },
 		range('pitch', 'Grid pitch', d.pitch ?? 4, 2, 12, 1, 'px'),
 		range('dot', 'Dot size', d.dot ?? 3, 1, 10, 0.5, 'px'),
 		select('shape', 'Dot shape', ['round', 'square'], d.shape ?? 'square'),
@@ -30,7 +33,7 @@ function params(d: FieldDefaults, extra: ParamDef[] = []): ParamDef[] {
 		range('levels', 'Brightness steps', d.levels ?? 0, 0, 8, 1),
 		range('base', 'Unlit dots', d.base ?? 0, 0, 0.3, 0.005),
 		range('rim', 'Edge row', d.rim ?? 0.18, 0, 1, 0.01),
-		range('modulate', 'Mask modulation', 0, 0, 1, 0.01),
+		range('modulate', 'Mask modulation', d.modulate ?? 0, 0, 1, 0.01),
 		range('scale', 'Noise size', d.scale ?? 18, 3, 120, 0.5, 'px'),
 		range('warp', 'Warp', d.warp ?? 1, 0, 3, 0.01),
 		range('drift', 'Outward drift', d.drift ?? 8, 0, 80, 0.5, 'px/s'),
@@ -55,26 +58,14 @@ export const FLOW_VARIANTS: BusyVariant[] = [
 	{
 		id: 'embers',
 		name: 'Ember clumps',
-		note: 'Tuned to look like Brian’s Brain, but continuous: two layers of fine noise crawl in opposite directions round the frame while drifting outward, and only their peaks light up, giving sparse bright clumps that thin out away from the edge and glide instead of stepping.',
-		params: params({ scale: 9, drift: 5, depth: 34, falloff: 1, mode: 'brightness', levels: 0, rim: 0.18 }, [
-			range('crawl', 'Crawl', 7, 0, 40, 0.5, 'px/s'),
-			range('sparse', 'Sparseness', 0.71, 0.4, 0.9, 0.005),
-			range('dim', 'Dim clumps', 0.3, 0, 1, 0.01),
+		note: 'What busy frames show in the app (render/busy/ember.ts, with these defaults). Tuned to look like Brian’s Brain, but continuous: two layers of fine noise crawl in opposite directions round the frame while drifting outward, and only their peaks light up, giving sparse bright clumps that thin out away from the edge and glide instead of stepping. Evaluated once per cell on the CPU.',
+		params: params(EMBER, [
+			range('crawl', 'Crawl', EMBER.crawl, 0, 40, 0.5, 'px/s'),
+			range('sparse', 'Sparseness', EMBER.sparse, 0.4, 0.9, 0.005),
+			range('dim', 'Dim clumps', EMBER.dim, 0, 1, 0.01),
 		]),
-		still: 4,
-		glsl: /* glsl */ `${MESH_TINT}
-float field(Fx f) {
-  float away = (f.d - f.t * P_drift) / P_scale;
-  float a = vnoise(around(f, P_scale, P_crawl, away) + vec3(0.0, 0.0, f.t * 0.11));
-  float b = vnoise(around(f, P_scale * 1.15, -P_crawl, away * 1.1 + 9.0) + vec3(0.0, 0.0, f.t * 0.13));
-  float m = max(a, b);
-  // Bright peaks, and a dimmer halo round them (like dying cells), thinning outward.
-  float bright = smoothstep(P_sparse + 0.06, P_sparse + 0.12, m);
-  float dim = smoothstep(P_sparse - 0.02, P_sparse + 0.03, m) * P_dim;
-  float edge = smoothstep(0.0, 0.25, f.fall);
-  return max(bright, dim) * (0.35 + 0.65 * f.fall) * edge;
-}
-vec3 tint(Fx f, vec3 col, float v) { return meshTint(f, col); }`,
+		still: EMBER_STILL,
+		dots: (out, view, frames, values, t) => out.fill(view, frames, { ...EMBER, ...values } as EmberSettings, t),
 	},
 	{
 		id: 'smoke',

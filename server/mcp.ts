@@ -14,8 +14,9 @@
  * by themselves.
  *
  * MCP is only a way to call tools: agents have no presence of their own on a canvas. To get
- * people's attention, say and highlight queue actions on the calling session's creature (see
- * attention.ts), which people step through on the canvas.
+ * people's attention, say and highlight queue actions for the calling session (see attention.ts),
+ * which people step through on the canvas: message cards on the session's frame, and the camera
+ * gliding to what's highlighted.
  */
 import type { BunFile } from 'bun'
 import { isAbsolute } from 'node:path'
@@ -41,7 +42,7 @@ export interface CanvasMcpDeps {
 	notes(canvasId: string): Promise<Note[]>
 	/**
 	 * annotations resolved against their items (see GET /api/canvases/:cid/annotations). Unless `keep`,
-	 * the ones returned are consumed: taken off the canvas (into readerSessionId's creature) and trashed.
+	 * the ones returned are consumed: taken off the canvas (into readerSessionId's frame) and trashed.
 	 */
 	annotations(
 		canvasId: string,
@@ -249,13 +250,13 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 		.describe(`Canvas id, or a canvas URL such as ${deps.webBase}/c/<id> or a view link …/v/<viewKey>`)
 	const sessionIdArg = z
 		.string()
-		.describe('Your exact OpenCode session id, $OPENCODE_SESSION_ID ("ses_" + 26 characters): your frame and creature on the canvas')
+		.describe('Your exact OpenCode session id, $OPENCODE_SESSION_ID ("ses_" + 26 characters): your frame on the canvas')
 	const sessionTitleArg = z
 		.string()
 		.optional()
 		.describe(
 			'Your OpenCode session\'s title (e.g. from `opencode api get /api/session/$OPENCODE_SESSION_ID` → .data.title). ' +
-				'Keeps your frame and creature named after your session, following renames; pass it every time.',
+				'Keeps your frame named after your session, following renames; pass it every time.',
 		)
 
 	function buildServer() {
@@ -264,10 +265,11 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			{
 				instructions:
 					'Review canvases where you post images, videos, HTML and links to web pages for the user. These are tools only: you have no ' +
-					'presence on the canvas yourself. Your OpenCode session has a frame (what you post) and a creature (a small ' +
-					'character beside the frame). To get the user\'s attention, say (a Markdown message) and highlight (point at an ' +
-					'item, group, frame or note) queue steps on your creature, which the user plays through when they look; ' +
-					'queue them in the order they should be read. Point at what you mean: pass highlight a point {x,y} or ' +
+					'presence on the canvas yourself. Your OpenCode session has a frame (what you post); people can prompt your session ' +
+					'from it and see when it is working. To get the user\'s attention, say (a Markdown message) and highlight ' +
+					'(point at an item, group, frame or note) queue steps for your session: a badge on your frame\'s title counts them, ' +
+					'and the user steps through them with Next (a message card at your frame; the camera gliding to what you highlight, ' +
+					'outlined); queue them in the order they should be read. Point at what you mean: pass highlight a point {x,y} or ' +
 					'region {x,y,w,h} in the item\'s image pixels (same units as annotation px/py and get_item\'s width/height); ' +
 					'omit them only to highlight the whole item. Pass sessionId and sessionTitle (your OpenCode session\'s ' +
 					'title) on every post_item, say and highlight. The user gives feedback on a specific spot of an image with ' +
@@ -347,7 +349,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'What each person who has the canvas open has selected right now, resolved into the selected items (with ids, ' +
 					'names, groups, sessions and media urls), session frames and sticky notes. Use this when the user says ' +
 					'"look at what I selected" or refers to "this"/"these" on the canvas. Pass the result\'s item ids to get_item ' +
-					'with includeImage to actually see images. Creatures (conjured sessions) are marked agent: true.',
+					'with includeImage to actually see images. Linked sessions\' live state shows as users marked agent: true.',
 				inputSchema: { canvas: canvasArg },
 			},
 			tool(async ({ canvas }: { canvas: string }) => {
@@ -374,7 +376,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			{
 				description:
 					'Who has the canvas open right now: name, colour, cursor position and visible area (page coordinates), ' +
-					'cursor-chat message and raw selection ids. Creatures (conjured sessions) are marked agent: true.',
+					'cursor-chat message and raw selection ids. Linked sessions\' live state shows as users marked agent: true (no cursor).',
 				inputSchema: { canvas: canvasArg },
 			},
 			tool(async ({ canvas }: { canvas: string }) => {
@@ -394,7 +396,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			}),
 		)
 
-		/** Queues one attention action on the caller's creature. */
+		/** Queues one attention action for the caller's session. */
 		async function queue(
 			args: { canvas: string; sessionId: string; sessionTitle?: string; text?: string; target?: string } & Precise,
 			kind: 'say' | 'highlight',
@@ -418,8 +420,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			'say',
 			{
 				description:
-					'Queue a message for the people on the canvas, from your session\'s creature (it appears beside your frame if ' +
-					'it is not there yet, and calls for attention until someone reads it). Markdown. Each call adds one step to ' +
+					'Queue a message for the people on the canvas, from your session: a badge on your frame\'s title and the attention ' +
+					'tray call for attention until someone reads it, and it shows as a message card at your frame. Markdown. Each call adds one step to ' +
 					'your queue, played in order with highlight steps: e.g. say what you did, highlight the item to look at, say ' +
 					'what you want to know. Returns the step\'s id and position in your queue. Fire-and-forget: you are not told ' +
 					'when it is read.',
@@ -438,9 +440,10 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			{
 				description:
 					'Queue a step that points the people on the canvas at something: when they reach it, the camera glides there and ' +
-					'your creature points at it, with your optional Markdown message beside it. Point at what you mean: pass point ' +
+					'it is outlined (a point gets a ring, a region an outline of just that part), with your optional Markdown message ' +
+					'beside it. Point at what you mean: pass point ' +
 					'{x,y} or region {x,y,w,h} in the item\'s image pixels (same units as annotation px/py and get_item\'s ' +
-					'width/height); omit them only to highlight the whole item. Like say, it goes on your creature\'s queue, in ' +
+					'width/height); omit them only to highlight the whole item. Like say, it goes on your session\'s queue, in ' +
 					'order. Target: an item id, a group as "<sessionId>/<group name>", a session frame "frame:<sessionId>", or a ' +
 					'sticky note "note:<noteId>" (for these, "at" {x,y} in canvas page coordinates points at a spot; else the whole thing is outlined).',
 				inputSchema: {
@@ -490,12 +493,12 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'anchor (where the note sits, or a text-only note\'s spot: x/y normalized 0..1, px/py in pixels). Filter by ' +
 					'sessionId (yours, for feedback on what you posted) or itemId. markedImageUrl is the image with the strokes ' +
 					'and the annotation\'s number drawn on it: fetch it to see what was circled. Reading consumes them: the ' +
-					'annotations returned are taken off the canvas (people see them fly into your creature) and come back with ' +
+					'annotations returned are taken off the canvas (people see them fly into your frame) and come back with ' +
 					'consumed: true, so act on them now; they wait in the trash for an hour (restore with annotationIds brings ' +
 					'them back). Pass keep: true to just peek.',
 				inputSchema: {
 					canvas: canvasArg,
-					sessionId: z.string().optional().describe('Only annotations on this session\'s items (pass yours: your creature picks them up)'),
+					sessionId: z.string().optional().describe('Only annotations on this session\'s items (pass yours)'),
 					itemId: z.string().optional().describe('Only annotations on this item'),
 					keep: z.boolean().optional().describe('Leave them on the canvas instead of consuming them (default false)'),
 				},

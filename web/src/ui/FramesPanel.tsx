@@ -6,7 +6,7 @@ import { atom } from '../state/signals'
 import { useValue } from './useValue'
 import './frames.css'
 
-/** Whether the frames list is open (the attention tray opens it for creatures of hidden frames). */
+/** Whether the frames list is open (the attention tray opens it for sessions whose frames are hidden). */
 export const framesPanelOpen = atom('framesPanelOpen', false)
 
 /** Pointer travel (px) before pressing a row becomes dragging it */

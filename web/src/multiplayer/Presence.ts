@@ -8,15 +8,11 @@ import { url, wsUrl } from '../base'
 export interface PeerUser {
 	name: string
 	color: string
-	/** not a person: set by conjured creatures (see WormHost), which have no pointer or view */
+	/** not a person: a linked session's live state, published by its owner's tab (see SessionHost); no pointer or view */
 	agent?: boolean
-	/** a conjured worm: an OpenCode session brought onto the canvas, which edit links can prompt */
-	conjured?: boolean
-	/** conjured worms: their OpenCode session, and the (non-secret key of the) OpenCode it lives on */
+	/** linked sessions: their OpenCode session, and the (non-secret key of the) OpenCode it lives on */
 	sessionId?: string
 	serverKey?: string
-	/** conjured worms nobody is running right now (drawn locally from their record, never broadcast) */
-	asleep?: boolean
 }
 
 /** What each person broadcasts through Yjs awareness. */
@@ -33,15 +29,15 @@ export interface PresenceState {
 	chatSent: boolean
 	/** agents: chat is something they say (a speech bubble) rather than an activity */
 	speaking?: boolean
-	/** conjured worms: their session is working on a prompt */
+	/** linked sessions: working on a prompt */
 	thinking?: boolean
-	/** conjured worms: their busy subagents (child sessions), oldest first */
+	/** linked sessions: their busy subagents (child sessions), oldest first */
 	subagents?: SubagentInfo[]
-	/** conjured worms: their session is waiting for its owner to answer questions or permission requests */
+	/** linked sessions: waiting for its owner to answer questions or permission requests */
 	asking?: AskingInfo | null
 }
 
-/** What a conjured worm's session is waiting on (see WormHost): questions win over permission requests. */
+/** What a linked session is waiting on (see SessionHost): questions win over permission requests. */
 export interface AskingInfo {
 	kind: 'question' | 'permission'
 	/** how many things to answer */

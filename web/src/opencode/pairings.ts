@@ -12,8 +12,8 @@
  * OpenCode only answers pages it allows by CORS: localhost, 127.0.0.1 and *.opencode.ai, plus the
  * origins added with `opencode service set cors <origin>`.
  *
- * Each pairing has a key: a non-secret id derived from the server's URL, which conjured worm
- * records on the canvas server use to say which OpenCode a session lives on.
+ * Each pairing has a key: a non-secret id derived from the server's URL, which session links on
+ * the canvas server use to say which OpenCode a session lives on.
  */
 import { OpenCode, type OpenCodeClient } from '@opencode/client'
 import { CORS_COMMAND } from '../base'
@@ -75,7 +75,7 @@ export const pairing = (key: string) => pairings.peek().find((p) => p.key === ke
 // for poking at from the console, like window.editor
 ;(window as any).opencode = { pairings, pairing: (key: string) => pairing(key), client: (key: string) => clientFor(pairing(key)!) }
 
-/** This browser's random id: conjured worms it creates are its own (only it can prompt and run them). */
+/** This browser's random id: sessions it links are its own (only it can prompt them, and its tabs run them). */
 export const ownerId: string = (() => {
 	let id = localStorage.getItem(OWNER_KEY)
 	if (!id || !/^[A-Za-z0-9_-]{8,64}$/.test(id)) {

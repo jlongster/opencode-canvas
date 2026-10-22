@@ -1,5 +1,5 @@
 /*
- * A frame title's hide and remove buttons (see SectionLabels). The label is scaled with zoom; --u is
+ * A frame title's prompt, hide and remove buttons, and its badge (see SectionLabels). The label is scaled with zoom; --u is
  * page px per screen px (1 / its scale), so sizes written as `N * var(--u, 1)` stay N px on screen.
  * They sit at the right end of the title row, centred on its 48px (page-space) line, and only take
  * part in layout while the label is .roomy; otherwise they fade out of flow so the title keeps its width.
@@ -26,6 +26,7 @@
 	transition: opacity 120ms, visibility 0s;
 }
 
+.section-label .frame-buttons .prompt-frame,
 .section-label .frame-buttons .hide-frame,
 .section-label .frame-buttons .close {
 	height: calc(24px * var(--u, 1));
@@ -39,9 +40,103 @@
 	font-size: calc(18px * var(--u, 1));
 }
 
-.section-label .frame-buttons .hide-frame svg {
+.section-label .frame-buttons .hide-frame svg,
+.section-label .frame-buttons .prompt-frame svg {
 	width: 1em;
 	height: 1em;
+}
+
+.section-label .frame-buttons button[hidden] {
+	display: none;
+}
+
+/* The prompt button: like the hide button, in the session's colour while its prompt is open. */
+.section-label .frame-buttons .prompt-frame {
+	flex: none;
+	display: inline-grid;
+	place-items: center;
+	box-sizing: border-box;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: #a1a1aa;
+	opacity: 0.55;
+	cursor: pointer;
+	pointer-events: auto;
+	transition: opacity 120ms, background 120ms, color 120ms;
+}
+
+.section-label .frame-buttons .prompt-frame:hover,
+.section-label.hovered .frame-buttons .prompt-frame {
+	opacity: 1;
+}
+
+.section-label .frame-buttons .prompt-frame:hover {
+	background: rgba(255, 255, 255, 0.08);
+	color: #e4e4e7;
+}
+
+.section-label .frame-buttons .prompt-frame.active {
+	opacity: 1;
+	color: var(--c);
+	background: color-mix(in srgb, var(--c) 16%, transparent);
+}
+
+/*
+ * The badge right after the title: how many walkthrough steps the session queued, or "?" while it
+ * waits on an answer. Session colour, constant size on screen, centred on the title's 48px line.
+ */
+.section-label .frame-badge {
+	flex: none;
+	align-self: flex-start;
+	box-sizing: border-box;
+	height: calc(20px * var(--u, 1));
+	min-width: calc(20px * var(--u, 1));
+	margin: calc((48px - 20px * var(--u, 1)) / 2) 0 0 calc(-8px + 2px * var(--u, 1));
+	padding: 0 calc(6px * var(--u, 1));
+	border: 0;
+	border-radius: calc(10px * var(--u, 1));
+	background: var(--c);
+	color: var(--ink);
+	font: inherit;
+	font-size: calc(12px * var(--u, 1));
+	font-weight: 700;
+	line-height: calc(20px * var(--u, 1));
+	font-variant-numeric: tabular-nums;
+	cursor: pointer;
+	pointer-events: auto;
+	box-shadow: 0 0 0 calc(2px * var(--u, 1)) rgba(17, 17, 19, 0.9);
+	transition: transform 120ms, filter 120ms;
+}
+
+.section-label .frame-badge[hidden] {
+	display: none;
+}
+
+.section-label .frame-badge:hover {
+	filter: brightness(1.12);
+	transform: scale(1.06);
+}
+
+/* Asking: a ring breathes out from it, so it reads as waiting on you. */
+.section-label .frame-badge.asking {
+	animation: frame-badge-ask 1.8s ease-out infinite;
+}
+
+@keyframes frame-badge-ask {
+	0% {
+		box-shadow: 0 0 0 calc(2px * var(--u, 1)) rgba(17, 17, 19, 0.9), 0 0 0 calc(2px * var(--u, 1)) color-mix(in srgb, var(--c) 70%, transparent);
+	}
+	70%,
+	100% {
+		box-shadow: 0 0 0 calc(2px * var(--u, 1)) rgba(17, 17, 19, 0.9), 0 0 0 calc(9px * var(--u, 1)) color-mix(in srgb, var(--c) 0%, transparent);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.section-label .frame-badge.asking {
+		animation: none;
+	}
 }
 
 .section-label .frame-buttons .hide-frame + .close {

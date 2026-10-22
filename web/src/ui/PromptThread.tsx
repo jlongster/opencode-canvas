@@ -1,23 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react'
+import { sessionColor } from '../../../shared/sessionColor'
 import type { Editor } from '../editor/Editor'
-import { isAskEvent, type Ask } from '../opencode/asks'
 import { onOpenCodeEvents } from '../opencode/events'
-import type { Conjure, LastExchange, PromptAttachment, PromptTarget, TalkBlock } from '../multiplayer/Conjure'
-import type { AskingInfo } from '../multiplayer/Presence'
-import { AskBubbles, AskWaiting, type AskActions } from './AskBubbles'
+import type { LastExchange, PromptAttachment, SessionControl, TalkBlock } from '../multiplayer/SessionControl'
+import { AskBubbles, AskWaiting, useAsking, useSessionAsks } from './AskBubbles'
+import { placeAtFrame, useFrameAnchor, type FrameAnchor } from './frameAnchor'
 import { markdownToHtml } from './markdown'
 import { useValue } from './useValue'
 import './promptThread.css'
 
-/** the stack's corner sits this far from the pointer (left, below; above when it flips) */
-const ANCHOR_X = 24
-const ANCHOR_Y = 44
-/** and stays this far inside the window */
-const MARGIN = 8
-/** too tall to go above or below, it goes this far to the pointer's side */
-const SIDE_X = 44
-/** it only goes above the pointer with room for it under the top bar (and the attention tray) */
-const TOP_ROOM = 100
 /** the widest a bubble gets (the input always is this wide) */
 const BUBBLE_MAX = 360
 const LINE_PX = 20
@@ -33,8 +24,6 @@ const FLASH_MS = 1800
 const STREAM_QUIET_MS = 1500
 /** after a turn ends, the exchange is read again from OpenCode this much later (its last message lands) */
 const REFETCH_MS = 700
-/** ask events come in bursts (a reply, then the next ask): the asks are read again once they settle */
-const ASKS_REFETCH_MS = 120
 /** a click (not a pan) away from the stack closes it */
 const CLICK_SLOP_PX = 5
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
@@ -46,11 +35,12 @@ let localIds = 0
 let attachmentIds = 0
 
 interface Meta {
-	x: number
-	y: number
 	thinking: boolean
-	asleep: boolean
+	/** its owner's tab is running it (sharing its replies) */
+	online: boolean
 	block: TalkBlock
+	/** why linking it to this browser failed, while it's unlinked */
+	linkError: string | null
 	color: string
 	name: string
 }
@@ -69,64 +59,47 @@ interface LocalMessage {
 type Expanded = null | 'prompt' | 'reply' | 'note'
 
 /**
- * The prompt stack under a clicked conjured worm: three bubbles floating one above the other, each
- * one line until clicked (the CSS clips it with an ellipsis): your last prompt and its
- * reply in the worm's colour (the reply's live last line while it works), then the input, outlined
- * in that colour, for its owner (send, steer, stop, attach). Everyone else gets a note on whose it is.
- * While its session waits on its owner to answer questions or a permission request, those take the
- * three bubbles' place (see AskBubbles): to answer for its owner, read-only for everyone else.
+ * A session's prompt, at its frame (its prompt button, or C; see SessionControl): three bubbles
+ * floating one above the other over the frame's title, each one line until clicked (the CSS clips
+ * it with an ellipsis): your last prompt and its reply in the session's colour (the reply's live
+ * last line while it works), then the input, outlined in that colour, for its owner (send, steer,
+ * stop, attach). Everyone else gets a note on whose it is. While the session waits on its owner to
+ * answer questions or a permission request, those take the three bubbles' place (see AskBubbles):
+ * to answer for its owner, read-only for everyone else.
  */
-export function ConjurePrompt({ editor, conjure }: { editor: Editor; conjure: Conjure }) {
-	const target = useValue(() => conjure.prompting.get(), [conjure])
+export function SessionPrompt({ editor, sessions }: { editor: Editor; sessions: SessionControl }) {
+	const sessionId = useValue(() => sessions.prompting.get(), [sessions])
+	const anchor = useFrameAnchor(editor, sessionId)
 	const metaKey = useValue(() => {
-		const t = conjure.prompting.get()
-		if (!t) return ''
-		editor.camera.get()
-		editor.viewport.get()
-		const peer =
-			conjure.presence.peers.get().find((p) => p.clientId === t.clientId) ?? conjure.sleepers.get().find((p) => p.clientId === t.clientId)
-		if (!peer?.cursor) return 'gone'
-		const p = editor.pageToScreen(peer.cursor)
+		const id = sessions.prompting.get()
+		if (!id) return ''
+		const peer = sessions.live.get().get(id)
+		const linking = sessions.linking.get()
 		const meta: Meta = {
-			x: Math.round(p.x),
-			y: Math.round(p.y),
-			thinking: !!peer.thinking,
-			asleep: !!peer.user.asleep,
-			block: conjure.talkBlock(t.sessionId),
-			color: peer.user.color,
-			name: peer.user.name,
+			thinking: sessions.isBusy(id) || !!peer?.thinking,
+			online: !!peer,
+			block: sessions.talkBlock(id),
+			linkError: linking?.sessionId === id ? linking.error : null,
+			color: sessionColor(id),
+			name: sessions.label(id),
 		}
 		return JSON.stringify(meta)
-	}, [editor, conjure])
-
-	// The worm was banished: nothing to talk to. (Waking up or falling asleep changes its client id.)
-	useEffect(() => {
-		if (metaKey !== 'gone' || !target) return
-		const worm = conjure.worms().find((p) => p.user.sessionId === target.sessionId)
-		if (worm) conjure.prompting.set({ clientId: worm.clientId, sessionId: target.sessionId })
-		else conjure.close()
-	}, [metaKey])
-
-	const meta = useMemo(() => (metaKey && metaKey !== 'gone' ? (JSON.parse(metaKey) as Meta) : null), [metaKey])
-	if (!target || !meta) return null
-	return <PromptStack key={target.sessionId} conjure={conjure} target={target} meta={meta} />
+	}, [sessions])
+	const meta = useMemo(() => (metaKey ? (JSON.parse(metaKey) as Meta) : null), [metaKey])
+	if (!sessionId || !meta || !anchor) return null
+	return <PromptStack key={sessionId} sessions={sessions} sessionId={sessionId} meta={meta} anchor={anchor} />
 }
 
-function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: PromptTarget; meta: Meta }) {
-	const sessionId = target.sessionId
-	const { block, thinking, asleep, color, name } = meta
+function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionControl; sessionId: string; meta: Meta; anchor: FrameAnchor }) {
+	const { block, thinking, online, color, name } = meta
 	const owner = !block
 	const live = useValue(() => {
-		const peer = conjure.presence.peers.get().find((p) => p.user.conjured && p.user.sessionId === sessionId)
+		const peer = sessions.live.get().get(sessionId)
 		return (peer?.speaking && peer.chat) || null
-	}, [conjure, sessionId])
-	const askingKey = useValue(() => {
-		const peer = conjure.presence.peers.get().find((p) => p.user.conjured && p.user.sessionId === sessionId)
-		return peer?.asking?.count ? JSON.stringify(peer.asking) : ''
-	}, [conjure, sessionId])
-	const asking = useMemo(() => (askingKey ? (JSON.parse(askingKey) as AskingInfo) : null), [askingKey])
-	const turn = useValue(() => conjure.turns.get()[sessionId] ?? null, [conjure, sessionId])
-	const stopping = useValue(() => !!conjure.stopping.get()[sessionId], [conjure, sessionId])
+	}, [sessions, sessionId])
+	const asking = useAsking(sessions, sessionId)
+	const turn = useValue(() => sessions.turns.get()[sessionId] ?? null, [sessions, sessionId])
+	const stopping = useValue(() => !!sessions.stopping.get()[sessionId], [sessions, sessionId])
 
 	const [exchange, setExchange] = useState<LastExchange | null>(() => exchanges.get(sessionId) ?? null)
 	const [loading, setLoading] = useState(false)
@@ -136,7 +109,7 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 	const [sending, setSending] = useState(false)
 	const [error, setError] = useState<string | null>(null)
 	const [flash, setFlash] = useState<string | null>(null)
-	const [menu, setMenu] = useState<null | 'open' | 'banish'>(null)
+	const [menu, setMenu] = useState<null | 'open' | 'unlink'>(null)
 	const [expanded, setExpanded] = useState<Expanded>(null)
 	const [typing, setTyping] = useState(false)
 	const [dragging, setDragging] = useState(false)
@@ -145,10 +118,7 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 	const [inputLines, setInputLines] = useState(1)
 	const [, setTick] = useState(0)
 	/** what its session waits on us to answer (ours only), as last read from OpenCode */
-	const [asks, setAsks] = useState<Ask[] | null>(null)
-	const [asksLoading, setAsksLoading] = useState(false)
-	const asksSeq = useRef(0)
-	const asksTimer = useRef<number>(undefined)
+	const { asks, loading: asksLoading, actions: askActions } = useSessionAsks(sessions, sessionId, owner, asking)
 	const expandedRef = useRef(expanded)
 	expandedRef.current = expanded
 
@@ -169,10 +139,10 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 	}
 
 	const refetch = useCallback(async () => {
-		if (!conjure.ours(sessionId)) return
+		if (!sessions.ours(sessionId)) return
 		setLoading(true)
 		try {
-			const ex = await conjure.lastExchange(sessionId)
+			const ex = await sessions.lastExchange(sessionId)
 			if (!ex) return
 			exchanges.set(sessionId, ex)
 			setExchange(ex)
@@ -184,27 +154,11 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 		} finally {
 			setLoading(false)
 		}
-	}, [conjure, sessionId])
+	}, [sessions, sessionId])
 
 	useEffect(() => {
 		if (owner) void refetch()
 	}, [owner, refetch])
-
-	const loadAsks = useCallback(async () => {
-		if (!conjure.ours(sessionId)) return
-		const seq = ++asksSeq.current
-		setAsksLoading(true)
-		const list = await conjure.asks(sessionId).catch(() => null)
-		if (seq !== asksSeq.current) return
-		setAsksLoading(false)
-		if (list) setAsks(list)
-	}, [conjure, sessionId])
-
-	// Read when it opens, and again whenever its presence says what it's asking changed.
-	useEffect(() => {
-		if (owner) void loadAsks()
-	}, [owner, askingKey, loadAsks])
-	useEffect(() => () => window.clearTimeout(asksTimer.current), [])
 
 	// A turn ended: read the exchange again (its prompts and its whole reply).
 	const wasThinking = useRef(thinking)
@@ -220,17 +174,12 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 
 	// What it's doing (tools), from its OpenCode's events: only its owner has them.
 	useEffect(() => {
-		const r = conjure.record(sessionId)
+		const r = sessions.record(sessionId)
 		if (!owner || !r) return
 		const tools = new Map<string, string>()
 		return onOpenCodeEvents(r.serverKey, {
 			onEvent: (ev) => {
 				const d = ev.data
-				if (isAskEvent(ev.type)) {
-					window.clearTimeout(asksTimer.current)
-					asksTimer.current = window.setTimeout(() => void loadAsks(), ASKS_REFETCH_MS)
-					return
-				}
 				if (d?.sessionID !== sessionId) return
 				if (ev.type === 'session.tool.input.started') {
 					tools.set(String(d.id), String(d.name ?? ''))
@@ -240,7 +189,7 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 				} else if (ev.type === 'session.text.started') setActivity(null)
 			},
 		})
-	}, [owner, conjure, sessionId, loadAsks])
+	}, [owner, sessions, sessionId])
 
 	// The elapsed time keeps moving.
 	useEffect(() => {
@@ -256,7 +205,7 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 		if (owner && !asksShowing) inputRef.current?.focus()
 	}, [owner, asksShowing])
 
-	// Kept on screen: its size decides whether it fits below the pointer.
+	// Kept on screen: its size decides whether it fits above the frame's title.
 	useLayoutEffect(() => {
 		const el = rootRef.current
 		if (!el) return
@@ -268,30 +217,32 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 	}, [])
 
 	// A click away (not a drag or a pan) collapses what's open, else closes the stack; unless that
-	// click opened it again (on its pointer) or another worm's.
+	// click opened it again (its frame's prompt button) or another session's.
 	useEffect(() => {
-		let down: { x: number; y: number; opened: PromptTarget | null } | null = null
+		let down: { x: number; y: number; opened: string | null } | null = null
 		const outside = (e: Event) => !rootRef.current?.contains(e.target as Node)
 		const onDown = (e: PointerEvent) => {
-			down = outside(e) ? { x: e.clientX, y: e.clientY, opened: conjure.prompting.peek() } : null
+			down = outside(e) ? { x: e.clientX, y: e.clientY, opened: sessions.prompting.peek() } : null
 		}
 		const onUp = (e: PointerEvent) => {
 			const d = down
 			down = null
 			if (!d || Math.hypot(e.clientX - d.x, e.clientY - d.y) > CLICK_SLOP_PX) return
 			window.setTimeout(() => {
-				if (conjure.prompting.peek() !== d.opened) return
+				if (sessions.prompting.peek() !== d.opened) return
 				setMenu(null)
 				if (expandedRef.current) setExpanded(null)
-				else conjure.close()
+				else sessions.close()
 			})
 		}
-		// Esc with nothing focused (after clicking a bubble open) collapses it too, then closes.
+		// Esc while not typing somewhere else (after clicking a bubble open, or its frame's prompt
+		// button) collapses it too, then closes.
 		const onKey = (e: KeyboardEvent) => {
-			if (e.key !== 'Escape' || (document.activeElement && document.activeElement !== document.body)) return
+			const active = document.activeElement as HTMLElement | null
+			if (e.key !== 'Escape' || rootRef.current?.contains(active) || (active && (active.matches('input, textarea') || active.isContentEditable))) return
 			e.preventDefault()
 			if (expandedRef.current) setExpanded(null)
-			else conjure.close()
+			else sessions.close()
 		}
 		window.addEventListener('pointerdown', onDown, true)
 		window.addEventListener('pointerup', onUp, true)
@@ -301,7 +252,7 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 			window.removeEventListener('pointerup', onUp, true)
 			window.removeEventListener('keydown', onKey)
 		}
-	}, [conjure])
+	}, [sessions])
 
 	// ---------- what the bubbles show ----------
 
@@ -402,7 +353,7 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 		setSending(true)
 		setError(null)
 		try {
-			const { steered } = await conjure.send(target, prompt, attachments, { queue: queue && thinking })
+			const { steered } = await sessions.send(sessionId, prompt, attachments, { queue: queue && thinking })
 			setLocal((l) => l.map((m) => (m.id === msg.id ? { ...m, status: 'sent', steer: steered } : m)))
 			setText('')
 			setAttachments([])
@@ -420,42 +371,23 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 		if (!thinking || stopping || !owner) return
 		setError(null)
 		try {
-			await conjure.interrupt(sessionId)
+			await sessions.interrupt(sessionId)
 		} catch (e) {
 			setError(`Couldn't stop it: ${(e as Error).message}`)
 		}
 	}
 
-	const banish = async () => {
+	const unlink = async () => {
 		setMenu(null)
 		try {
-			await conjure.banish(sessionId)
+			await sessions.unlink(sessionId)
 		} catch (e) {
 			setError((e as Error).message)
 		}
 	}
 
-	const close = () => conjure.close()
+	const close = () => sessions.close()
 
-	/** An ask answered here: gone straight away (OpenCode's events and the next read confirm it). */
-	const answered = (id: string) => {
-		setAsks((list) => list?.filter((a) => a.id !== id) ?? null)
-		void loadAsks()
-	}
-	const askActions: AskActions = {
-		answer: async (ask, answer) => {
-			await conjure.answer(sessionId, ask, answer)
-			answered(ask.id)
-		},
-		dismiss: async (ask) => {
-			await conjure.dismiss(sessionId, ask)
-			answered(ask.id)
-		},
-		permit: async (ask, decision) => {
-			await conjure.permit(sessionId, ask, decision)
-			answered(ask.id)
-		},
-	}
 	const askView = asksShowing ? (
 		<AskBubbles asks={asks!} actions={askActions} more={asks!.length - 1} />
 	) : asking && (!owner || (asksLoading && !asks?.length)) ? (
@@ -507,32 +439,22 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 	const vh = window.innerHeight
 	const w = size?.w ?? BUBBLE_MAX
 	const h = size?.h ?? 0
-	let left = meta.x - ANCHOR_X
-	let top = meta.y + ANCHOR_Y
-	if (top + h > vh - MARGIN) {
-		if (meta.y - ANCHOR_Y - h >= TOP_ROOM) top = meta.y - ANCHOR_Y - h
-		else if (vh - h - MARGIN < meta.y + ANCHOR_Y / 2) {
-			// Too tall for either (questions can be): beside the pointer rather than over it.
-			left = meta.x + SIDE_X + w + MARGIN <= vw ? meta.x + SIDE_X : meta.x - SIDE_X - w
-			top = Math.max(TOP_ROOM, meta.y - h / 3)
-		}
-	}
-	left = Math.round(Math.max(MARGIN, Math.min(left, vw - w - MARGIN)))
-	top = Math.round(Math.max(MARGIN, Math.min(top, vh - h - MARGIN)))
+	const { left, top } = placeAtFrame(anchor, w, h, vw, vh)
 	/** the ⋯ and × go on the stack's right, or its left with no room there */
 	const ctlSide = left + w + 40 > vw ? 'left' : 'right'
 
 	const hasContent = !!text.trim() || attachments.length > 0
 	const empty = !lastPrompt && !reply && !thinking
 	const ink = readableOn(color)
-	const busyLine = `${stopping ? 'Stopping' : 'Thinking'} ${mmss(Date.now() - turnStart)}${activity ? ` · ${activity}` : ''}`
+	const busyLine = `${stopping ? 'Stopping' : 'Working'} ${mmss(Date.now() - turnStart)}${activity ? ` · ${activity}` : ''}`
+	const linked = block !== 'unlinked'
 	const roText =
-		block === 'unowned'
-			? 'Nobody has conjured it: its session called it up to show you something. To talk to it, conjure the session from your OpenCode (Conjure, or C over its frame).'
+		block === 'unlinked'
+			? (meta.linkError ?? 'Looking for it in the OpenCode paired in this browser…')
 			: block === 'not-yours'
-				? `Only the browser that conjured it can talk to it. ${asleep ? 'It wakes up when its owner opens this canvas.' : 'You can watch it think and reply.'}`
-				: 'You conjured it, but this browser no longer has its OpenCode. Pair it again (Conjure → Servers) to wake it.'
-	const roLabel = `Read-only${asleep ? ' · asleep' : ''} · `
+				? `Only the browser that linked it to its OpenCode can prompt it. ${online ? 'You can watch it work and reply.' : 'Its owner doesn’t have this canvas open, so its replies don’t show either.'}`
+				: 'You linked it, but this browser no longer has its OpenCode paired. Pair it again (Sessions → Servers) to prompt it.'
+	const roLabel = block === 'unlinked' ? (meta.linkError ? 'Can’t prompt it · ' : 'Linking · ') : `Read-only${!owner && linked && !online ? ' · offline' : ''} · `
 	const roLine = roLabel + roText
 
 	return (
@@ -651,12 +573,8 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 							{expanded === 'note' ? (
 								<div className="pt-ro-full">
 									<b>
-										<LockIcon /> Read-only
-										{asleep && (
-											<span className="pt-asleep">
-												<MoonIcon /> asleep
-											</span>
-										)}
+										<LockIcon /> {block === 'unlinked' ? (meta.linkError ? 'Can’t prompt it' : 'Linking') : 'Read-only'}
+										{!owner && linked && !online && <span className="pt-offline">offline</span>}
 									</b>
 									{roText}
 								</div>
@@ -830,22 +748,25 @@ function PromptStack({ conjure, target, meta }: { conjure: Conjure; target: Prom
 					>
 						Copy session id
 					</button>
-					<button role="menuitem" className="pt-danger" onClick={() => setMenu('banish')}>
-						Banish… <span className="pt-dim">removes it for everyone</span>
-					</button>
+					{linked && (
+						<button role="menuitem" className="pt-danger" onClick={() => setMenu('unlink')}>
+							Unlink… <span className="pt-dim">from its OpenCode, for everyone</span>
+						</button>
+					)}
 				</div>
 			)}
-			{menu === 'banish' && (
+			{menu === 'unlink' && (
 				<div className={`pt-menu pt-confirm ${ctlSide}`} role="dialog">
 					<p>
-						Banish <b>{name}</b> from this canvas for everyone? The session itself stays in OpenCode.
+						Unlink <b>{name}</b> from its OpenCode for everyone? Its frame stays, and the session itself stays in OpenCode; whoever prompts it next
+						links it again.
 					</p>
 					<div className="pt-confirm-row">
 						<button className="pt-btn ghost" onClick={() => setMenu(null)}>
 							Cancel
 						</button>
-						<button className="pt-btn danger" autoFocus onClick={banish}>
-							Banish
+						<button className="pt-btn danger" autoFocus onClick={unlink}>
+							Unlink
 						</button>
 					</div>
 				</div>
@@ -955,7 +876,7 @@ function toolActivity(name: string, input?: Record<string, unknown>): string {
 		case 'webfetch':
 		case 'websearch':
 			return 'looking on the web'
-		// (subagents show on the canvas as baby pointers, never here)
+		// (its subagents are its own work, not a tool worth naming)
 		case 'task':
 		case 'subagent':
 			return ''
@@ -1026,14 +947,6 @@ function WarnIcon() {
 			<path d="M12 7.5v5.5M12 16.5v.01" />
 		</>,
 		{ strokeWidth: 2 },
-	)
-}
-
-function MoonIcon() {
-	return (
-		<svg className="pt-moon" viewBox="0 0 24 24" width="11" height="11" fill="currentColor" aria-hidden="true">
-			<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" />
-		</svg>
 	)
 }
 

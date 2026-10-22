@@ -1,28 +1,27 @@
+import { DONE as DONE_DEFAULTS, EmberDots, envelope as busyEnvelope, type DoneSettings, type EmberFrame } from '../../render/busy/ember'
 import { button, el, paramControl, switchControl } from '../shared/controls'
 import { defaults, hexToRgb, pack, range, resolve, toggle, type ParamValues } from '../shared/params'
 import { frameRows, optionsSection, paramsSection, restoreVariations, shareVariations, variationSection, type VariationSettings } from '../shared/panels'
 import { createShell, defaultFrames, frameFromSaved } from '../shared/shell'
 import { BlockBatch, BlockPass } from './blocks'
+import { DotPass } from './dots'
 import { FLOW_VARIANTS } from './fields'
 import { FlowPass, type FlowFrame } from './flow'
-import { BLOCK_VARIANTS, easeOut, type BusyCtx } from './variants'
+import { BLOCK_VARIANTS, type BusyCtx } from './variants'
 
 const VARIANTS = [...FLOW_VARIANTS, ...BLOCK_VARIANTS]
 
 const DONE = [
-	toggle('enabled', 'Resolve when done', true),
-	range('fill', 'Fill', 0.2, 0.05, 0.6, 0.01, 's'),
-	range('hold', 'Hold', 0.15, 0, 1, 0.01, 's'),
-	range('fade', 'Fade', 0.7, 0.1, 1.5, 0.05, 's'),
+	toggle('enabled', 'Resolve when done', DONE_DEFAULTS.enabled),
+	range('fill', 'Fill', DONE_DEFAULTS.fill, 0.05, 0.6, 0.01, 's'),
+	range('hold', 'Hold', DONE_DEFAULTS.hold, 0, 1, 0.01, 's'),
+	range('fade', 'Fade', DONE_DEFAULTS.fade, 0.1, 1.5, 0.05, 's'),
 ]
 
 const OPTIONS = [
 	toggle('reduced', 'Reduced motion', matchMedia('(prefers-reduced-motion: reduce)').matches),
 	toggle('desync', 'Offset frames in time', true),
 ]
-
-/** Enter: the indicator rises from its unlit floor over this long (ease-out). */
-const ENTER = 0.3
 
 interface BusySettings extends VariationSettings {
 	done: ParamValues
@@ -132,15 +131,8 @@ refreshCaption()
 
 /** How present the indicator is (0..1) and how far the done fill has gone (0..1). */
 function envelope(i: number): [number, number] {
-	const dt = clock - since[i]
-	if (settings.frames[i].working) return [easeOut(Math.min(1, dt / ENTER)), 0]
-	if (!finished[i]) return [0, 0]
-	const d = settings.done
-	if (settings.options.reduced || !d.enabled) return [1 - easeOut(Math.min(1, dt / 0.2)), 0]
-	const fill = d.fill as number
-	const hold = d.hold as number
-	const fade = d.fade as number
-	return [1 - easeOut(Math.min(1, Math.max(0, (dt - fill - hold) / fade))), easeOut(Math.min(1, dt / fill))]
+	const state = { working: !!settings.frames[i].working, since: since[i], finished: finished[i] }
+	return busyEnvelope(state, clock, settings.done as unknown as DoneSettings, !!settings.options.reduced)
 }
 
 // ---------- loop ----------
@@ -159,6 +151,8 @@ shell.onTick((dt) => {
 
 const flow = new FlowPass(shell.gl.gl, shell.gl.quadVao)
 const packed = new Float32Array(32)
+const dotPass = new DotPass(shell.gl.gl)
+const dots = new EmberDots()
 
 shell.onDraw((view) => {
 	const v = variant()
@@ -170,7 +164,16 @@ shell.onDraw((view) => {
 	const t = reduced ? v.still : time
 
 	// Flow variations: the field behind the dot grid, under the items (frames are translucent, items opaque).
-	const between = v.glsl
+	const between = v.dots
+		? () => {
+				const frames: EmberFrame[] = shell.layout.sections.map((s, i) => {
+					const [presence, fill] = envelope(i)
+					return { box: s.box, color: hexToRgb(settings.frames[i].color), offset: reduced ? 0 : offset(i) + i * 37, seed: i + 1, presence, fill }
+				})
+				v.dots!(dots, { x: camera.x, y: camera.y, z, width: view.width, height: view.height, dpr }, frames, values, t)
+				dotPass.draw(dots)
+			}
+		: v.glsl
 		? () => {
 				pack(v.params, values, packed)
 				const frames: FlowFrame[] = shell.layout.sections.map((s, i) => {
@@ -227,6 +230,7 @@ shell.onDraw((view) => {
 Object.assign(shell.playground, {
 	time: () => time,
 	blocks: () => batch.n,
+	dots: () => dots.n,
 	select: (id: string) => document.querySelector<HTMLElement>(`[role="option"][data-id="${id}"]`)?.click(),
 	setWorking: (on: boolean[]) => on.forEach((w, i) => setWorking(i, w)),
 	/** Scripted captures: stop the clock, then step it by exact amounts. */

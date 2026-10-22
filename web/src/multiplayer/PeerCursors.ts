@@ -1,21 +1,17 @@
 import type { Editor } from '../editor/Editor'
 import type { Vec } from '../editor/geometry'
-import { AgentWorms } from './AgentWorms'
-import type { Attention } from './Attention'
-import type { Conjure } from './Conjure'
-import { NATIVE, drawBody, palette, place } from './Pointer'
-import type { Peer, Presence } from './Presence'
+import type { Presence } from './Presence'
 
 const EASE_MS = 45
-/** how tall a person's cursor is on screen, px: a normal cursor, a bit smaller than a creature */
-const CURSOR_H = 21
-/** room round it in its little canvas for the shadow, px */
-const PAD = 4
+/** a classic pointer arrow, tip at (0, 0), in CSS px */
+const ARROW = new Path2D('M1 1 L1 17.5 L5.4 13.4 L8.4 20.2 L11.2 19 L8.3 12.4 L14.4 12.4 Z')
+/** its little canvas: room round the arrow for the outline and shadow, px */
+const BOX = { x: -3, y: -3, w: 22, h: 27 }
 
 /**
  * Other people's cursors, drawn as DOM in screen space. Positions are eased toward the latest
  * broadcast point every frame, so cursors glide instead of stepping at the network rate.
- * Sessions' creatures are drawn instead of a cursor (see AgentWorms).
+ * Agents (linked sessions' live state) have no pointer and aren't drawn.
  */
 export class PeerCursors {
 	private host: HTMLDivElement
@@ -33,36 +29,26 @@ export class PeerCursors {
 			chat: string | null
 		}
 	>()
-	private worms: AgentWorms
 	private dispose: () => void
 
 	constructor(
 		parent: HTMLElement,
 		private editor: Editor,
 		private presence: Presence,
-		private conjure: Conjure | null = null,
-		attention: Attention | null = null,
 	) {
 		this.host = document.createElement('div')
 		this.host.className = 'peer-cursors'
 		parent.appendChild(this.host)
-		this.worms = new AgentWorms(this.host, editor, conjure, attention)
-		this.dispose = editor.onFrame((now, elapsed) => this.update(now, elapsed))
+		this.dispose = editor.onFrame((_now, elapsed) => this.update(elapsed))
 	}
 
-	private update(now: number, elapsed: number) {
+	private update(elapsed: number) {
 		const k = 1 - Math.exp(-elapsed / EASE_MS)
 		const followingId = this.presence.followingId.peek()
 		const seen = new Set<number>()
-		const agents: Peer[] = []
 
 		for (const peer of this.presence.peers.peek()) {
-			if (peer.user.agent) {
-				// (Only creatures: agents using the canvas through MCP have no presence of their own.)
-				if (peer.user.conjured) agents.push(peer)
-				continue
-			}
-			if (!peer.cursor) continue
+			if (peer.user.agent || !peer.cursor) continue
 			seen.add(peer.clientId)
 			let c = this.cursors.get(peer.clientId)
 			if (!c) {
@@ -112,61 +98,33 @@ export class PeerCursors {
 			c.el.remove()
 			this.cursors.delete(id)
 		}
-
-		// Conjured worms nobody runs right now sleep where they were put.
-		if (this.conjure) agents.push(...this.conjure.sleepers.get())
-		// Creatures of hidden frames hide with them.
-		const sessions = this.editor.sessions.peek()
-		this.worms.update(now, elapsed, agents.filter((p) => !p.user.sessionId || !sessions[p.user.sessionId]?.hidden))
 	}
 
 	destroy() {
 		this.dispose()
-		this.worms.destroy()
 		this.host.remove()
 	}
 }
 
-let cursorShape: { box: { x: number; y: number; w: number; h: number }; draw: (ctx: CanvasRenderingContext2D, dpr: number, color: string) => void } | null =
-	null
-
-/**
- * A person's cursor: the creatures' wedge (see Pointer) without the eye, at its native heading (tip
- * up-left, like a normal pointer), with the very tip of its rounded point on the hotspot (0, 0).
- */
-function cursorGeometry() {
-	if (cursorShape) return cursorShape
-	const probe = place({ x: 0, y: 0 }, NATIVE, 1)
-	const ys = probe.ring.map((p) => p.y)
-	const scale = CURSOR_H / (Math.max(...ys) - Math.min(...ys))
-	const shape0 = place({ x: 0, y: 0 }, NATIVE, scale)
-	const dir = { x: Math.cos(NATIVE), y: Math.sin(NATIVE) }
-	const tip = shape0.ring.reduce((a, p) => (p.x * dir.x + p.y * dir.y > a.x * dir.x + a.y * dir.y ? p : a))
-	const shape = place({ x: -tip.x, y: -tip.y }, NATIVE, scale)
-	const xs = shape.ring.map((p) => p.x)
-	const ys2 = shape.ring.map((p) => p.y)
-	const x = Math.floor(Math.min(...xs)) - PAD
-	const y = Math.floor(Math.min(...ys2)) - PAD
-	const box = { x, y, w: Math.ceil(Math.max(...xs)) + PAD - x, h: Math.ceil(Math.max(...ys2)) + PAD + 1 - y }
-	cursorShape = {
-		box,
-		draw: (ctx, dpr, color) => {
-			ctx.setTransform(dpr, 0, 0, dpr, -box.x * dpr, -box.y * dpr)
-			drawBody(ctx, shape, palette(color), { dpr })
-		},
-	}
-	return cursorShape
-}
-
+/** A person's cursor: an arrow in their colour with a white outline and a soft shadow, tip on the hotspot (0, 0). */
 function drawCursor(canvas: HTMLCanvasElement, color: string, dpr: number) {
-	const { box, draw } = cursorGeometry()
-	canvas.width = Math.round(box.w * dpr)
-	canvas.height = Math.round(box.h * dpr)
-	canvas.style.width = `${box.w}px`
-	canvas.style.height = `${box.h}px`
-	canvas.style.left = `${box.x}px`
-	canvas.style.top = `${box.y}px`
+	canvas.width = Math.round(BOX.w * dpr)
+	canvas.height = Math.round(BOX.h * dpr)
+	canvas.style.width = `${BOX.w}px`
+	canvas.style.height = `${BOX.h}px`
+	canvas.style.left = `${BOX.x}px`
+	canvas.style.top = `${BOX.y}px`
 	const ctx = canvas.getContext('2d')!
 	ctx.clearRect(0, 0, canvas.width, canvas.height)
-	draw(ctx, dpr, color)
+	ctx.setTransform(dpr, 0, 0, dpr, -BOX.x * dpr, -BOX.y * dpr)
+	ctx.lineJoin = 'round'
+	ctx.shadowColor = 'rgba(0, 0, 0, 0.35)'
+	ctx.shadowBlur = 3
+	ctx.shadowOffsetY = 1
+	ctx.fillStyle = color
+	ctx.fill(ARROW)
+	ctx.shadowColor = 'transparent'
+	ctx.strokeStyle = '#fff'
+	ctx.lineWidth = 1.5
+	ctx.stroke(ARROW)
 }

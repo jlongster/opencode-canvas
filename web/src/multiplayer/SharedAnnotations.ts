@@ -28,15 +28,11 @@ const HOVER_GRACE_MS = 250
 const TEXT_MAX = 4000
 const SVG = 'http://www.w3.org/2000/svg'
 /**
- * Annotations an agent read (consumed, see consume): its creature visits at most this many in turn,
- * waiting up to VISIT_MS for it to get to each (close: within VISIT_NEAR_PX screen px of the anchor),
- * then the annotation shrinks into it over PICKUP_MS. The rest fade out over FADE_MS.
+ * Annotations an agent read (consumed, see consume): with its session's frame title on screen, they
+ * shrink into it over PICKUP_MS, one after another STAGGER_MS apart; the rest fade out over FADE_MS.
  */
-const MAX_VISITS = 6
-const VISIT_MS = 1300
-const VISIT_NEAR_PX = 110
-const VISIT_SETTLE_MS = 90
-const PICKUP_MS = 320
+const PICKUP_MS = 420
+const STAGGER_MS = 90
 const FADE_MS = 280
 /** a removal from elsewhere waits this long for the annotations_consumed event that may explain it */
 const ORPHAN_WAIT_MS = 400
@@ -421,8 +417,8 @@ export class SharedAnnotations {
 
 	/**
 	 * An agent read these annotations, and they're about to go from the document (or just went):
-	 * with its creature on the canvas, it glides over to each in turn and the annotation shrinks into
-	 * it; otherwise (or for ones off-screen, or too many) they fade out.
+	 * they shrink into its session's frame title when that's on screen (one after another), else
+	 * they fade out.
 	 */
 	private async consume(ids: string[], sessionId?: string) {
 		const views = ids
@@ -435,35 +431,19 @@ export class SharedAnnotations {
 			this.orphans.delete(view.id!)
 			view.setLeaving()
 		}
-		const creatures = this.editor.creatures
 		const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-		const fade: AnnotationView[] = []
-		let visits = 0
-		for (const view of views) {
-			const anchor = this.anchorOf(view)
-			const can = !still && sessionId && creatures?.at(sessionId) && anchor && visits < MAX_VISITS && this.onScreen(anchor)
-			if (!can) {
-				fade.push(view)
-				continue
-			}
-			visits++
-			creatures!.reaching.set(sessionId!, anchor!)
-			const reached = await this.until(() => {
-				const at = creatures!.at(sessionId!)
-				const a = this.anchorOf(view)
-				if (!at || !a) return true
-				const s = this.editor.pageToScreen(at)
-				const t = this.editor.pageToScreen(a)
-				return Math.hypot(s.x - t.x, s.y - t.y) < VISIT_NEAR_PX
-			}, VISIT_MS)
-			if (reached) await wait(VISIT_SETTLE_MS)
-			const at = creatures!.at(sessionId!)
-			if (at) await view.shrinkInto(this.editor.pageToScreen(at), PICKUP_MS)
-			else await view.fadeOut(FADE_MS)
-			this.finishLeaving(view)
-		}
-		if (sessionId && visits && creatures?.reaching.get(sessionId)) creatures.reaching.delete(sessionId)
-		await Promise.all(fade.map(async (view) => (await view.fadeOut(FADE_MS), this.finishLeaving(view))))
+		const header = sessionId ? this.editor.layout.get().sections.find((s) => s.id === sessionId)?.header : undefined
+		const target = header && !still ? { x: header.x + header.h, y: header.y + header.h / 2 } : null
+		await Promise.all(
+			views.map(async (view, i) => {
+				const anchor = this.anchorOf(view)
+				if (target && anchor && this.onScreen(anchor) && this.onScreen(target)) {
+					await wait(i * STAGGER_MS)
+					await view.shrinkInto(this.editor.pageToScreen(target), PICKUP_MS)
+				} else await view.fadeOut(FADE_MS)
+				this.finishLeaving(view)
+			}),
+		)
 	}
 
 	/** A view's animation ended: it goes, unless it came back into the document meanwhile (restored). */
@@ -476,7 +456,7 @@ export class SharedAnnotations {
 		this.pinned.delete(id)
 	}
 
-	/** Where a creature goes to pick it up (page): the middle of the drawing, or a text note's spot. */
+	/** Where it leaves from (page): the middle of the drawing, or a text note's spot. */
 	private anchorOf(view: AnnotationView): Vec | null {
 		const a = view.data
 		const box = a && this.itemBox(a.itemId)
@@ -997,7 +977,7 @@ class AnnotationView {
 		}
 	}
 
-	/** Picked up: the card, chip and strokes shrink into a screen point (a creature) as they fade. */
+	/** Picked up: the card, chip and strokes shrink into a screen point (its frame's title) as they fade. */
 	shrinkInto(point: Vec, ms: number): Promise<unknown> {
 		const easing = 'cubic-bezier(0.5, 0, 0.75, 0)'
 		const origin = `${point.x}px ${point.y}px`

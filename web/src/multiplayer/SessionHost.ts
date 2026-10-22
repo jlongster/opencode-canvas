@@ -1,38 +1,38 @@
 /**
- * Runs this browser's conjured worms. A worm belongs to the browser that conjured it (its ownerId);
+ * Runs this browser's linked sessions. A link belongs to the browser that made it (its ownerId);
  * while one of that browser's tabs has the canvas open (and its OpenCode is paired there), that tab
- * runs the worm: it talks to OpenCode directly and publishes the worm's presence into the canvas's
- * room, so everyone sees it think and reply. With no such tab the worm sleeps for everyone (see
- * Conjure.sleepers).
+ * runs the session: it talks to OpenCode directly, reports whether the session is working to the
+ * canvas server (status: everyone draws the busy frame from it), and shares the session's live
+ * state through the canvas's room, so everyone sees it reply. With no such tab the link is offline.
  *
- * Each running worm is its own room participant: a read-only y-websocket connection with its own
- * awareness client id, publishing exactly what the canvas server's agents used to (user.conjured,
- * cursor at the worm's position, chat/chatSent/speaking/thinking). So every viewer, and the canvas
- * server's presence API, sees it like any other agent, and it disappears the moment the tab closes.
+ * Each running session is its own room participant: a read-only y-websocket connection with its own
+ * awareness client id and no pointer, publishing user.agent + sessionId, chat/chatSent/speaking
+ * (the streaming reply, shown in the frame's prompt bubbles), thinking, subagents and asking. It
+ * disappears the moment the tab closes.
  *
- * With several tabs of the same browser on the canvas, a Web Lock per worm makes sure only one runs it.
+ * With several tabs of the same browser on the canvas, a Web Lock per session makes sure only one runs it.
  *
  * Busy/idle comes from OpenCode's event stream (reconciled with session.active() on connect and
  * every RECONCILE_MS), whoever started the work: a prompt from the canvas, the TUI, anything. While
- * the session works the worm thinks and the assistant's text streams into its chat (shown in its
- * prompt box); the final reply stays there until the next turn.
+ * the session works the assistant's text streams into its chat; the final reply stays there until
+ * the next turn.
  *
  * Its subagents (child sessions, e.g. from the task tool, and their children) are tracked from the
- * same stream: which are busy is published as `subagents`, and viewers draw a tiny worm for each.
+ * same stream: which are busy is published as `subagents`.
  *
  * So are the questions (its question tool: OpenCode forms) and tool permission requests the session
  * and its subagents are waiting on (see asks.ts), reconciled with OpenCode's pending lists like
- * busy/idle: while any are, `asking` says so, and the worm calls for its owner to answer.
+ * busy/idle: while any are, `asking` says so, and the frame calls for its owner to answer.
  */
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
-import type { ConjuredAgent } from '../../../shared/types'
+import type { SessionLink } from '../../../shared/types'
 import { wsUrl } from '../base'
 import { askCount, askText, listAsks, parseForm, parsePermission, type Ask } from '../opencode/asks'
 import { onOpenCodeEvents, type OpenCodeEvent } from '../opencode/events'
 import { errorText, ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { react, type Atom } from '../state/signals'
-import { renameSession, updateConjured } from '../sync/client'
+import { renameSession, reportStatus, updateLink } from '../sync/client'
 import type { AskingInfo, PresenceState, SubagentInfo } from './Presence'
 
 const NAME_MAX = 40
@@ -40,16 +40,18 @@ const CHAT_MAX = 2000
 const ERROR_MAX = 240
 /** streamed text is published at most this often */
 const STREAM_PUBLISH_MS = 80
-/** an idle session that turns busy again within this long (its next queued turn) keeps thinking */
+/** an idle session that turns busy again within this long (its next queued turn) keeps working */
 const IDLE_SETTLE_MS = 600
 /** busy/idle is checked against session.active() this often, in case the stream missed something */
 const RECONCILE_MS = 30_000
+/** while busy, the status is sent again this often (the server drops one not refreshed for a minute) */
+const STATUS_REFRESH_MS = 20_000
 /** at most this many busy subagents are published (the oldest ones) */
 const SUBAGENTS_MAX = 8
 const SUBAGENT_TITLE_MAX = 80
 const CHILDREN_LIMIT = 50
 
-export function wormName(r: Pick<ConjuredAgent, 'title' | 'sessionId'>) {
+export function sessionName(r: Pick<SessionLink, 'title' | 'sessionId'>) {
 	const title = r.title.trim()
 	if (!title) return `ses_…${r.sessionId.slice(-6)}`
 	return title.length > NAME_MAX ? title.slice(0, NAME_MAX - 1) + '…' : title
@@ -63,12 +65,12 @@ function capChat(text: string) {
 
 const short = (text: string) => (text.length > ERROR_MAX ? text.slice(0, ERROR_MAX - 1) + '…' : text)
 
-/** Whether this browser runs the worm: it's ours and its OpenCode is paired here. */
-export const runsHere = (r: ConjuredAgent) => r.ownerId === ownerId && !!pairing(r.serverKey)
+/** Whether this browser runs the session: its link is ours and its OpenCode is paired here. */
+export const runsHere = (r: SessionLink) => r.ownerId === ownerId && !!pairing(r.serverKey)
 
 /**
  * The text of the latest of the session's last `scan` assistant messages that has any (a turn's
- * last steps may be only tool calls), capped like the worm's chat; "" when there's none.
+ * last steps may be only tool calls), capped like the shared chat; "" when there's none.
  */
 export async function lastAssistantText(serverKey: string, sessionId: string, scan = 10): Promise<string> {
 	const res = await withServer(serverKey, (c) => c.message.list({ sessionID: sessionId, limit: scan, order: 'desc', type: 'assistant' }))
@@ -84,13 +86,13 @@ export async function lastAssistantText(serverKey: string, sessionId: string, sc
 	return ''
 }
 
-export class WormHost {
-	private running = new Map<string, { stop: AbortController; runtime: WormRuntime | null }>()
+export class SessionHost {
+	private running = new Map<string, { stop: AbortController; runtime: SessionRuntime | null }>()
 	private disposers: (() => void)[] = []
 
 	constructor(
 		private canvasId: string,
-		private records: Atom<ConjuredAgent[]>,
+		private records: Atom<SessionLink[]>,
 		/** the title of the session's frame on this canvas, undefined when it has none */
 		private frameTitle: (sessionId: string) => string | undefined,
 	) {
@@ -107,7 +109,7 @@ export class WormHost {
 		for (const sessionId of [...this.running.keys()]) this.stop(sessionId)
 	}
 
-	private sync(records: ConjuredAgent[]) {
+	private sync(records: SessionLink[]) {
 		const wanted = new Map(records.filter(runsHere).map((r) => [r.sessionId, r]))
 		for (const sessionId of [...this.running.keys()]) if (!wanted.has(sessionId)) this.stop(sessionId)
 		for (const [sessionId, record] of wanted) {
@@ -118,14 +120,14 @@ export class WormHost {
 	}
 
 	private start(sessionId: string) {
-		const run = { stop: new AbortController(), runtime: null as WormRuntime | null }
+		const run = { stop: new AbortController(), runtime: null as SessionRuntime | null }
 		this.running.set(sessionId, run)
 		const hold = () =>
 			new Promise<void>((resolve) => {
 				if (run.stop.signal.aborted) return resolve()
 				const record = this.records.peek().find((r) => r.sessionId === sessionId)
 				if (!record) return resolve()
-				run.runtime = new WormRuntime(record, this.frameTitle)
+				run.runtime = new SessionRuntime(this.canvasId, record, this.frameTitle)
 				run.stop.signal.addEventListener('abort', () => {
 					run.runtime?.destroy()
 					run.runtime = null
@@ -138,8 +140,8 @@ export class WormHost {
 			return
 		}
 		// Released when we stop (or the tab closes); another tab of ours waiting for it takes over then.
-		locks.request(`opencode-canvas-worm:${this.canvasId}:${sessionId}`, { signal: run.stop.signal }, hold).catch((e) => {
-			if ((e as Error)?.name !== 'AbortError') console.error('worm lock failed', e)
+		locks.request(`opencode-canvas-session:${this.canvasId}:${sessionId}`, { signal: run.stop.signal }, hold).catch((e) => {
+			if ((e as Error)?.name !== 'AbortError') console.error('session lock failed', e)
 		})
 	}
 
@@ -163,8 +165,8 @@ const subTitle = (title: unknown) => {
 	return t.length > SUBAGENT_TITLE_MAX ? t.slice(0, SUBAGENT_TITLE_MAX - 1) + '…' : t
 }
 
-/** One worm, running in this tab: its room presence and its OpenCode session's busy/idle and replies. */
-class WormRuntime {
+/** One linked session, running in this tab: its status, its live state in the room, and its replies. */
+class SessionRuntime {
 	private doc = new Y.Doc()
 	private provider: WebsocketProvider
 	private chat: string | null = null
@@ -181,6 +183,9 @@ class WormRuntime {
 	private idleTimer = 0
 	private publishTimer = 0
 	private reconcileTimer = 0
+	private statusTimer = 0
+	/** whether the first check against OpenCode has told the server the session's status yet */
+	private statusSynced = false
 	private reconciling = false
 	private unwatch: () => void
 	private destroyed = false
@@ -194,10 +199,11 @@ class WormRuntime {
 	private askEvents: { added: Map<string, Ask>; gone: Set<string> } | null = null
 
 	constructor(
-		private record: ConjuredAgent,
+		private canvasId: string,
+		private record: SessionLink,
 		private frameTitle: (sessionId: string) => string | undefined,
 	) {
-		// Read-only: a worm never writes the canvas's document, it only shares presence.
+		// Read-only: it never writes the canvas's document, it only shares live state.
 		this.provider = new WebsocketProvider(wsUrl('/api/rooms'), `canvas-${record.canvasId}`, this.doc, { disableBc: true, params: { view: '1' } })
 		this.publish()
 		this.unwatch = onOpenCodeEvents(record.serverKey, {
@@ -208,14 +214,25 @@ class WormRuntime {
 			},
 		})
 		this.reconcileTimer = window.setInterval(() => void this.reconcile(), RECONCILE_MS)
+		window.addEventListener('pagehide', this.onPageHide)
+		window.addEventListener('pageshow', this.onPageShow)
 		void this.reconcile()
 		void this.refreshTitle()
 	}
 
-	setRecord(record: ConjuredAgent) {
-		const moved = record.x !== this.record.x || record.y !== this.record.y || record.title !== this.record.title || record.color !== this.record.color
+	/** The tab is going away mid-turn: nobody will keep its busy status fresh, so it ends now (until it's back). */
+	private onPageHide = () => {
+		if (this.busy) this.report(false)
+	}
+
+	private onPageShow = (e: PageTransitionEvent) => {
+		if (e.persisted && this.busy) this.report(true)
+	}
+
+	setRecord(record: SessionLink) {
+		const changed = record.title !== this.record.title || record.color !== this.record.color
 		this.record = record
-		if (moved) this.publish()
+		if (changed) this.publish()
 	}
 
 	destroy() {
@@ -224,6 +241,10 @@ class WormRuntime {
 		clearTimeout(this.idleTimer)
 		clearTimeout(this.publishTimer)
 		clearInterval(this.reconcileTimer)
+		clearInterval(this.statusTimer)
+		window.removeEventListener('pagehide', this.onPageHide)
+		window.removeEventListener('pageshow', this.onPageShow)
+		if (this.busy) this.report(false)
 		this.provider.awareness.setLocalState(null)
 		this.provider.destroy()
 		this.doc.destroy()
@@ -235,8 +256,8 @@ class WormRuntime {
 		if (this.destroyed) return
 		const r = this.record
 		const state: PresenceState = {
-			user: { name: wormName(r), color: r.color, agent: true, conjured: true, sessionId: r.sessionId, serverKey: r.serverKey },
-			cursor: { x: r.x, y: r.y },
+			user: { name: sessionName(r), color: r.color, agent: true, sessionId: r.sessionId, serverKey: r.serverKey },
+			cursor: null,
 			selection: [],
 			view: null,
 			chat: this.chat,
@@ -247,6 +268,15 @@ class WormRuntime {
 			...(this.asking ? { asking: this.asking } : {}),
 		}
 		this.provider.awareness.setLocalState(state)
+	}
+
+	/** Tells the canvas server (so everyone) whether the session is working. */
+	private report(busy: boolean) {
+		clearInterval(this.statusTimer)
+		this.statusTimer = 0
+		const send = () => void reportStatus(this.canvasId, this.record.sessionId, { busy, ownerId: this.record.ownerId }).catch(() => {})
+		send()
+		if (busy && !this.destroyed) this.statusTimer = window.setInterval(send, STATUS_REFRESH_MS)
 	}
 
 	private schedulePublish() {
@@ -337,6 +367,7 @@ class WormRuntime {
 			this.thinking = true
 			this.chatSent = !this.chat
 			this.publish()
+			this.report(true)
 		} else if (this.busy && !this.idleTimer) {
 			this.idleTimer = window.setTimeout(() => void this.settle(), IDLE_SETTLE_MS)
 		}
@@ -347,6 +378,7 @@ class WormRuntime {
 		this.idleTimer = 0
 		if (!this.busy) return
 		this.busy = false
+		this.report(false)
 		const error = this.error
 		this.error = null
 		let text = this.text()
@@ -354,7 +386,7 @@ class WormRuntime {
 		this.replyDone = true
 		// just this turn's last message: an earlier one could be a previous turn's
 		if (!text) text = await lastAssistantText(this.record.serverKey, this.record.sessionId, 1).catch(() => '')
-		// Something new started meanwhile: that owns the worm now.
+		// Something new started meanwhile: that owns the chat now.
 		if (this.busy || this.destroyed) return
 		this.thinking = false
 		this.dropAsks(this.record.sessionId)
@@ -424,7 +456,7 @@ class WormRuntime {
 		this.publishAsking()
 	}
 
-	/** Events of other sessions: the worm's subagents starting, working and finishing. */
+	/** Events of other sessions: its subagents starting, working and finishing. */
 	private onFamilyEvent(type: string, sessionId: string, data: Record<string, unknown>) {
 		if (type === 'session.created') {
 			const parentId = typeof data.parentID === 'string' ? data.parentID : ''
@@ -484,7 +516,7 @@ class WormRuntime {
 		this.schedulePublish()
 	}
 
-	/** Checks the worm against the sessions OpenCode says are running. */
+	/** Checks the session against the ones OpenCode says are running. */
 	private async reconcile() {
 		if (this.reconciling) return
 		this.reconciling = true
@@ -492,12 +524,16 @@ class WormRuntime {
 			.catch(() => null)
 			.finally(() => (this.reconciling = false))
 		if (!active || this.destroyed) return
-		this.setBusy(this.record.sessionId in active)
+		const busy = this.record.sessionId in active
+		this.setBusy(busy)
+		// A status left over from before (a tab closed mid-turn) is put right straight away.
+		if (!this.statusSynced && !busy) this.report(false)
+		this.statusSynced = true
 		await this.reconcileSubagents(active)
 		await this.reconcileAsks(active)
 	}
 
-	/** Lists the worm's children (and the children of busy ones) and marks which are running. */
+	/** Lists the session's children (and the children of busy ones) and marks which are running. */
 	private async reconcileSubagents(active: Record<string, unknown>) {
 		const list = (parentId: string) =>
 			withServer(this.record.serverKey, (c) => c.session.list({ parentID: parentId, limit: CHILDREN_LIMIT, order: 'desc' }, { signal: AbortSignal.timeout(10_000) }))
@@ -536,7 +572,7 @@ class WormRuntime {
 	}
 
 	/**
-	 * Sessions get their title after the first turn, and can be renamed: keep the worm's name, and
+	 * Sessions get their title after the first turn, and can be renamed: keep the link's title, and
 	 * its session's frame's title (when it has a frame here), in step.
 	 */
 	private async refreshTitle(known?: string) {
@@ -551,6 +587,6 @@ class WormRuntime {
 		if (frame !== undefined && frame !== title) void renameSession(canvasId, sessionId, title).catch(() => {})
 		if (title === this.record.title) return
 		this.setRecord({ ...this.record, title })
-		await updateConjured(canvasId, sessionId, { title }).catch(() => {})
+		await updateLink(canvasId, sessionId, { title }).catch(() => {})
 	}
 }

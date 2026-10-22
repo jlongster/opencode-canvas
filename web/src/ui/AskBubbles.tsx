@@ -1,7 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AskingInfo } from '../multiplayer/Presence'
-import type { Ask, AskField, AskValue, PermissionAsk, QuestionAsk } from '../opencode/asks'
+import type { SessionControl } from '../multiplayer/SessionControl'
+import { isAskEvent, type Ask, type AskField, type AskValue, type PermissionAsk, type QuestionAsk } from '../opencode/asks'
+import { onOpenCodeEvents } from '../opencode/events'
 import { markdownToHtml } from './markdown'
+import { useValue } from './useValue'
+
+/** ask events come in bursts (a reply, then the next ask): the asks are read again once they settle */
+const ASKS_REFETCH_MS = 120
 
 /** One field's answer as it's being picked: the options chosen, and the typed answer (on when chosen). */
 interface Draft {
@@ -18,11 +24,86 @@ export interface AskActions {
 	permit(ask: PermissionAsk, decision: 'once' | 'always' | 'reject'): Promise<void>
 }
 
+/** What a linked session is waiting on its owner to answer, from its live state (shared by its owner's tab). */
+export function useAsking(sessions: SessionControl, sessionId: string): AskingInfo | null {
+	const key = useValue(() => {
+		const asking = sessions.live.get().get(sessionId)?.asking
+		return asking?.count ? JSON.stringify(asking) : ''
+	}, [sessions, sessionId])
+	return useMemo(() => (key ? (JSON.parse(key) as AskingInfo) : null), [key])
+}
+
 /**
- * In place of the stack's prompt, reply and input while its session waits on its owner: the oldest
- * question (one bubble per field, in the worm's colour: its options as rows, single or multiple
- * choice, and "Type your own answer" when allowed) or permission request (what the tool wants to
- * do), then one bubble with Submit / Dismiss, or Allow once / Always allow / Reject.
+ * The questions and permission requests our own session waits on, read from its OpenCode when
+ * shown, whenever what it's asking changes, and on its OpenCode's ask events; with the actions
+ * that answer them (an answered one goes straight away). Nothing for sessions that aren't ours.
+ */
+export function useSessionAsks(sessions: SessionControl, sessionId: string, owner: boolean, asking: AskingInfo | null) {
+	const [asks, setAsks] = useState<Ask[] | null>(null)
+	const [loading, setLoading] = useState(false)
+	const seq = useRef(0)
+	const timer = useRef<number>(undefined)
+
+	const load = useCallback(async () => {
+		if (!sessions.ours(sessionId)) return
+		const n = ++seq.current
+		setLoading(true)
+		const list = await sessions.asks(sessionId).catch(() => null)
+		if (n !== seq.current) return
+		setLoading(false)
+		if (list) setAsks(list)
+	}, [sessions, sessionId])
+
+	const askingKey = asking ? JSON.stringify(asking) : ''
+	useEffect(() => {
+		if (owner) void load()
+	}, [owner, askingKey, load])
+
+	useEffect(() => {
+		const r = sessions.record(sessionId)
+		if (!owner || !r) return
+		const off = onOpenCodeEvents(r.serverKey, {
+			onEvent: (ev) => {
+				if (!isAskEvent(ev.type)) return
+				window.clearTimeout(timer.current)
+				timer.current = window.setTimeout(() => void load(), ASKS_REFETCH_MS)
+			},
+		})
+		return () => {
+			off()
+			window.clearTimeout(timer.current)
+		}
+	}, [owner, sessions, sessionId, load])
+
+	const actions = useMemo<AskActions>(() => {
+		const answered = (id: string) => {
+			setAsks((list) => list?.filter((a) => a.id !== id) ?? null)
+			void load()
+		}
+		return {
+			answer: async (ask, answer) => {
+				await sessions.answer(sessionId, ask, answer)
+				answered(ask.id)
+			},
+			dismiss: async (ask) => {
+				await sessions.dismiss(sessionId, ask)
+				answered(ask.id)
+			},
+			permit: async (ask, decision) => {
+				await sessions.permit(sessionId, ask, decision)
+				answered(ask.id)
+			},
+		}
+	}, [sessions, sessionId, load])
+
+	return { asks: owner ? asks : null, loading, actions }
+}
+
+/**
+ * While a session waits on its owner (in its prompt, or the card at its frame; see FrameAsks):
+ * the oldest question (one bubble per field, in the session's colour: its options as rows, single
+ * or multiple choice, and "Type your own answer" when allowed) or permission request (what the tool
+ * wants to do), then one bubble with Submit / Dismiss, or Allow once / Always allow / Reject.
  */
 export function AskBubbles({ asks, actions, more }: { asks: Ask[]; actions: AskActions; more: number }) {
 	const ask = asks[0]

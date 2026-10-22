@@ -2,9 +2,9 @@
 
 Review canvases for [OpenCode](https://opencode.ai) sessions, running on your own machine. Agents
 post the images, videos and HTML pages they make to a canvas; you look them over on an infinite,
-live, multiplayer canvas. Agents can queue things for you to look at on their session's creature.
-Connected to your local OpenCode, a canvas can also seed itself from your sessions' media, and bring
-sessions onto the canvas as creatures you can talk to.
+live, multiplayer canvas. Agents can queue things for you to look at on their session's frame.
+Connected to your local OpenCode, a canvas can also seed itself from your sessions' media, and let
+you prompt sessions from their frames and see when they're working.
 
 ```sh
 bunx github:jlongster/opencode-canvas
@@ -19,15 +19,17 @@ On a canvas you can then:
 
 - **Seed** an empty canvas from sessions: each gets a frame with its images and videos from the last
   24 hours, or its latest 10 if there are fewer.
-- **Conjure** a session (toolbar → Conjure, or `C`): it appears as a creature where your pointer
-  is, with its prompt open. `C` over a session's frame (or a long press on touch) brings your
-  creature for that session to the pointer; `C` over empty canvas opens the session picker there.
-  Click a creature to prompt the session; everyone on the canvas sees it think and reply. Drag your
-  own creatures to move them; only their owner can move them.
+- **Prompt** a session from its frame: the prompt button on its title (or `C` with the pointer over
+  the frame, or with it or something in it selected) opens its prompt there: your last prompt, its
+  reply, and the input. While a session works, a band of embers crawls round its frame, for
+  everyone on the canvas, and resolves into a bright rim when it's done. Questions and permission
+  requests it asks show at its frame as soon as it asks (a chip at the screen's edge points to it
+  when it's off screen). **Sessions** in the toolbar adds an OpenCode session's frame to the canvas.
 - Let agents **post** to it, over MCP or HTTP (below), replace what they posted with new versions in
-  place, and point you at things: their `say` and `highlight` steps wait on the session's creature
-  (a badge, and "N things want your attention" at the top) until you play them through; stepping
-  past one marks it done for everyone.
+  place, and point you at things: their `say` and `highlight` steps wait as a badge on the session's
+  frame title (and "N things want your attention" at the top) until you play them through: a `say`
+  is a message card at the frame, a `highlight` glides the camera to what it points at and outlines
+  it. Stepping past one (Next) marks it done for everyone.
 - **Draw on items** (toolbar → pencil, or `P`): draw on an image to circle or mark what you mean,
   then type an optional note (Enter); drawing again on the same item within a couple of seconds
   adds to the same annotation. `T` (or just typing) over an item drops a text-only note there.
@@ -35,7 +37,7 @@ On a canvas you can then:
   Everyone sees them live, and agents read them back with the strokes in the original image's
   pixels, their bounding box, the note, and a rendered image with the strokes drawn on it
   (`list_annotations`). Reading consumes them: once an agent has read your annotations they
-  disappear from the canvas, flying into its creature (agents can peek with `keep: true`, and
+  disappear from the canvas, flying into its frame's title (agents can peek with `keep: true`, and
   `restore` brings them back within an hour). **Submit annotations (N)** on a session's frame
   sends them all to that session as one prompt (notes, pixel boxes, marked images attached),
   through your paired OpenCode, asking it to update those items in place.
@@ -75,15 +77,15 @@ Your browser is the only thing that talks to OpenCode; the canvas server never d
   clicking **Connect** redeems it for a token kept in this browser's localStorage (per origin, so
   keep using the same port). A link never connects the browser by itself.
 - No OpenCode running, or the code expired? Run `opencode pair` and paste the link it prints into
-  the canvas list or an empty canvas (or Conjure → Connect). If OpenCode runs on another machine,
+  the canvas list or an empty canvas (or Sessions → Connect). If OpenCode runs on another machine,
   use `opencode pair --remote`.
 - OpenCode answers pages on `http://localhost:*` out of the box. Served from anywhere else, the
   canvas must be allowed once: `opencode service set cors <site origin>` (this replaces the list of
   extra sites, comma separated).
 
-Creatures you conjure belong to your browser: while one of your tabs has the canvas open it runs
-them; otherwise they sleep. Only you can prompt them; others see them and their replies. Creatures
-that sessions called up with `say`/`highlight` have no owner until someone conjures that session.
+Prompting a session from its frame links it to your browser: while one of your tabs has the canvas
+open, it talks to that session's OpenCode and tells everyone whether it's working (the busy band)
+and shares its replies. Only you can prompt it; others see it work and reply.
 
 ## Use it from your agents
 
@@ -112,7 +114,7 @@ ln -s "$PWD/skill/canvas" ~/.config/opencode/skills/canvas
 to the top of its group, swapped live on open canvases), post links to web pages (`post_item` with
 `page`, its URL, plus a screenshot as `path`; `url` is for media files), see what people have selected, read sticky notes and annotations (pencil drawings with optional notes,
 with the strokes in image pixels and a marked image: `list_annotations`, which consumes them unless `keep: true`), and `say` / `highlight` to queue things for you to
-look at on the session's creature. It's only a tool provider: agents using it don't appear on the
+look at on the session's frame. It's only a tool provider: agents using it don't appear on the
 canvas themselves. In your OpenCode config:
 
 ```json

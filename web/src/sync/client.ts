@@ -1,4 +1,4 @@
-import type { AnnotationView, AttentionAction, Canvas, CanvasData, CanvasSummary, ConjuredAgent, Item, ServerEvent } from '../../../shared/types'
+import type { AnnotationView, AttentionAction, Canvas, CanvasData, CanvasSummary, Item, ServerEvent, SessionLink } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { API_BASE, BASE, url as withBase, wsUrl } from '../base'
 
@@ -95,33 +95,26 @@ export function uploadItem(
 export const postPage = (canvasId: string, sessionId: string, page: string, meta: { sessionTitle?: string; group?: string } = {}) =>
 	request<Item>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/items`, json('POST', { page, ...meta }))
 
-// ---------- conjured worms (records; the owner's browser runs them, see multiplayer/WormHost.ts) ----------
+// ---------- session links (records; the owner's browser talks to OpenCode, see multiplayer/SessionHost.ts) ----------
 
-const conjuredPath = (canvasId: string, sessionId?: string) =>
-	`/api/canvases/${encodeURIComponent(canvasId)}/conjured${sessionId ? `/${encodeURIComponent(sessionId)}` : ''}`
+const linksPath = (canvasId: string, sessionId?: string) =>
+	`/api/canvases/${encodeURIComponent(canvasId)}/links${sessionId ? `/${encodeURIComponent(sessionId)}` : ''}`
 
-export const listConjured = (canvasId: string) => request<ConjuredAgent[]>(conjuredPath(canvasId))
-/**
- * Brings an OpenCode session onto the canvas as a worm, at page position (x, y) (or, without one,
- * beside its frame). Fails with status 409 if it's already here.
- */
-export const conjure = (
-	canvasId: string,
-	worm: { sessionId: string; serverKey: string; ownerId: string; title: string; x?: number; y?: number },
-) => request<ConjuredAgent>(conjuredPath(canvasId), json('POST', worm))
-/** Moves our own worm (or adopts an ownerless one, given its serverKey). 403 if someone else owns it. */
-export const moveConjured = (
-	canvasId: string,
-	sessionId: string,
-	move: { x: number; y: number; ownerId: string; serverKey?: string; title?: string },
-) => request<ConjuredAgent>(`${conjuredPath(canvasId, sessionId)}/move`, json('POST', move))
-export const banishConjured = (canvasId: string, sessionId: string) =>
-	request<unknown>(conjuredPath(canvasId, sessionId), { method: 'DELETE' })
-/** Renames the worm (the server decides where it sits). */
-export const updateConjured = (canvasId: string, sessionId: string, changes: { title: string }) =>
-	request<ConjuredAgent>(conjuredPath(canvasId, sessionId), json('PATCH', changes))
+/** Links an OpenCode session to this browser (409 if another browser linked it). */
+export const linkSession = (canvasId: string, link: { sessionId: string; serverKey: string; ownerId: string; title: string }) =>
+	request<SessionLink>(linksPath(canvasId), json('POST', link))
+export const unlinkSession = (canvasId: string, sessionId: string) => request<unknown>(linksPath(canvasId, sessionId), { method: 'DELETE' })
+/** Renames the link (its session's title changed). */
+export const updateLink = (canvasId: string, sessionId: string, changes: { title: string }) =>
+	request<SessionLink>(linksPath(canvasId, sessionId), json('PATCH', changes))
+/** Says whether our linked session is working, for everyone looking (still sent if the tab is closing). */
+export const reportStatus = (canvasId: string, sessionId: string, status: { busy: boolean; ownerId: string }) =>
+	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/status`, {
+		...json('PUT', status),
+		keepalive: true,
+	})
 
-// ---------- attention (creatures' queued says and highlights, see server/attention.ts) ----------
+// ---------- attention (sessions' queued says and highlights, see server/attention.ts) ----------
 
 const actionsPath = (canvasId: string, sessionId: string, actionId?: string) =>
 	`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/actions${actionId ? `/${encodeURIComponent(actionId)}` : ''}`
@@ -247,8 +240,10 @@ export function connectCanvas(
 	handlers: {
 		onLoad: (canvas: Canvas, first: boolean) => void
 		onCanvas: (canvas: Canvas) => void
-		/** the canvas's conjured worms: all of them on every load, then each change */
-		onConjured?: (change: { all: ConjuredAgent[] } | { put: ConjuredAgent } | { deleted: string }) => void
+		/** the canvas's session links: all of them on every load, then each change */
+		onLinks?: (change: { all: SessionLink[] } | { put: SessionLink } | { deleted: string }) => void
+		/** which linked sessions are working: all of them on every load, then each change */
+		onStatus?: (change: { all: string[] } | { sessionId: string; busy: boolean }) => void
 		/** the canvas's queued attention actions: all of them on every load, then each change */
 		onAttention?: (change: { all: AttentionAction[] } | { put: AttentionAction } | { done: string[] }) => void
 		onGone: () => void
@@ -277,7 +272,8 @@ export function connectCanvas(
 			editor.setSessionOrder(data.canvas.sessionOrder)
 			const first = !loaded
 			loaded = true
-			handlers.onConjured?.({ all: data.conjured ?? [] })
+			handlers.onLinks?.({ all: data.links ?? [] })
+			handlers.onStatus?.({ all: (data.links ?? []).filter((l) => l.busy).map((l) => l.sessionId) })
 			handlers.onAttention?.({ all: data.attention ?? [] })
 			handlers.onLoad(data.canvas, first)
 		} catch (e) {
@@ -310,11 +306,14 @@ export function connectCanvas(
 			case 'item_deleted':
 				if (event.canvasId === canvasId) editor.deleteItem(event.id)
 				return
-			case 'conjured':
-				if (event.agent.canvasId === canvasId) handlers.onConjured?.({ put: event.agent })
+			case 'link':
+				if (event.link.canvasId === canvasId) handlers.onLinks?.({ put: event.link })
 				return
-			case 'conjured_deleted':
-				if (event.canvasId === canvasId) handlers.onConjured?.({ deleted: event.sessionId })
+			case 'link_deleted':
+				if (event.canvasId === canvasId) handlers.onLinks?.({ deleted: event.sessionId })
+				return
+			case 'status':
+				if (event.canvasId === canvasId) handlers.onStatus?.({ sessionId: event.sessionId, busy: event.busy })
 				return
 			case 'attention':
 				if (event.action.canvasId === canvasId) handlers.onAttention?.({ put: event.action })

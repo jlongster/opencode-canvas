@@ -64,12 +64,31 @@ export interface AnnotationDrafts {
 	type(text: string): boolean
 }
 
-/** Sessions' creatures (set by AgentWorms), so others can send one somewhere for a moment (see SharedAnnotations). */
-export interface Creatures {
-	/** where a session's creature is (page, its centre), or null when it isn't showing */
-	at(sessionId: string): Vec | null
-	/** spots (page) creatures go to point at, by session id, instead of where they'd be */
-	reaching: Map<string, Vec>
+/** What a session's frame title shows besides the title (see FrameChrome). */
+export interface FrameStatus {
+	/** the session's colour */
+	color: string
+	/** walkthrough steps it queued that nobody has stepped through yet */
+	unread: number
+	/** what it's waiting on its owner to answer, if anything */
+	asking: 'question' | 'permission' | null
+	/** this browser can open its prompt (edit links: its session is linked, or a paired OpenCode may have it) */
+	canPrompt: boolean
+	/** its prompt is open */
+	prompting: boolean
+}
+
+/**
+ * Sessions' controls on their frame titles (set by the app once the canvas loads; drawn by the
+ * renderer's SectionLabels): a prompt button and a badge for what it wants you to look at.
+ */
+export interface FrameChrome {
+	/** read while rendering: a change to what it reads makes the renderer redraw */
+	status(sessionId: string): FrameStatus | null
+	/** the prompt button: opens (or closes) the session's prompt at its frame */
+	prompt(sessionId: string): void
+	/** the badge: shows what it asks, or plays its queued steps */
+	attend(sessionId: string): void
 }
 
 /** Arranging session frames (edit links): saved on the canvas server, for everyone. */
@@ -211,8 +230,8 @@ export class Editor {
 	annotationDrafts: AnnotationDrafts | null = null
 	/** Set by SharedAnnotations: an agent read these annotations (sessionId: its session, if known), animate them away. */
 	annotationsConsumed: ((ids: string[], sessionId?: string) => void) | null = null
-	/** Set by AgentWorms; see Creatures. */
-	creatures: Creatures | null = null
+	/** Set by the app once the canvas loads; see FrameChrome. */
+	frameChrome: FrameChrome | null = null
 	/** Set by the renderer: the link in an HTML item at a screen point, if any (ignoring what's on top). */
 	linkAt: ((point: Vec) => HtmlLink | null) | null = null
 	readonly deletions = new Deletions(this)

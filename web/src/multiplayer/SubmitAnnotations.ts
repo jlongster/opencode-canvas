@@ -8,7 +8,7 @@ import { LAYOUT, type SectionLayout } from '../editor/layout'
 import { ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { react } from '../state/signals'
 import { consumeAnnotations, peekAnnotations } from '../sync/client'
-import { findSession, type Conjure } from './Conjure'
+import { findSession, type SessionControl } from './SessionControl'
 import type { Presence } from './Presence'
 import '../ui/submitAnnotations.css'
 
@@ -36,7 +36,7 @@ interface Pill {
  * scrolled away and the frame is still in view. Clicking it sends them all to the session as one
  * prompt, straight from this browser (through a paired OpenCode that has the session): what each
  * note says, where the drawing is in pixels, and the marked images attached. Once it's sent they're
- * consumed on the server, as if the agent had read them, so they fly into its creature. Edit links only.
+ * consumed on the server, as if the agent had read them, so they fly into its frame. Edit links only.
  */
 export class SubmitAnnotations {
 	private host: HTMLDivElement
@@ -52,7 +52,7 @@ export class SubmitAnnotations {
 		parent: HTMLElement,
 		private editor: Editor,
 		private presence: Presence,
-		private conjure: Conjure,
+		private sessions: SessionControl,
 		private canvasId: string,
 		private canvasTitle: () => string,
 	) {
@@ -71,7 +71,7 @@ export class SubmitAnnotations {
 			// Pairing or unpairing changes which sessions this browser can reach.
 			react(() => {
 				pairings.get()
-				conjure.records.get()
+				sessions.records.get()
 				this.routes.clear()
 				this.dirty = true
 			}),
@@ -99,10 +99,10 @@ export class SubmitAnnotations {
 		for (const sessionId of next.keys()) if (!this.routes.has(sessionId)) void this.lookUp(sessionId)
 	}
 
-	/** Which paired OpenCode has the session: our own creature's, else any that lists it. */
+	/** Which paired OpenCode has the session: our own link's, else any that lists it. */
 	private async lookUp(sessionId: string) {
 		this.routes.set(sessionId, { state: 'looking' })
-		const r = this.conjure.record(sessionId)
+		const r = this.sessions.record(sessionId)
 		let route: Route
 		if (r && r.ownerId === ownerId && pairing(r.serverKey)) route = { state: 'found', serverKey: r.serverKey }
 		else {

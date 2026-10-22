@@ -1,12 +1,9 @@
 /**
- * Attention queues: what each session's creature wants the people on a canvas to look at. Agents
- * queue actions with the MCP say / highlight tools (or POST /api/canvases/:cid/sessions/:sid/actions);
- * browsers show them as a badge on the creature and in the attention tray, and play them back as a
- * walkthrough. Stepping past an action on an edit link marks it done, which deletes it: done actions
+ * Attention queues: what each session wants the people on a canvas to look at. Agents queue
+ * actions with the MCP say / highlight tools (or POST /api/canvases/:cid/sessions/:sid/actions);
+ * browsers show them as a badge on the session's frame title and in the attention tray, and play
+ * them back as a walkthrough (message cards on the frame, the camera gliding to highlights). Stepping past an action on an edit link marks it done, which deletes it: done actions
  * aren't kept. Fire-and-forget for agents: nothing reports back to them.
- *
- * Queuing for a session with no creature on the canvas makes one (without an owner, asleep) beside
- * its frame (see ensureCreature).
  */
 import type { AttentionAction, ServerEvent } from '../shared/types'
 
@@ -25,8 +22,8 @@ export interface AttentionDeps {
 	resolveTarget(canvasId: string, target: string): Promise<string>
 	/** an item target's original pixel size (null for frames, groups and notes) */
 	itemSize(target: string): { width: number; height: number } | null
-	/** makes sure the session has a creature on the canvas (named after title when it's new or untitled) */
-	ensureCreature(canvasId: string, sessionId: string, title?: string): void
+	/** names the session's frame (if it has one) after its OpenCode session */
+	nameSession(canvasId: string, sessionId: string, title: string): void
 }
 
 const SESSION_ID = /^ses_[A-Za-z0-9]{26}$/
@@ -133,7 +130,7 @@ export function createAttention(deps: AttentionDeps, stored: AttentionAction[]) 
 			if (!deps.canvasExists(canvasId)) throw new AttentionError(404, `no canvas ${canvasId}`)
 			const queued = list(canvasId, sessionId).length
 			if (queued >= QUEUE_MAX) throw new AttentionError(429, `this session already has ${QUEUE_MAX} actions waiting for attention on this canvas`)
-			deps.ensureCreature(canvasId, sessionId, title || undefined)
+			if (title) deps.nameSession(canvasId, sessionId, title)
 			const action: AttentionAction = {
 				id: crypto.randomUUID().replaceAll('-', '').slice(0, 16),
 				canvasId,
@@ -158,7 +155,7 @@ export function createAttention(deps: AttentionDeps, stored: AttentionAction[]) 
 			return true
 		},
 
-		/** Clears a session's queue (Dismiss all, or its creature was banished). Returns how many went. */
+		/** Clears a session's queue (Dismiss all, or its link was dropped). Returns how many went. */
 		clear(canvasId: string, sessionId: string): number {
 			const gone = list(canvasId, sessionId)
 			remove(canvasId, gone)

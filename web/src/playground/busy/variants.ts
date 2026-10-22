@@ -1,3 +1,4 @@
+import type { EmberDots, EmberFrame, EmberView } from '../../render/busy/ember'
 import { range, select, SPEED, type ParamDef, type ParamValues } from '../shared/params'
 import { hash3 } from './geometry'
 
@@ -43,35 +44,10 @@ export interface BusyVariant {
 	draw?: (c: BusyCtx) => void
 	/** flow variations: `float field(Fx f)` (see flow.ts), seen through the dot grid */
 	glsl?: string
+	/** CPU flow variations (Ember clumps, shared with the app): fill in the dot grid for these frames at `t` */
+	dots?: (out: EmberDots, view: EmberView, frames: EmberFrame[], values: ParamValues, t: number) => void
 }
 
-// ---------- timing ----------
-
-/** CSS cubic-bezier(x1, y1, x2, y2) as a function of progress. */
-export function bezier(x1: number, y1: number, x2: number, y2: number) {
-	const cx = 3 * x1
-	const bx = 3 * (x2 - x1) - cx
-	const ax = 1 - cx - bx
-	const cy = 3 * y1
-	const by = 3 * (y2 - y1) - cy
-	const ay = 1 - cy - by
-	const sx = (t: number) => ((ax * t + bx) * t + cx) * t
-	return (x: number) => {
-		if (x <= 0) return 0
-		if (x >= 1) return 1
-		let lo = 0
-		let hi = 1
-		let t = x
-		for (let i = 0; i < 24; i++) {
-			if (sx(t) < x) lo = t
-			else hi = t
-			t = (lo + hi) / 2
-		}
-		return ((ay * t + by) * t + cy) * t
-	}
-}
-
-export const easeOut = bezier(0.23, 1, 0.32, 1)
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x))
 const mod = (a: number, b: number) => ((a % b) + b) % b
 

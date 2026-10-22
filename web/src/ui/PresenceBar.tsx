@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { NATIVE, POINTER_EYE, pointerD } from '../multiplayer/Pointer'
 import { COLORS, initials, type Presence } from '../multiplayer/Presence'
 import { NARROW_QUERY, useMediaQuery } from './useMediaQuery'
 import { useValue } from './useValue'
@@ -14,7 +13,7 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 		() =>
 			presence.peers
 				.get()
-				.filter((p) => !p.user.agent || p.user.conjured)
+				.filter((p) => !p.user.agent)
 				.map((p) => ({ id: p.clientId, ...p.user })),
 		[presence],
 	)
@@ -33,14 +32,12 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 				{shown.map((p) => (
 					<button
 						key={p.id}
-						className={`avatar${p.agent ? ' agent' : ''}${following === p.id ? ' following' : ''}`}
-						style={p.agent ? { color: p.color, ['--ring' as string]: p.color } : { background: p.color, ['--ring' as string]: p.color }}
-						title={
-							(p.agent ? `AI agent: ${p.name}\n` : '') + (following === p.id ? `Stop following ${p.name}` : `Follow ${p.name}`)
-						}
+						className={`avatar${following === p.id ? ' following' : ''}`}
+						style={{ background: p.color, ['--ring' as string]: p.color }}
+						title={following === p.id ? `Stop following ${p.name}` : `Follow ${p.name}`}
 						onClick={() => presence.toggleFollow(p.id)}
 					>
-						{p.agent ? <PointerGlyph /> : initials(p.name)}
+						{initials(p.name)}
 					</button>
 				))}
 				{hidden > 0 && <div className="avatar more">+{hidden}</div>}
@@ -56,24 +53,6 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 			</div>
 			{editing && <NameEditor presence={presence} onDone={() => setEditing(false)} />}
 		</div>
-	)
-}
-
-/** Creatures are eye pointers (see Pointer.ts), in the session's colour. */
-const GLYPH = { d: pointerD(15.5), eye: { x: POINTER_EYE.x * 15.5, y: POINTER_EYE.y * 15.5, r: POINTER_EYE.r * 15.5 * 1.25 } }
-
-function PointerGlyph() {
-	const { eye } = GLYPH
-	const pr = eye.r * 0.58
-	return (
-		<svg className="agent-glyph" width="20" height="20" viewBox="-10 -10 20 20" aria-hidden="true">
-			<path className="agent-glyph-body" d={GLYPH.d} />
-			<circle className="agent-glyph-eye" cx={eye.x} cy={eye.y} r={eye.r} />
-			<g className="agent-glyph-pupil">
-				<circle cx={eye.x + Math.cos(NATIVE) * eye.r * 0.3} cy={eye.y + Math.sin(NATIVE) * eye.r * 0.3} r={pr} />
-				<circle className="agent-glyph-glint" cx={eye.x + Math.cos(NATIVE) * eye.r * 0.3 + pr * 0.36} cy={eye.y + Math.sin(NATIVE) * eye.r * 0.3 - pr * 0.4} r={pr * 0.32} />
-			</g>
-		</svg>
 	)
 }
 

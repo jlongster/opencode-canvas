@@ -8,9 +8,8 @@ description: >
   canvas URL or id: post each one immediately, as soon as it exists, without waiting to be asked.
   Also use to post HTML (diagrams, flowcharts, charts, annotated explanations, SVG drawings) to
   tell the user things visually, to post links to web pages (page, with a screenshot when you
-  have one), to point the user at what to look at (say / highlight on your
-  session's creature), and to create, list, rename, delete or restore canvases, sessions, groups
-  and items.
+  have one), to point the user at what to look at (say / highlight, shown at your session's
+  frame), and to create, list, rename, delete or restore canvases, sessions, groups and items.
 ---
 
 # Canvas API
@@ -272,19 +271,19 @@ EOF
 
 ## Getting the user's attention: say and highlight
 
-Your session has a **creature** on the canvas: a small character beside your frame (the canvas
-makes one if it isn't there yet, in your session's colour, named after `sessionTitle`). When you
-want the user to look at something, queue it on your creature: it calls for attention (a badge
-with the count, a pulsing ring, the "N things want your attention" tray at the top) without
-interrupting anyone, and the user plays your queue as a walkthrough when they're ready.
+Your session has a **frame** on the canvas (what you post; the canvas makes an empty one if you
+haven't posted yet, named after `sessionTitle`). When you want the user to look at something,
+queue it for your session: a badge on your frame's title counts what's waiting, and so does the
+"N things want your attention" tray at the top, without interrupting anyone; the user plays your
+queue as a walkthrough when they're ready, stepping through it with Next.
 
-- **say**: a Markdown message from your creature.
-- **highlight**: point at something (the camera glides there and your creature points at it),
-  with an optional Markdown message. Targets: an item id, a group as `<sessionId>/<group name>`,
+- **say**: a Markdown message from your session, shown as a card at your frame.
+- **highlight**: point at something (the camera glides there and outlines it, with your optional
+  Markdown message beside it). Targets: an item id, a group as `<sessionId>/<group name>`,
   your frame `frame:<sessionId>`, or a sticky note `note:<noteId>`. **Point at what you mean:**
   pass `point {x,y}` or `region {x,y,w,h}` in the item's image pixels (same units as annotation
   px/py and get_item's width/height); omit them only to highlight the whole item. A point gets a
-  small pulsing ring, a region a rounded outline, and the camera zooms in just enough to show it.
+  crisp ring, a region an outline of just that part, and the camera zooms in just enough to show it.
   On a frame, group or note, `at {x,y}` (canvas page coordinates) points at a spot on the canvas;
   without it the whole thing is outlined.
 
@@ -346,7 +345,7 @@ annotation's number beside them (a ring round the spot for a text-only note). Fe
 was circled before acting on the text; the strokes and bbox tell you where, precisely.
 
 **Reading annotations consumes them**: once you've read them they disappear from the canvas (people
-see them fly into your session's creature), so read them when you're about to act on them, and
+see them fly into your frame's title), so read them when you're about to act on them, and
 act on all you got. `list_annotations` consumes what it returns (results have `"consumed": true`);
 pass `keep: true` to just peek. Over HTTP, `GET …/annotations?sessionId=$SID` consumes too
 (`&keep=true` peeks); without `sessionId` it only peeks unless you add `&keep=false`. Consumed
@@ -357,14 +356,14 @@ back. `get_canvas` lists annotations too (with their bbox), without consuming th
 ## MCP server
 
 The same server speaks MCP (Streamable HTTP) at `<base>/mcp`, usually configured in OpenCode as
-the `canvas` MCP server. It only provides tools: you don't appear on the canvas yourself (your
-creature does, for say and highlight). Tools take a canvas id or URL; the ones that act for your
-session take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
+the `canvas` MCP server. It only provides tools: you don't appear on the canvas yourself (say and
+highlight show at your frame). Tools take a canvas id or URL; the ones that act for your session
+take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
 
 - `post_item {canvas, sessionId, sessionTitle, path | url | html | page (+ path as its screenshot), width?, height?, group?, title?, caption?, name?}`:
   post into your frame (`path` must be absolute, on the canvas server's machine). **Always pass `sessionTitle`.**
 - `say {canvas, sessionId, sessionTitle, text}` and `highlight {canvas, sessionId, sessionTitle, target, point? | region? | at?, text?}`:
-  queue steps on your creature (see above). Return the step's `id` and `position` in your queue.
+  queue steps for your session (see above). Return the step's `id` and `position` in your queue.
 - `update_item {itemId, path | url | html | page, width?, height?, name?, title?, caption?, group?}`: replace an
   item's file in place (a new version of the same visual; see "Updating an item") and/or change its
   metadata (`null` clears title, caption, group).
@@ -374,5 +373,5 @@ session take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
 - `get_item {itemId, includeImage?, fullSize?}`: see an image or a page's screenshot (or an HTML item's source).
 - `get_selection`: what people on the canvas have selected ("look at this"); `get_presence`: who's there.
 
-Users can also "conjure" OpenCode sessions from the browser, which lets them prompt the session
-through its creature; that's user-facing, nothing for you to do.
+Users can also prompt your session from its frame on the canvas (its prompt button, or C over
+it), and its frame shows when it's working; that's user-facing, nothing for you to do.

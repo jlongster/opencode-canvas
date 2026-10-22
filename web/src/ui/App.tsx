@@ -2,24 +2,25 @@ import { useEffect, useRef, useState, type JSX } from 'react'
 import { Editor, type ToolId } from '../editor/Editor'
 import { describeError, Renderer } from '../render/Renderer'
 import { atom, react } from '../state/signals'
-import type { AttentionAction, Canvas, ConjuredAgent } from '../../../shared/types'
+import { sessionColor } from '../../../shared/sessionColor'
+import type { AttentionAction, Canvas, SessionLink } from '../../../shared/types'
 import { frameKey } from '../editor/selection'
 import {
 	connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, setSessionHidden, setSessionOrder, viewUrl, type CanvasLink,
 } from '../sync/client'
 import { listenForPastedPages } from './pastePage'
 import { Attention } from '../multiplayer/Attention'
-import { Conjure } from '../multiplayer/Conjure'
+import { SessionControl } from '../multiplayer/SessionControl'
 import { FrameTitles } from '../opencode/frameTitles'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedAnnotations } from '../multiplayer/SharedAnnotations'
 import { SubmitAnnotations } from '../multiplayer/SubmitAnnotations'
 import { SharedNotes } from '../multiplayer/SharedNotes'
-import { Summon } from '../multiplayer/Summon'
 import { AttentionTray, Walkthrough } from './Attention'
-import { ConjureButton, ConjurePicker } from './Conjure'
-import { ConjurePrompt } from './PromptThread'
+import { FrameAsks } from './FrameAsks'
+import { SessionsButton } from './Sessions'
+import { SessionPrompt } from './PromptThread'
 import { CursorChat } from './CursorChat'
 import { DeepLink } from './deepLink'
 import { FramesStatus, HiddenLinkToast } from './FramesPanel'
@@ -70,7 +71,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 	const [rendererError, setRendererError] = useState<string | null>(null)
 	const [canvas, setCanvas] = useState<Canvas | null>(null)
 	const [presence, setPresence] = useState<Presence | null>(null)
-	const [conjure, setConjure] = useState<Conjure | null>(null)
+	const [sessions, setSessions] = useState<SessionControl | null>(null)
 	const [attention, setAttention] = useState<Attention | null>(null)
 	// the strip under the top bar where the attention tray and the auto-seed progress stack
 	const [topStack, setTopStack] = useState<HTMLDivElement | null>(null)
@@ -85,8 +86,10 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 		let disposed = false
 		let loaded = false
 		const disposers: (() => void)[] = []
-		// The canvas's conjured worms, from the canvas server (loaded with the canvas, then live).
-		const conjured = atom<ConjuredAgent[]>('conjured', [])
+		// Which OpenCode session each frame talks to, from the canvas server (loaded with the canvas, then live).
+		const links = atom<SessionLink[]>('links', [])
+		// Which of them are working, as their owners' tabs report it (loaded with the canvas, then live): for everyone.
+		const busy = atom<Set<string>>('busySessions', new Set())
 		// What their sessions queued for attention (loaded with the canvas, then live).
 		const queued = atom<AttentionAction[]>('attention', [])
 		let canvasTitle = ''
@@ -122,6 +125,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 				readOnly: link.role === 'view',
 				onCloseSection: (id) => editor.deletions.delete([frameKey(id)]),
 				getRemoteSelections: () => live?.peers.get().map((p) => ({ ids: p.selection ?? [], color: p.user.color })) ?? [],
+				busySessions: () => busy.peek(),
 				onDeviceLost: (message) => {
 					// May be lost before create() resolved; then .then() below cleans up.
 					lost = true
@@ -147,10 +151,19 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 
 		disposers.push(
 			connectCanvas(editor, link, {
-				onConjured: (change) => {
-					if ('all' in change) conjured.set(change.all)
-					else if ('put' in change) conjured.set([...conjured.peek().filter((r) => r.sessionId !== change.put.sessionId), change.put])
-					else conjured.set(conjured.peek().filter((r) => r.sessionId !== change.deleted))
+				onLinks: (change) => {
+					if ('all' in change) links.set(change.all)
+					else if ('put' in change) links.set([...links.peek().filter((r) => r.sessionId !== change.put.sessionId), change.put])
+					else links.set(links.peek().filter((r) => r.sessionId !== change.deleted))
+				},
+				onStatus: (change) => {
+					const next = new Set('all' in change ? change.all : busy.peek())
+					if ('sessionId' in change) {
+						if (change.busy) next.add(change.sessionId)
+						else next.delete(change.sessionId)
+					}
+					const prev = busy.peek()
+					if (next.size !== prev.size || [...next].some((id) => !prev.has(id))) busy.set(next)
 				},
 				onAttention: (change) => {
 					if ('all' in change) queued.set(change.all)
@@ -171,23 +184,41 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					const p = live
 					const notes = new SharedNotes(overlayRef.current!, editor, p, link.role)
 					const annotations = new SharedAnnotations(overlayRef.current!, editor, p, link.role)
-					// Edit links can talk to conjured worms; view links just watch them.
-					const spells = new Conjure(editor, p, c.id, link.role === 'edit', conjured, () => canvasTitle)
+					// Edit links can prompt sessions from their frames; view links just watch them work.
+					const control = new SessionControl(editor, p, c.id, link.role === 'edit', links, busy, () => canvasTitle)
 					// Edit links mark what they step through done; view links only look.
-					const calls = new Attention(editor, spells, c.id, link.role === 'edit', queued)
-					const cursors = new PeerCursors(overlayRef.current!, editor, p, spells, calls)
-					disposers.push(() => cursors.destroy(), () => calls.destroy(), () => spells.destroy(), () => notes.destroy(), () => annotations.destroy(), () => p.destroy())
+					const calls = new Attention(editor, control, c.id, link.role === 'edit', queued)
+					const cursors = new PeerCursors(overlayRef.current!, editor, p)
+					editor.frameChrome = {
+						status: (sessionId) => ({
+							color: sessionColor(sessionId),
+							unread: calls.count(sessionId),
+							asking: calls.asking.get().get(sessionId)?.kind ?? null,
+							canPrompt: control.canOpen(sessionId),
+							prompting: control.prompting.get() === sessionId,
+						}),
+						prompt: (sessionId) => control.toggle(sessionId),
+						attend: (sessionId) => (calls.asking.get().has(sessionId) ? calls.answer(sessionId) : calls.open(sessionId)),
+					}
+					disposers.push(
+						() => (editor.frameChrome = null),
+						() => cursors.destroy(),
+						() => calls.destroy(),
+						() => control.destroy(),
+						() => notes.destroy(),
+						() => annotations.destroy(),
+						() => p.destroy(),
+					)
 					if (link.role === 'edit') {
-						const summon = new Summon(editor, spells, container)
 						const frameTitles = new FrameTitles(editor, c.id)
-						const submit = new SubmitAnnotations(overlayRef.current!, editor, p, spells, c.id, () => canvasTitle)
-						disposers.push(() => summon.destroy(), () => frameTitles.destroy(), () => submit.destroy(), listenForPastedPages(editor, c.id))
+						const submit = new SubmitAnnotations(overlayRef.current!, editor, p, control, c.id, () => canvasTitle)
+						disposers.push(() => frameTitles.destroy(), () => submit.destroy(), listenForPastedPages(editor, c.id))
 					}
 					setPresence(p)
-					setConjure(spells)
+					setSessions(control)
 					setAttention(calls)
 					;(window as any).presence = p
-					;(window as any).conjure = spells
+					;(window as any).sessions = control
 					;(window as any).attention = calls
 				},
 				onCanvas: (c) => {
@@ -224,9 +255,9 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			<ToolPicker editor={editor} withEditTools={!!presence && role === 'edit'} />
 			{presence && <FollowIndicator presence={presence} />}
 			{presence && <CursorChat editor={editor} presence={presence} />}
-			{conjure?.canPrompt && <ConjurePrompt editor={editor} conjure={conjure} />}
-			{conjure?.canPrompt && canvas && <ConjurePicker editor={editor} conjure={conjure} canvasId={canvas.id} />}
-			{attention && conjure && <Walkthrough editor={editor} attention={attention} conjure={conjure} />}
+			{sessions?.canPrompt && <SessionPrompt editor={editor} sessions={sessions} />}
+			{sessions && attention && <FrameAsks editor={editor} sessions={sessions} attention={attention} />}
+			{attention && sessions && <Walkthrough editor={editor} attention={attention} sessions={sessions} />}
 			<div className="top-stack" ref={setTopStack}>
 				{attention && <AttentionTray attention={attention} />}
 			</div>
@@ -246,7 +277,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 						</div>
 					)}
 					{presence && <PresenceBar presence={presence} />}
-					<Toolbar editor={editor} canvas={role === 'edit' ? canvas : null} conjure={conjure?.canPrompt ? conjure : null} />
+					<Toolbar editor={editor} canvas={role === 'edit' ? canvas : null} sessions={sessions?.canPrompt ? sessions : null} />
 				</div>
 			</div>
 			<FramesStatus editor={editor} canEdit={role === 'edit'} />
@@ -388,11 +419,11 @@ function ToolPicker({ editor, withEditTools }: { editor: Editor; withEditTools: 
 	)
 }
 
-function Toolbar({ editor, canvas, conjure }: { editor: Editor; canvas: Canvas | null; conjure: Conjure | null }) {
+function Toolbar({ editor, canvas, sessions }: { editor: Editor; canvas: Canvas | null; sessions: SessionControl | null }) {
 	const zoom = useValue(() => Math.round(editor.camera.get().z * 100))
 	const hasSelection = useValue(() => editor.selectedIds.get().length > 0)
 	const [sharing, setSharing] = useState(false)
-	const [conjuring, setConjuring] = useState(false)
+	const [adding, setAdding] = useState(false)
 
 	return (
 		<div className="toolbar" onPointerDown={(e) => e.stopPropagation()}>
@@ -410,14 +441,13 @@ function Toolbar({ editor, canvas, conjure }: { editor: Editor; canvas: Canvas |
 			{canvas && <div className="sep" />}
 			{canvas && (
 				<>
-					{conjure && (
-						<ConjureButton
+					{sessions && (
+						<SessionsButton
 							editor={editor}
-							conjure={conjure}
-							canvasId={canvas.id}
-							open={conjuring}
+							sessions={sessions}
+							open={adding}
 							setOpen={(open) => {
-								setConjuring(open)
+								setAdding(open)
 								if (open) setSharing(false)
 							}}
 						/>
@@ -427,7 +457,7 @@ function Toolbar({ editor, canvas, conjure }: { editor: Editor; canvas: Canvas |
 						aria-pressed={sharing}
 						onClick={() => {
 							setSharing(!sharing)
-							setConjuring(false)
+							setAdding(false)
 						}}
 					>
 						Share

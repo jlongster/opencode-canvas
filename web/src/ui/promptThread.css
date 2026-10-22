@@ -1,4 +1,4 @@
-/* The prompt stack under a conjured worm (PromptThread.tsx): separate bubbles, one line each until opened. */
+/* A session's prompt at its frame (PromptThread.tsx) and the questions at its frame (FrameAsks.tsx): separate bubbles, one line each until opened. */
 
 .pt {
 	--surf: #151518;
@@ -74,7 +74,7 @@
 	box-shadow: var(--shadow);
 }
 
-/* Prompt and reply: filled with the worm's colour, one line. */
+/* Prompt and reply: filled with the session's colour, one line. */
 .pt-fill {
 	display: flex;
 	align-items: center;
@@ -592,7 +592,7 @@ img.pt-th.sm {
 	flex: none;
 }
 
-.pt-asleep {
+.pt-offline {
 	display: inline-flex;
 	align-items: center;
 	gap: 4px;
@@ -601,17 +601,13 @@ img.pt-th.sm {
 	font-weight: 400;
 }
 
-.pt-moon {
-	vertical-align: -1px;
-}
-
 /* ── questions and permission requests, in place of the three bubbles (AskBubbles.tsx) ── */
 
 .pt-asks {
 	display: contents;
 }
 
-/* One question: filled with the worm's colour, like the prompt and reply, as wide as they get. */
+/* One question: filled with the session's colour, like the prompt and reply, as wide as they get. */
 .pt-q {
 	width: 360px;
 	padding: 9px 12px 10px;
@@ -767,7 +763,7 @@ img.pt-th.sm {
 	overflow-wrap: anywhere;
 }
 
-/* A typed answer: the dark of the input, ringed in the worm's ink. */
+/* A typed answer: the dark of the input, ringed in the session's ink. */
 .pt-q-input {
 	display: block;
 	width: 100%;

@@ -1,7 +1,7 @@
 // Shared uniforms: camera in page space, viewport in CSS pixels.
 const common = /* wgsl */ `
 struct Globals {
-  camera: vec4f,   // x, y, zoom, dpr
+  camera: vec4f,   // x, y, zoom, drawing buffer px per CSS px
   viewport: vec4f, // width, height (css px), time, unused
 };
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -81,6 +81,61 @@ struct RectOut {
   let inner = clamp(0.5 - d, 0.0, 1.0);
   let outer = clamp(0.5 - (d - i.sr.x), 0.0, 1.0);
   return i.fill * inner + i.stroke * (outer - inner);
+}
+`
+
+/**
+ * The busy band's dots (see render/busy/ember.ts for what each instance holds): each instance
+ * covers its grid cell's pitch × pitch device pixels, and each pixel takes the larger of the lit
+ * and unlit dot's coverage × alpha. Square dots cover whole pixels; round ones are antialiased.
+ */
+export const dotShader = /* wgsl */ `
+${common}
+
+struct DotIn {
+  @location(0) cell: vec4f,  // x, y (device px), pitch (device px), round
+  @location(1) size: vec4f,  // lit size, unlit size (device px), lit alpha, unlit alpha
+  @location(2) color: vec4f, // rgb
+};
+
+struct DotOut {
+  @builtin(position) pos: vec4f,
+  @location(0) @interpolate(flat) cell: vec4f,
+  @location(1) @interpolate(flat) size: vec4f,
+  @location(2) @interpolate(flat) color: vec4f,
+};
+
+@vertex fn vs(@builtin(vertex_index) vi: u32, d: DotIn) -> DotOut {
+  let px = d.cell.xy + quadCorner(vi) * d.cell.z;
+  let n = px / (g.viewport.xy * g.camera.w) * 2.0 - 1.0;
+  var out: DotOut;
+  out.pos = vec4f(n.x, -n.y, 0.0, 1.0);
+  out.cell = d.cell;
+  out.size = d.size;
+  out.color = d.color;
+  return out;
+}
+
+@fragment fn fs(i: DotOut) -> @location(0) vec4f {
+  let pix = floor(i.pos.xy) - i.cell.xy;
+  let pd = i.cell.z;
+  var cover = 0.0;
+  var baseCover = 0.0;
+  if (i.cell.w > 0.5) {
+    let dist = length(pix + vec2f(0.5) - vec2f(0.5 * pd));
+    cover = clamp(0.5 * i.size.x - dist + 0.5, 0.0, 1.0);
+    baseCover = clamp(0.5 * i.size.y - dist + 0.5, 0.0, 1.0);
+  } else {
+    let side = floor(i.size.x + 0.5);
+    let start = floor(0.5 * (pd - side));
+    if (side >= 1.0 && all(pix >= vec2f(start)) && all(pix < vec2f(start + side))) { cover = 1.0; }
+    let bside = floor(i.size.y + 0.5);
+    let bstart = floor(0.5 * (pd - bside));
+    if (all(pix >= vec2f(bstart)) && all(pix < vec2f(bstart + bside))) { baseCover = 1.0; }
+  }
+  let a = max(i.size.z * cover, i.size.w * baseCover);
+  if (a <= 0.002) { discard; }
+  return vec4f(i.color.rgb * a, a);
 }
 `
 

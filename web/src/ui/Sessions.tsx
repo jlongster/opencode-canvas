@@ -1,134 +1,41 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { OpenCodeSessionSummary } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
-import type { Vec } from '../editor/geometry'
-import type { Conjure } from '../multiplayer/Conjure'
+import type { SessionControl } from '../multiplayer/SessionControl'
 import { PairForm, ServerList, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
 import { useValue } from './useValue'
 
-/** The toolbar's Conjure button (edit links): pick an OpenCode session to bring onto the canvas as an eye pointer. */
-export function ConjureButton({
-	editor,
-	conjure,
-	canvasId,
-	open,
-	setOpen,
-}: {
-	editor: Editor
-	conjure: Conjure
-	canvasId: string
-	open: boolean
-	setOpen: (open: boolean) => void
-}) {
+/**
+ * The toolbar's Sessions button (edit links): pick a session from a paired OpenCode to add its frame
+ * to the canvas (if it has none yet), linked to this browser, with its prompt open there. Also where
+ * OpenCode servers are paired and managed.
+ */
+export function SessionsButton({ editor, sessions, open, setOpen }: { editor: Editor; sessions: SessionControl; open: boolean; setOpen: (open: boolean) => void }) {
 	return (
 		<>
-			<button className="conjure-button" title="Conjure an OpenCode session onto the canvas" aria-pressed={open} onClick={() => setOpen(!open)}>
-				<WandIcon />
-				<span className="wide-only">Conjure</span>
+			<button className="sessions-button" title="Add an OpenCode session to the canvas, to prompt it from its frame" aria-pressed={open} onClick={() => setOpen(!open)}>
+				<TerminalIcon />
+				<span className="wide-only">Sessions</span>
 			</button>
-			{open && <ConjurePanel conjure={conjure} at={() => conjure.menuSpot()} onClose={() => setOpen(false)} />}
+			{open && <SessionsPanel editor={editor} sessions={sessions} onClose={() => setOpen(false)} />}
 		</>
 	)
 }
 
-/** a picker opened by C sits this far from the pointer, and this far inside the window */
-const PICKER_GAP = 14
-const PICKER_MARGIN = 8
-
-/**
- * The Conjure panel C opens next to the pointer when it isn't over a session (Conjure.picking):
- * the session picked comes to where the pointer was. Esc, a click outside or C again closes it.
- */
-export function ConjurePicker({ editor, conjure, canvasId }: { editor: Editor; conjure: Conjure; canvasId: string }) {
-	const picking = useValue(() => conjure.picking.get(), [conjure])
-	const ref = useRef<HTMLDivElement>(null)
-	const [pos, setPos] = useState<Vec | null>(null)
-	const close = () => conjure.picking.set(null)
-
-	useLayoutEffect(() => {
-		const el = ref.current
-		if (!picking || !el) return
-		// Right of the pointer and from its height down, flipped to the left and upwards near the edges;
-		// again whenever its size changes (sessions arriving).
-		const place = () => {
-			const { width: w, height: h } = el.getBoundingClientRect()
-			const { x, y } = picking.screen
-			const vw = window.innerWidth
-			const vh = window.innerHeight
-			let left = x + PICKER_GAP
-			if (left + w > vw - PICKER_MARGIN) left = x - PICKER_GAP - w
-			let top = y - PICKER_GAP
-			if (top + h > vh - PICKER_MARGIN) top = y + PICKER_GAP - h
-			const next = {
-				x: Math.round(Math.max(PICKER_MARGIN, Math.min(left, vw - w - PICKER_MARGIN))),
-				y: Math.round(Math.max(PICKER_MARGIN, Math.min(top, vh - h - PICKER_MARGIN))),
-			}
-			setPos((prev) => (prev && prev.x === next.x && prev.y === next.y ? prev : next))
-		}
-		place()
-		const observer = new ResizeObserver(place)
-		observer.observe(el)
-		return () => observer.disconnect()
-	}, [picking])
-	useEffect(() => {
-		if (!picking) return
-		const outside = (e: PointerEvent) => {
-			if (!ref.current?.contains(e.target as Node)) close()
-		}
-		const escape = (e: KeyboardEvent) => e.key === 'Escape' && close()
-		window.addEventListener('pointerdown', outside, true)
-		window.addEventListener('keydown', escape)
-		return () => {
-			window.removeEventListener('pointerdown', outside, true)
-			window.removeEventListener('keydown', escape)
-		}
-	}, [picking])
-
-	if (!picking) return null
-	return (
-		<div
-			ref={ref}
-			key={`${picking.page.x},${picking.page.y}`}
-			className="toolbar conjure-picker"
-			// (placed properly before it paints; not hidden meanwhile, so its filter can take focus)
-			style={pos ? { left: pos.x, top: pos.y } : { left: picking.screen.x + PICKER_GAP, top: picking.screen.y - PICKER_GAP }}
-			onPointerDown={(e) => e.stopPropagation()}
-			onWheel={(e) => e.stopPropagation()}
-		>
-			<ConjurePanel conjure={conjure} at={() => picking.page} onClose={close} />
-		</div>
-	)
-}
-
-/**
- * Picking an OpenCode session to conjure (the toolbar's button, or C's picker): its worm comes to
- * `at()` (a page point: where C was pressed, or where the pointer last was on the canvas), new or
- * already here, with its prompt box open (see Conjure.summon).
- */
-function ConjurePanel({ conjure, at, onClose }: { conjure: Conjure; at: () => Vec; onClose: () => void }) {
+function SessionsPanel({ editor, sessions, onClose }: { editor: Editor; sessions: SessionControl; onClose: () => void }) {
 	const { servers, byServer, errors, reload, retry } = useOpenCode()
 	const [error, setError] = useState<string | null>(null)
 	const [pending, setPending] = useState<string | null>(null)
 	const [query, setQuery] = useState('')
 	const [managing, setManaging] = useState(false)
-	const hereKey = useValue(
-		() =>
-			[
-				// (ones nobody owns can be conjured: that adopts them)
-				...conjure.records.get().filter((r) => r.ownerId).map((r) => r.sessionId),
-				...conjure.presence.peers.get().filter((p) => p.user.conjured && p.user.sessionId).map((p) => p.user.sessionId!),
-			]
-				.sort()
-				.join(' '),
-		[conjure],
-	)
+	const hereKey = useValue(() => Object.keys(editor.sessions.get()).sort().join(' '), [editor])
 	const here = useMemo(() => new Set(hereKey.split(' ').filter(Boolean)), [hereKey])
 
 	const pick = async (s: OpenCodeSessionSummary) => {
 		setPending(sessionKey(s))
 		setError(null)
 		try {
-			const message = await conjure.summon(s.id, at(), { serverKey: s.serverKey, title: s.title })
+			const message = await sessions.add(s.id, { serverKey: s.serverKey, title: s.title })
 			if (message) setError(message)
 			else onClose()
 		} catch (e) {
@@ -150,10 +57,10 @@ function ConjurePanel({ conjure, at, onClose }: { conjure: Conjure; at: () => Ve
 	const failing = Object.keys(errors).length
 
 	return (
-		<div className="share-popover conjure-popover" onKeyDown={(e) => e.key === 'Escape' && onClose()}>
+		<div className="share-popover sessions-popover" onKeyDown={(e) => e.key === 'Escape' && onClose()}>
 			<div className="share-popover-head">
-				<span className="conjure-heading">
-					<WandIcon /> Conjure a session
+				<span className="sessions-heading">
+					<TerminalIcon /> Add a session
 				</span>
 				<button title="Close" onClick={onClose}>
 					×
@@ -163,9 +70,11 @@ function ConjurePanel({ conjure, at, onClose }: { conjure: Conjure; at: () => Ve
 				<PairForm autoFocus onPaired={() => reload()} />
 			) : (
 				<>
-					<p className="conjure-hint">Brings an OpenCode session onto the canvas as an eye pointer. Click it to talk to it; it sleeps while this browser isn't on the canvas.</p>
-					<input className="conjure-search" autoFocus placeholder="Filter sessions" value={query} onChange={(e) => setQuery(e.target.value)} />
-					<div className="conjure-list">
+					<p className="sessions-hint">
+						Adds the session’s frame to this canvas and links it to this browser: prompt it from its frame, and everyone sees when it’s working.
+					</p>
+					<input className="sessions-search" autoFocus placeholder="Filter sessions" value={query} onChange={(e) => setQuery(e.target.value)} />
+					<div className="sessions-list">
 						<SessionGroups
 							servers={servers}
 							sessions={shown}
@@ -179,19 +88,19 @@ function ConjurePanel({ conjure, at, onClose }: { conjure: Conjure; at: () => Ve
 								return (
 									<button
 										key={k}
-										className={`conjure-row${isHere ? ' here' : ''}`}
+										className={`sessions-row${isHere ? ' here' : ''}`}
 										disabled={pending !== null}
-										title={isHere ? 'Already on this canvas: bring it here' : `Conjure ${s.title || s.id}`}
+										title={isHere ? 'Already on this canvas: go to its frame and prompt it' : `Add ${s.title || s.id}`}
 										onClick={() => pick(s)}
 									>
-										<span className={`conjure-dot${s.busy ? ' busy' : ''}`} title={s.busy ? 'Working' : 'Idle'} />
-										<span className="conjure-row-main">
-											<span className="conjure-row-title">{s.title || 'Untitled session'}</span>
-											<span className="conjure-row-meta">
+										<span className={`sessions-dot${s.busy ? ' busy' : ''}`} title={s.busy ? 'Working' : 'Idle'} />
+										<span className="sessions-row-main">
+											<span className="sessions-row-title">{s.title || 'Untitled session'}</span>
+											<span className="sessions-row-meta">
 												{shortDir(s.directory)} · {relativeTime(s.updatedAt)}
 											</span>
 										</span>
-										{pending === k ? <span className="conjure-tag">…</span> : isHere && <span className="conjure-tag">on canvas</span>}
+										{pending === k ? <span className="sessions-tag">…</span> : isHere && <span className="sessions-tag">on canvas</span>}
 									</button>
 								)
 							}}
@@ -207,17 +116,16 @@ function ConjurePanel({ conjure, at, onClose }: { conjure: Conjure; at: () => Ve
 					</div>
 				</>
 			)}
-			{error && <div className="conjure-error">{error}</div>}
+			{error && <div className="sessions-error">{error}</div>}
 		</div>
 	)
 }
 
-function WandIcon() {
+function TerminalIcon() {
 	return (
 		<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-			<path d="M4 20 15 9" />
-			<path d="m13.5 7.5 3 3" />
-			<path d="M18 2.5v3M16.5 4h3M20.5 9v2M19.5 10h2M9 3v2M8 4h2" />
+			<rect x="3" y="4.5" width="18" height="15" rx="2.5" />
+			<path d="m7.5 10 2.5 2-2.5 2M12.5 14.5h4" />
 		</svg>
 	)
 }

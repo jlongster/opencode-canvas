@@ -4,7 +4,7 @@ import type { OpenCodeSessionSummary, SeedResult } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { AUTO_SESSIONS, autoCandidates, autoSeed, autoSeededAt, type AutoRow } from '../opencode/autoseed'
 import { seedSession } from '../opencode/seed'
-import { relativeTime, shortDir } from './Conjure'
+import { relativeTime, shortDir } from './Sessions'
 import { pairOffer } from '../opencode/pairings'
 import { useValue } from './useValue'
 import { PairForm, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
@@ -351,7 +351,7 @@ export function SeedPicker({
 		return (
 			<label key={k} className={`seed-row${selected.includes(k) ? ' selected' : ''}`} title={`${s.title || s.id}\n${s.directory}\n${s.id} on ${s.serverName}`}>
 				<input type="checkbox" checked={selected.includes(k)} onChange={() => toggle(k)} />
-				<span className={`conjure-dot${s.busy ? ' busy' : ''}`} title={s.busy ? 'Working' : 'Idle'} />
+				<span className={`sessions-dot${s.busy ? ' busy' : ''}`} title={s.busy ? 'Working' : 'Idle'} />
 				<span className="seed-row-main">
 					<span className="seed-row-title">{s.title || 'Untitled session'}</span>
 					<span className="seed-row-meta">

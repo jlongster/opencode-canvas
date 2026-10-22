@@ -1,14 +1,15 @@
+import { sessionColor } from '../../../shared/sessionColor'
 import type { AttentionAction } from '../../../shared/types'
 import { FOCUS_MAX_WIDTH, FOCUS_MAX_ZOOM, GROUP_OUTLINE_PADDING, type Editor } from '../editor/Editor'
-import { Box, type Vec } from '../editor/geometry'
+import { Box } from '../editor/geometry'
+import { frameTitleBox } from '../editor/layout'
 import { parseSelectionId } from '../editor/selection'
 import { atom, computed, react, type Atom } from '../state/signals'
 import { clearActions, markActionDone } from '../sync/client'
-import type { Conjure } from './Conjure'
 import type { AskingInfo } from './Presence'
-import { wormName } from './WormHost'
+import type { SessionControl } from './SessionControl'
 
-/** A creature's walkthrough of its queue, open here. */
+/** A session's walkthrough of its queue, open here. */
 export interface Walk {
 	sessionId: string
 	/** the queue as it was when opened, plus whatever was queued since; done steps stay so Back can show them */
@@ -26,13 +27,13 @@ export interface Focus {
 	within: Box | undefined
 }
 
-/** One creature calling for attention, as the tray lists it. */
+/** One session calling for attention, as the tray lists it. */
 export interface Caller {
 	sessionId: string
 	name: string
 	color: string
 	actions: AttentionAction[]
-	/** its session waits on its owner to answer questions or permission requests (see WormHost) */
+	/** it waits on its owner to answer questions or permission requests (see SessionHost) */
 	asking: AskingInfo | null
 }
 
@@ -40,8 +41,8 @@ export interface Caller {
 const REVEAL_PAD = 96
 /** what's along the top of the screen (the top bar and the attention tray), kept clear when revealing */
 const TOP_INSET = 116
-/** the part of the screen around a creature brought into view: it, its name and the walkthrough beside it */
-const CREATURE_VIEW = { left: 70, top: 70, right: 400, bottom: 300 }
+/** room (screen px) kept above a frame's title brought into view, for the card shown there */
+const FRAME_CARD_ROOM = 240
 /** how long the camera glides to a step's exact spot (ms) */
 const FOCUS_GLIDE_MS = 560
 /** a region is zoomed to at least this big on screen (its longer side, screen px)... */
@@ -54,11 +55,12 @@ const POINT_CONTEXT_PX = 480
 const EDGE_SHARE = 0.14
 
 /**
- * Attention queues on a canvas (see server/attention.ts): what each session's creature wants people
- * to look at. The badge on a creature and the tray at the top show what's waiting; opening one plays
- * its queue as a walkthrough beside the creature. Each highlight step outlines its target and slides
- * the camera just enough to show it, or, with an exact spot (a point or region), glides the camera
- * to that spot and marks only it; say steps never move the camera.
+ * Attention queues on a canvas (see server/attention.ts): what each session wants people to look
+ * at. The badge on its frame's title and the tray at the top show what's waiting; opening one plays
+ * its queue as a walkthrough: say steps are message cards at the session's frame (the camera brings
+ * the frame into view if it's off screen), highlight steps glide the camera to their target, outline
+ * it, and show their message beside it; with an exact spot (a point or region), the camera glides to
+ * that spot and only it is outlined.
  *
  * On edit links, stepping past an action marks it done for everyone (it leaves the queue); view
  * links step through the same queue read-only.
@@ -82,33 +84,29 @@ export class Attention {
 		}
 		return map
 	})
-	/** what each conjured creature's session is asking its owner, by session (from their presence) */
+	/** what each linked session is asking its owner, by session (from its live state in the room) */
 	readonly asking = computed<Map<string, AskingInfo>>('attentionAsking', () => {
 		const map = new Map<string, AskingInfo>()
-		for (const p of this.conjure.presence.peers.get()) if (p.user.conjured && p.user.sessionId && p.asking?.count) map.set(p.user.sessionId, p.asking)
+		for (const [sessionId, p] of this.sessions.live.get()) if (p.asking?.count) map.set(sessionId, p.asking)
 		return map
 	})
-	/** creatures asking something first, then those with something queued, in the order they first asked */
+	/** sessions asking something first, then those with something queued, in the order they first asked */
 	readonly callers = computed<Caller[]>('attentionCallers', () => {
-		const records = this.conjure.records.get()
 		const asking = this.asking.get()
 		const queued = this.bySession.get()
-		return [...new Set([...asking.keys(), ...queued.keys()])].map((sessionId) => {
-			const r = records.find((x) => x.sessionId === sessionId)
-			return {
-				sessionId,
-				name: r ? wormName(r) : `ses_…${sessionId.slice(-6)}`,
-				color: r?.color ?? '#a78bfa',
-				actions: queued.get(sessionId) ?? [],
-				asking: asking.get(sessionId) ?? null,
-			}
-		})
+		return [...new Set([...asking.keys(), ...queued.keys()])].map((sessionId) => ({
+			sessionId,
+			name: this.sessions.label(sessionId),
+			color: sessionColor(sessionId),
+			actions: queued.get(sessionId) ?? [],
+			asking: asking.get(sessionId) ?? null,
+		}))
 	})
 	private disposers: (() => void)[] = []
 
 	constructor(
 		readonly editor: Editor,
-		readonly conjure: Conjure,
+		readonly sessions: SessionControl,
 		readonly canvasId: string,
 		/** edit links mark steps done; view links only step through */
 		readonly canEdit: boolean,
@@ -127,7 +125,7 @@ export class Attention {
 		)
 	}
 
-	/** How many actions the session's creature has queued (reactive). */
+	/** How many actions the session has queued (reactive). */
 	count(sessionId: string) {
 		return this.bySession.get().get(sessionId)?.length ?? 0
 	}
@@ -142,16 +140,16 @@ export class Attention {
 	}
 
 	/**
-	 * Opens the creature's walkthrough at its first queued step. From the tray, the camera first
-	 * brings the creature into view (unless the first step shows something else).
+	 * Opens the session's walkthrough at its first queued step. From the tray, the camera first
+	 * brings the session's frame into view (unless the first step shows something else).
 	 */
 	open(sessionId: string, opts: { fromTray?: boolean } = {}) {
 		const steps = this.bySession.get().get(sessionId) ?? []
 		if (!steps.length) return
-		this.conjure.close()
+		this.sessions.close()
 		this.walk.set({ sessionId, steps: [...steps], index: 0 })
 		const first = this.showStep()
-		if (opts.fromTray && !first) this.revealCreature(sessionId)
+		if (opts.fromTray && !first) this.revealFrame(sessionId)
 	}
 
 	close() {
@@ -159,14 +157,13 @@ export class Attention {
 	}
 
 	/**
-	 * A creature asking its owner something: brings it into view (from the tray) and opens its stack,
-	 * which shows the questions (to its owner; read-only to everyone else on an edit link).
+	 * A session asking its owner something: brings its frame into view, where what it asks shows (to
+	 * answer for its owner, read-only for everyone else; see FrameAsks).
 	 */
-	answer(sessionId: string, opts: { fromTray?: boolean } = {}) {
+	answer(sessionId: string) {
 		this.close()
-		if (opts.fromTray) this.revealCreature(sessionId)
-		const peer = this.conjure.worms().find((p) => p.user.sessionId === sessionId)
-		if (peer) this.conjure.open(peer)
+		this.sessions.showAsks(sessionId)
+		this.revealFrame(sessionId)
 	}
 
 	/** Marks the current step done (edit links) and moves on; past the last one, closes. */
@@ -186,7 +183,7 @@ export class Attention {
 		this.showStep()
 	}
 
-	/** Clears the creature's whole queue for everyone (edit links) and closes. */
+	/** Clears the session's whole queue for everyone (edit links) and closes. */
 	dismissAll() {
 		const walk = this.walk.peek()
 		if (!walk) return
@@ -200,12 +197,10 @@ export class Attention {
 		return walk ? (walk.steps[walk.index] ?? null) : null
 	}
 
-	/** Where the creature is on the page: its live presence, else its record. */
-	creatureAt(sessionId: string): Vec | null {
-		const peer = this.conjure.worms().find((p) => p.user.sessionId === sessionId)
-		if (peer?.cursor) return peer.cursor
-		const r = this.conjure.records.get().find((x) => x.sessionId === sessionId)
-		return r ? { x: r.x, y: r.y } : null
+	/** Where the session's frame title is on the page (as drawn at the current zoom), if it has a frame showing. */
+	frameTitle(sessionId: string): Box | undefined {
+		const section = this.editor.layout.get().sections.find((s) => s.id === sessionId)
+		return section && frameTitleBox(section, this.editor.camera.get().z)
 	}
 
 	/** A highlight target's page box (groups with their outline's padding), if it's still on the canvas. */
@@ -253,11 +248,18 @@ export class Attention {
 		return item ? `“${item.title || item.name}”` : 'an item'
 	}
 
-	/** Brings the current step's target into view. True if it moved the camera there (a highlight). */
+	/**
+	 * Brings the current step into view: a highlight's target (true, it moved the camera there), or
+	 * for a say step, the session's frame title, where its card shows.
+	 */
 	showStep(): boolean {
 		this.stepAt = performance.now()
 		const step = this.current()
-		if (step?.kind !== 'highlight' || !step.target) return false
+		if (!step) return false
+		if (step.kind !== 'highlight' || !step.target) {
+			this.revealFrame(step.sessionId)
+			return false
+		}
 		this.editor.revealKey(step.target)
 		const focus = this.focusOf(step)
 		if (focus) {
@@ -305,13 +307,14 @@ export class Attention {
 		return z
 	}
 
-	/** Slides the camera to bring the creature (and room for its walkthrough beside it) into view. */
-	revealCreature(sessionId: string) {
-		const at = this.creatureAt(sessionId)
-		if (!at) return
+	/** Slides the camera to bring the session's frame title (and room above it for a card) into view. */
+	revealFrame(sessionId: string) {
+		const title = this.frameTitle(sessionId)
+		if (!title) return
 		const z = this.editor.camera.peek().z
-		const v = CREATURE_VIEW
-		this.reveal({ x: at.x - v.left / z, y: at.y - v.top / z, w: (v.left + v.right) / z, h: (v.top + v.bottom) / z }, 24)
+		const { w } = this.editor.viewport.peek()
+		const width = Math.min(title.w, (w - 48) / z)
+		this.reveal({ x: title.x, y: title.y - FRAME_CARD_ROOM / z, w: width, h: title.h + FRAME_CARD_ROOM / z }, 24)
 	}
 
 	/**

@@ -142,7 +142,7 @@ export function PairOfferCard({ inline, large, onPaired }: { inline?: boolean; l
 		}
 	}
 
-	const manually = inline ? 'pair manually instead' : 'pair manually (Conjure)'
+	const manually = inline ? 'pair manually instead' : 'pair manually (Sessions)'
 	return (
 		<div className={`oc-offer${large ? ' oc-offer-large' : ''}`}>
 			<div className="oc-offer-row">
@@ -358,7 +358,7 @@ export function ServerList({ servers, errors }: { servers: Pairing[]; errors: Re
 						</span>
 						<button
 							className={`oc-unpair${confirming === s.key ? ' confirming' : ''}`}
-							title={confirming === s.key ? 'Click again to unpair: your agents from it fall asleep' : 'Unpair this server (forget it in this browser)'}
+							title={confirming === s.key ? 'Click again to unpair: sessions you linked from it can no longer be prompted from here' : 'Unpair this server (forget it in this browser)'}
 							onClick={() => remove(s)}
 							onBlur={() => confirming === s.key && setConfirming(null)}
 						>

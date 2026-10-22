@@ -1,24 +1,37 @@
 import type { Item, Session } from '../../../../shared/types'
+import { sessionColor } from '../../../../shared/sessionColor'
+import type { KidState } from '../../render/subagents/field'
 
 /*
- * The demo canvas, in memory: five sessions, four of them with subagents (child sessions, titled
- * "<Agent>: <what it was asked>" as OpenCode names them), and the items they posted. The coordinator
- * has nine, among them a very wide frame and a tall one. Images are drawn in the browser.
+ * The demo canvas, in memory: five sessions with 14, 3, 0, 8 and 1 subagents (child sessions,
+ * titled "<Agent>: <what it was asked>" as OpenCode names them) and the items every one of them
+ * posted. The coordinator has 20 defined so its count can go from 0 to 20. Colours are the app's own
+ * (sessionColor), so the busy band, the badges and the subagent dots agree. Images are drawn in the browser.
  */
 
-export interface DemoChild {
+export interface DemoKid {
 	id: string
 	title: string
-	color: string
-	busy: boolean
+	agent: string
+	task: string
+	state: KidState
+	/** s before boot it started, and (finished ones) how long it ran */
+	startedAgo: number
+	ran: number
 }
 
 export interface DemoFamily {
 	parentId: string
+	title: string
 	color: string
 	busy: boolean
-	/** newest first */
-	children: DemoChild[]
+	agent: string
+	unread: number
+	asking: boolean
+	/** in the order the session started them */
+	kids: DemoKid[]
+	/** how many of them it has (the coordinator's can be changed) */
+	count: number
 }
 
 export interface Demo {
@@ -27,83 +40,128 @@ export interface Demo {
 	families: DemoFamily[]
 }
 
-const PALETTE = ['#f472b6', '#a78bfa', '#fb923c', '#4ade80', '#facc15', '#f87171', '#60a5fa', '#2dd4bf', '#e879f9', '#a3e635']
-
 type Shot = number | { a: number; w?: number }
+type KidDef = [title: string, state: KidState, shots: Shot[]]
 
 interface ParentDef {
-	id: string
+	key: string
 	title: string
+	/** the session colour it should get (its id is picked to hash to it) */
 	color: string
 	busy: boolean
+	agent: string
+	unread: number
+	asking: boolean
 	shots: Shot[]
-	children: { title: string; busy?: boolean; shots: Shot[] }[]
+	kids: KidDef[]
+	count?: number
 }
 
 const DEFS: ParentDef[] = [
 	{
-		id: 'ses_demo_coordinator',
+		key: 'coordinator',
 		title: 'Canvas build: coordinator',
-		color: PALETTE[6],
+		color: '#60a5fa',
 		busy: true,
+		agent: 'build',
+		unread: 2,
+		asking: false,
 		shots: [1.6, 1.33, 1.78, 1, 1.5, 1.2, 1.6, 0.8],
-		children: [
-			{ title: 'Explore: render loop', busy: true, shots: [1.5] },
-			{ title: 'General: subagent frames demo', busy: true, shots: [1.78, 1.33, 1.6] },
-			{ title: 'Explore: competitor heroes', shots: [{ a: 4.2, w: 4200 }, 1.78, 1.6] },
-			{ title: 'General: fix flaky upload test', shots: [1.6, 1.2] },
-			{ title: 'General: mobile onboarding', shots: [{ a: 0.5, w: 900 }, 1.33] },
-			{ title: 'Review: page items', shots: [1.33] },
-			{ title: 'Explore: auth flow', shots: [1.5, 1] },
-			{ title: 'General: HTML side drawer', shots: [1.78, 1.5] },
-			{ title: 'General: precise highlights', shots: [1.6] },
+		count: 14,
+		kids: [
+			['Explore: render loop', 'running', [1.5]],
+			['General: subagent frames demo', 'running', [1.78, 1.33]],
+			['Explore: competitor heroes', 'done', [{ a: 4.2, w: 4200 }, 1.78]],
+			['General: fix flaky upload test', 'done', [1.6, 1.2]],
+			['General: mobile onboarding', 'done', [{ a: 0.5, w: 900 }, 1.33]],
+			['Review: page items', 'failed', [1.33]],
+			['Explore: auth flow', 'waiting', [1.5, 1]],
+			['General: HTML side drawer', 'done', [1.78, 1.5]],
+			['General: precise highlights', 'done', [1.6]],
+			['Explore: ember band timing', 'running', [1.78]],
+			['Review: frame chrome copy', 'done', [1.5]],
+			['General: link cards', 'done', [1.33, 1.6]],
+			['Explore: WebGPU fallbacks', 'done', [1.6]],
+			['General: unread badge', 'done', [1.2]],
+			['Explore: video seek latency', 'running', [1.78]],
+			['General: share dialog', 'done', [1.5]],
+			['Review: keyboard shortcuts', 'done', [1.33]],
+			['General: canvas list previews', 'done', [1.6]],
+			['Explore: Safari texture upload', 'done', [1.5]],
+			['General: presence bar', 'done', [1.78]],
 		],
 	},
 	{
-		id: 'ses_demo_hero',
+		key: 'hero',
 		title: 'Landing hero explorations',
-		color: PALETTE[0],
+		color: '#f472b6',
 		busy: false,
+		agent: 'build',
+		unread: 0,
+		asking: true,
 		shots: [1.78, 1.78, 1.5, 1.33],
-		children: [
-			{ title: 'General: hero variants, round 3', busy: true, shots: [1.78, 1.78] },
-			{ title: 'Explore: brand assets', shots: [1.33, 1, 1.5] },
-			{ title: 'Review: contrast pass', shots: [1.5] },
+		kids: [
+			['General: hero variants, round 3', 'running', [1.78, 1.78]],
+			['Explore: brand assets', 'done', [1.33, 1, 1.5]],
+			['Review: contrast pass', 'done', [1.5]],
 		],
 	},
 	{
-		id: 'ses_demo_shader',
+		key: 'shader',
 		title: 'Shader study: rounded SDF',
-		color: PALETTE[1],
+		color: '#a78bfa',
 		busy: false,
+		agent: 'plan',
+		unread: 0,
+		asking: false,
 		shots: [1.33, 1, 1.5, 0.8],
-		children: [],
+		kids: [],
 	},
 	{
-		id: 'ses_demo_video',
+		key: 'video',
 		title: 'Perf: video pool',
-		color: PALETTE[7],
+		color: '#2dd4bf',
 		busy: true,
+		agent: 'build',
+		unread: 1,
+		asking: false,
 		shots: [2.4, 1.78, 1.2],
-		children: [
-			{ title: 'Explore: map video pool', shots: [1.5] },
-			{ title: 'General: decoder reuse', busy: true, shots: [1.78, 1.6] },
-			{ title: 'General: frame pacing traces', shots: [2.2] },
-			{ title: 'Review: memory', shots: [1.33] },
+		kids: [
+			['Explore: map video pool', 'done', [1.5]],
+			['General: decoder reuse', 'running', [1.78, 1.6]],
+			['General: frame pacing traces', 'running', [2.2]],
+			['Review: memory', 'done', [1.33]],
+			['Explore: importExternalTexture', 'done', [1.6]],
+			['General: poster frames', 'done', [1.5, 1.2]],
+			['Explore: seek latency', 'done', [1.78]],
+			['Review: leak check', 'failed', [1.33]],
 		],
 	},
 	{
-		id: 'ses_demo_flaky',
+		key: 'flaky',
 		title: 'Fix flaky upload test',
-		color: PALETTE[2],
+		color: '#fb923c',
 		busy: false,
+		agent: 'build',
+		unread: 0,
+		asking: false,
 		shots: [2.2, 1.6],
-		children: [{ title: 'Explore: find the race', shots: [1.6] }],
+		kids: [['Explore: find the race', 'done', [1.6]]],
 	},
 ]
 
+/** An OpenCode-shaped session id ("ses_" + 26) that hashes to `color` (the app colours sessions by id). */
+function sessionIdFor(key: string, color: string) {
+	const base = `ses_demo${key}`
+	for (let i = 0; i < 1000; i++) {
+		const id = `${base}${i.toString(36)}`.padEnd(30, '0').slice(0, 30)
+		if (sessionColor(id) === color) return id
+	}
+	return base.padEnd(30, '0').slice(0, 30)
+}
+
 /** mulberry32 */
-function rng(seed: number) {
+export function rng(seed: number) {
 	return () => {
 		seed |= 0
 		seed = (seed + 0x6d2b79f5) | 0
@@ -127,8 +185,8 @@ function hue(hex: string) {
 
 /** A placeholder "image": a muted gradient near the session's hue with a subject or a few UI blocks. */
 async function placeholder(r: () => number, h0: number, aspect: number): Promise<string> {
-	const long = 720
-	const w = Math.round(aspect >= 1 ? Math.min(1400, long * Math.min(aspect, 2)) : long * aspect)
+	const long = 640
+	const w = Math.round(aspect >= 1 ? Math.min(1280, long * Math.min(aspect, 2)) : long * aspect)
 	const hgt = Math.round(w / aspect)
 	const c = new OffscreenCanvas(w, hgt)
 	const g = c.getContext('2d')!
@@ -141,7 +199,6 @@ async function placeholder(r: () => number, h0: number, aspect: number): Promise
 	g.fillStyle = grad
 	g.fillRect(0, 0, w, hgt)
 	if (r() < 0.45) {
-		// a soft subject
 		const x = w * (0.25 + r() * 0.5)
 		const y = hgt * (0.3 + r() * 0.4)
 		const rad = Math.min(w, hgt) * (0.25 + r() * 0.2)
@@ -151,7 +208,6 @@ async function placeholder(r: () => number, h0: number, aspect: number): Promise
 		g.fillStyle = sub
 		g.fillRect(0, 0, w, hgt)
 	} else {
-		// a screenshot: a top bar and some text lines
 		const u = Math.min(w, hgt) / 20
 		g.fillStyle = 'rgba(255,255,255,0.07)'
 		g.fillRect(0, 0, w, u * 2)
@@ -165,9 +221,8 @@ async function placeholder(r: () => number, h0: number, aspect: number): Promise
 		}
 		if (r() < 0.6) {
 			g.fillStyle = `hsl(${h2 + 40} ${s + 20}% 58% / 0.55)`
-			const bw = w * 0.16
 			g.beginPath()
-			g.roundRect(x0, Math.min(hgt - u * 3, y + u), bw, u * 1.6, u * 0.4)
+			g.roundRect(x0, Math.min(hgt - u * 3, y + u), w * 0.16, u * 1.6, u * 0.4)
 			g.fill()
 		}
 	}
@@ -187,19 +242,7 @@ export async function buildDemo(canvasId = 'playground'): Promise<Demo> {
 		shots.forEach((shot, k) => {
 			const a = typeof shot === 'number' ? shot : shot.a
 			const width = typeof shot === 'number' ? Math.round(1000 * a) : (shot.w ?? Math.round(1000 * a))
-			const height = Math.round(width / a)
-			const item: Item = {
-				id: `${sessionId}-i${k}`,
-				canvasId,
-				sessionId,
-				kind: 'image',
-				name: `shot-${k + 1}.png`,
-				src: '',
-				thumb: '',
-				width,
-				height,
-				createdAt: t--,
-			}
+			const item: Item = { id: `${sessionId}-i${k}`, canvasId, sessionId, kind: 'image', name: `shot-${k + 1}.png`, src: '', thumb: '', width, height: Math.round(width / a), createdAt: t-- }
 			items.push(item)
 			jobs.push(
 				placeholder(r, h, a).then((url) => {
@@ -209,17 +252,21 @@ export async function buildDemo(canvasId = 'playground'): Promise<Demo> {
 			)
 		})
 	}
+	const r = rng(7)
 	DEFS.forEach((d, pi) => {
-		sessions.push({ id: d.id, canvasId, title: d.title, createdAt: 1000 + pi })
-		addItems(d.id, d.color, d.shots, 100 + pi)
-		const children: DemoChild[] = d.children.map((c, ci) => {
-			const id = `${d.id}_sub${ci}`
-			const color = PALETTE[(pi * 3 + ci * 7 + 2) % PALETTE.length]
-			sessions.push({ id, canvasId, title: c.title, createdAt: 2000 + pi * 20 + ci })
-			addItems(id, color, c.shots, 1000 + pi * 50 + ci)
-			return { id, title: c.title, color, busy: !!c.busy }
+		const parentId = sessionIdFor(d.key, d.color)
+		sessions.push({ id: parentId, canvasId, title: d.title, createdAt: 1000 + pi })
+		addItems(parentId, d.color, d.shots, 100 + pi)
+		const kids = d.kids.map(([title, state, shots], ci): DemoKid => {
+			const id = `${parentId.slice(0, 22)}k${String(ci).padStart(2, '0')}`.padEnd(30, '0')
+			sessions.push({ id, canvasId, title, createdAt: 2000 + pi * 40 + ci })
+			addItems(id, sessionColor(id), shots, 1000 + pi * 50 + ci)
+			const [agent, ...rest] = title.split(': ')
+			const startedAgo = state === 'running' || state === 'waiting' ? 20 + r() * 150 : 200 + r() * 900
+			const ran = state === 'running' || state === 'waiting' ? startedAgo : 40 + r() * 160
+			return { id, title, agent, task: rest.join(': ') || title, state, startedAgo, ran }
 		})
-		families.push({ parentId: d.id, color: d.color, busy: d.busy, children })
+		families.push({ parentId, title: d.title, color: sessionColor(parentId), busy: d.busy, agent: d.agent, unread: d.unread, asking: d.asking, kids, count: d.count ?? kids.length })
 	})
 	await Promise.all(jobs)
 	return { sessions, items, families }

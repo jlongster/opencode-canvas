@@ -1,154 +1,367 @@
 import '../../ui/styles.css'
 import './frames.css'
 import { Box } from '../../editor/geometry'
-import { naturalSizes, TITLE_ROW } from '../../editor/subagentLayout'
-import { Connectors, type ConnectorKind, type ConnectorStyle } from '../../render/connectors'
+import { bezier } from '../../render/busy/ember'
 import { describeError, Renderer } from '../../render/Renderer'
+import { clamp01, hexToRgb, type KidLook, type RGB } from '../../render/subagents/field'
 import { react } from '../../state/signals'
 import { chromeParams, chromeVariations, createChrome, restoreParams, shareParams } from '../shared/chrome'
-import { button, el, paramControl, switchRow } from '../shared/controls'
+import { button, el, paramControl, segmentedRow, switchRow } from '../shared/controls'
+import { fontReady } from '../shared/font'
 import { changed, defaults, resolve, type ParamValues } from '../shared/params'
-import { buildDemo } from './data'
+import { Chrome, HEAD_PX, type HeadInfo, type HeadStyle, type ListInfo } from './chrome'
+import { buildDemo, type Demo, type DemoFamily } from './data'
 import { SubagentEditor } from './editor'
-import { Families, type Frame } from './families'
-import { CONNECTOR_PARAMS, IDEAS, ideaOf, type IdeaId } from './ideas'
+import { COUNTS, EXPAND_PARAMS, HEAD_NOTES, LAYOUT_PARAMS } from './ideas'
+import { listWidth, plan, type ExpandPlacement, type ListPlacement, type Metrics, type Motion, type Plan, type PlanFamily } from './plan'
+import { MORE, measureSummary, paintSummary, repOf, REPS, type KidView, type ListLayout, type RepId } from './reps'
+import { duration, Sim, type Kid } from './sim'
 
 interface Settings {
-	idea: IdeaId
+	rep: RepId
 	params: Record<string, ParamValues>
-	lines: ParamValues
-	busy: boolean
+	layout: ParamValues
+	expand: ParamValues
+	live: boolean
+	count: number
 }
 
-const chrome = createChrome<Settings>({
+const shell = createChrome<Settings>({
 	site: 'subagents',
 	title: 'Subagents',
-	storageKey: 'canvas-playground-subagent-frames-v1',
+	storageKey: 'canvas-playground-subagents-v3',
 	defaults: () => ({
-		idea: IDEAS[0].id,
-		params: Object.fromEntries(IDEAS.map((i) => [i.id, defaults(i.params)])),
-		lines: defaults(CONNECTOR_PARAMS),
-		busy: true,
+		rep: REPS[0].id,
+		params: Object.fromEntries(REPS.map((r) => [r.id, defaults(r.params)])),
+		layout: defaults(LAYOUT_PARAMS),
+		expand: defaults(EXPAND_PARAMS),
+		live: true,
+		count: 14,
 	}),
 	restore(saved, s) {
-		if (typeof saved.v === 'string' && IDEAS.some((i) => i.id === saved.v)) s.idea = saved.v as IdeaId
-		restoreParams(IDEAS, saved.p, s.params)
-		if (saved.l) s.lines = resolve(CONNECTOR_PARAMS, { ...s.lines, ...(saved.l as ParamValues) })
-		if (typeof saved.b === 'boolean') s.busy = saved.b
+		if (typeof saved.v === 'string' && REPS.some((r) => r.id === saved.v)) s.rep = saved.v as RepId
+		restoreParams(REPS, saved.p, s.params)
+		if (saved.l) s.layout = resolve(LAYOUT_PARAMS, { ...s.layout, ...(saved.l as ParamValues) })
+		if (saved.x) s.expand = resolve(EXPAND_PARAMS, { ...s.expand, ...(saved.x as ParamValues) })
+		if (typeof saved.live === 'boolean') s.live = saved.live
+		if (typeof saved.n === 'number' && COUNTS.includes(String(saved.n))) s.count = saved.n
 	},
-	share: (s) => ({ v: s.idea, p: shareParams(IDEAS, s.params), l: changed(CONNECTOR_PARAMS, s.lines), b: s.busy }),
-	exportJson: (s) => ({ site: 'subagents', idea: { id: s.idea, name: ideaOf(s.idea).name, params: s.params[s.idea] }, lines: s.lines }),
+	share: (s) => ({ v: s.rep, p: shareParams(REPS, s.params), l: changed(LAYOUT_PARAMS, s.layout), x: changed(EXPAND_PARAMS, s.expand), live: s.live, n: s.count }),
+	exportJson: (s) => ({ site: 'subagents', representation: { id: s.rep, name: repOf(s.rep).name, params: s.params[s.rep] }, layout: s.layout, expand: s.expand }),
 })
-const { settings, demo } = chrome
-demo.setAttribute('aria-label', 'The canvas: drag with space or the hand tool to pan, scroll or pinch to zoom; click a stack to spread it')
+const { settings, demo: demoBox } = shell
+demoBox.setAttribute('aria-label', 'The canvas: scroll to pan, pinch or ctrl-scroll to zoom; click a subagent to expand its frame')
 
 // ---------- the real canvas ----------
 
-const container = el('div', 'canvas-container sf-canvas')
+const container = el('div', 'canvas-container sa-canvas')
 const canvasEl = el('canvas', 'canvas')
 const overlay = el('div', 'overlay')
-const controls = el('div', 'sf-controls')
-const loading = el('div', 'sf-loading', 'Drawing the demo canvas…')
-container.append(canvasEl, overlay, loading)
-demo.prepend(container)
+const loading = el('div', 'sa-loading', 'Drawing the demo canvas…')
+const toast = el('div', 'sa-toast')
+container.append(canvasEl, overlay, loading, toast)
+demoBox.prepend(container)
 
 const editor = new SubagentEditor()
 editor.mount(container)
 editor.setCurrentTool('select')
 ;(window as unknown as { editor: unknown }).editor = editor
 
-const families = new Families([])
-let fam = families
-let frame: Frame = { families: [], connectors: [], raised: [], children: new Map(), animating: false }
-let dirty = true
+let demo: Demo | null = null
+let sim: Sim | null = null
 let renderer: Renderer | null = null
-let connectors: Connectors | null = null
-let hoverAction = false
+let ui: Chrome | null = null
+let current: Plan | null = null
 
-const idea = () => ideaOf(settings.idea)
-const values = () => settings.params[settings.idea]
+const rep = () => repOf(settings.rep)
+const L = () => settings.layout
+const X = () => settings.expand
 
-/** Each frame, before the renderer draws: where the families are now. */
-/** While families move after a param change, the family nearest the middle of the view stays put on screen. */
-let anchor: { id: string; x: number; y: number; until: number } | null = null
-function anchorView() {
+// ---------- expanding ----------
+
+interface Open {
+	from: number
+	to: number
+	start: number
+}
+const opens = new Map<string, Open>()
+const EASES: Record<string, (x: number) => number> = {
+	standard: bezier(0.4, 0, 0.2, 1),
+	decelerate: bezier(0, 0, 0.2, 1),
+	'in-out': bezier(0.65, 0, 0.35, 1),
+}
+
+function openAt(id: string, now: number) {
+	const o = opens.get(id)
+	if (!o) return 0
+	const dur = Number(X().dur)
+	const p = dur <= 0 ? 1 : clamp01((now - o.start) / dur)
+	if (p >= 1 && o.to === 0) opens.delete(id)
+	return o.from + (o.to - o.from) * (EASES[String(X().ease)] ?? EASES.standard)(p)
+}
+
+const isOpen = (id: string) => (opens.get(id)?.to ?? 0) > 0.5
+
+function setOpen(id: string, on: boolean, now: number, delay = 0) {
+	if (isOpen(id) === on && opens.has(id) === on) return
+	opens.set(id, { from: openAt(id, now), to: on ? 1 : 0, start: now + delay })
+	dirty = true
+}
+
+function familyOf(id: string) {
+	return demo?.families.find((f) => f.parentId === id || f.kids.some((k) => k.id === id))
+}
+
+function shownKids(f: DemoFamily) {
+	return f.kids.slice(0, f.count)
+}
+
+function toggleKid(id: string) {
+	setOpen(id, !isOpen(id), performance.now())
+}
+
+/** Expand (or collapse) a session's subagents, one after another (the whole stagger capped). */
+function setAll(f: DemoFamily, on: boolean) {
+	const now = performance.now()
+	const kids = shownKids(f)
+	const order = on ? kids : [...kids].reverse()
+	const step = order.length > 1 ? Math.min(Number(X().stagger), 260 / (order.length - 1)) : 0
+	let i = 0
+	for (const k of order) if (isOpen(k.id) !== on) setOpen(k.id, on, now, step * i++)
+}
+
+function toggleAll(sectionId: string) {
+	const f = familyOf(sectionId)
+	if (!f) return
+	if (f.parentId !== sectionId) return setOpen(sectionId, false, performance.now())
+	setAll(f, !shownKids(f).every((k) => isOpen(k.id)))
+}
+
+function expandEverything(on: boolean) {
+	for (const f of demo?.families ?? []) setAll(f, on)
+}
+
+// ---------- per frame: subagents, lists, the plan ----------
+
+interface ListState {
+	mode: 'full' | 'summary' | 'dots'
+	h: { from: number; to: number; start: number }
+	layout: ListLayout | null
+}
+const listStates = new Map<string, ListState>()
+const showAll = new Set<string>()
+const looks = new Map<string, KidLook>()
+const views = new Map<string, KidView>()
+let dirty = true
+let lastSig = ''
+const LIST_H_MS = 220
+
+function look(id: string): KidLook {
+	let l = looks.get(id)
+	if (!l) looks.set(id, (l = { run: 0, done: 0, fail: 0, wait: 0, flash: 0, clock: 0, open: 0, hover: 0, breath: 0 }))
+	return l
+}
+
+function metrics(): Metrics {
+	return { head: HEAD_PX[String(L().head) as HeadStyle], headGap: 8, listGap: 22, bandPad: 16 }
+}
+
+function listHeight(s: ListState, now: number) {
+	const e = clamp01((now - s.h.start) / LIST_H_MS)
+	return s.h.from + (s.h.to - s.h.from) * (1 - (1 - e) * (1 - e) * (1 - e))
+}
+
+const lists = new Map<string, ListInfo>()
+const raised: { id: string; shadow: number }[] = []
+
+function update(now: number) {
+	if (!demo || !sim) return
+	const t = now / 1000
+	sim.live = settings.live
+	sim.tick(t)
+	const z = editor.camera.peek().z
+	const natural = editor.naturalLayout.get()
+	const m = metrics()
+	const families = new Map<string, PlanFamily>()
+	const childIds = new Set(demo.families.flatMap((f) => f.kids.map((k) => k.id)))
+	const ownColour = L().color === 'own'
+	let animating = false
+	views.clear()
+	lists.clear()
+	for (const f of demo.families) {
+		const kids = sim.familyKids(f)
+		const parentRgb = hexToRgb(f.color)
+		const kv: KidView[] = kids.map((k) => {
+			const open = openAt(k.demo.id, now)
+			if (opens.has(k.demo.id) && open !== opens.get(k.demo.id)!.to) animating = true
+			const v = sim!.view(k, t, ownColour ? k.own : parentRgb, sim!.look(k, t, open, ui?.hover(k.demo.id, now) ?? 0, look(k.demo.id)))
+			views.set(k.demo.id, v)
+			return v
+		})
+		const fam: PlanFamily = { parentId: f.parentId, kids: [], listH: 0 }
+		families.set(f.parentId, fam)
+		if (!kv.length) {
+			listStates.delete(f.parentId)
+			continue
+		}
+		// zoomed out, every representation collapses to the same summary (with some slack, so it doesn't flap)
+		const w = listWidth(natural, f.parentId, z, String(L().list) as ListPlacement)
+		let st = listStates.get(f.parentId)
+		const at = Number(L().summaryAt)
+		const mode = !st ? (w >= at ? 'full' : 'summary') : st.mode === 'full' ? (w < at * 0.96 ? 'summary' : 'full') : w > at * 1.04 ? 'full' : 'summary'
+		const mctx = { pitch: ui?.dots.pitch ?? 5, showAll: showAll.has(f.parentId), text: (s: string, weight: 400 | 500 | 600, size?: number) => ui?.text.width(s, weight, size) ?? s.length * 6.5 }
+		const layout = mode === 'full' ? rep().measure(kv, w, settings.params[settings.rep], mctx) : measureSummary(kv, w, mctx, w >= 90)
+		const target = w < 14 ? 0 : layout.h
+		if (!st) {
+			st = { mode, h: { from: target, to: target, start: 0 }, layout }
+			listStates.set(f.parentId, st)
+		}
+		st.mode = mode
+		st.layout = layout
+		if (Math.abs(st.h.to - target) > 0.01) st.h = { from: listHeight(st, now), to: target, start: now }
+		if (now - st.h.start < LIST_H_MS) animating = true
+		fam.listH = listHeight(st, now)
+		const chipOf = (id: string) => layout.entries.find((e) => e.id === id)?.rect ?? layout.entries.find((e) => e.id === MORE)?.rect ?? null
+		fam.kids = kids.map((k) => ({ id: k.demo.id, open: openAt(k.demo.id, now), chip: chipOf(k.demo.id) }))
+		lists.set(f.parentId, {
+			parentId: f.parentId,
+			key: mode === 'full' ? settings.rep : 'summary',
+			layout,
+			paint: mode === 'full' ? rep().paint : paintSummary,
+			kids: new Map(kv.map((v) => [v.id, v])),
+			p: settings.params[settings.rep],
+			zoomable: mode !== 'full',
+		})
+	}
+	const sig = `${z}|${[...families.values()].map((f) => `${f.listH.toFixed(3)}:${f.kids.map((k) => (k.open > 0 ? `${k.open.toFixed(4)}@${k.chip ? `${k.chip.x},${k.chip.y}` : ''}` : '')).join(',')}`).join(';')}`
+	if (!dirty && !animating && sig === lastSig && current) return
+	dirty = false
+	lastSig = sig
+	// growing out of (or back into) its entry, a subagent's frame is an opaque card over the rest, with a soft shadow mid-flight
+	raised.length = 0
+	if (X().motion === 'grow') {
+		for (const f of families.values()) for (const k of f.kids) if (k.open > 0.0005 && k.open < 0.9995) raised.push({ id: k.id, shadow: 0.7 * Math.sin(Math.PI * k.open) })
+	}
+	current = plan({
+		natural,
+		families,
+		childIds,
+		zoom: z,
+		list: String(L().list) as ListPlacement,
+		expand: String(X().expand) as ExpandPlacement,
+		motion: String(X().motion) as Motion,
+		childScale: Number(X().scale),
+		m,
+	})
+	editor.plan.set(current)
+}
+
+editor.onFrame((now) => update(now))
+
+// ---------- after the renderer: headers, lists and their dots ----------
+
+let lastCam = ''
+let lastDraw = 0
+let drawnPlan: Plan | null = null
+
+function headInfos(now: number): Map<string, HeadInfo> {
+	const out = new Map<string, HeadInfo>()
+	if (!demo || !sim) return out
+	const t = now / 1000
+	for (const f of demo.families) {
+		const kids = sim.familyKids(f)
+		const running = kids.filter((k) => k.state === 'running').length
+		const l = look(f.parentId)
+		l.run = f.busy ? 1 : 0
+		l.wait = !f.busy && f.asking ? 1 : 0
+		l.done = !f.busy && !f.asking ? 1 : 0
+		l.fail = l.flash = l.open = l.hover = 0
+		l.clock = t
+		l.breath = 0.5 - 0.5 * Math.cos((t / 1.8) * 2 * Math.PI)
+		const state = f.busy ? 'Running' : f.asking ? 'Asking a question' : 'Idle'
+		const activity = f.busy ? 'active now' : `active ${f.asking ? '2m' : '18m'} ago`
+		const subs = kids.length ? `${kids.length} subagent${kids.length === 1 ? '' : 's'}${running ? `, ${running} running` : ''}` : 'no subagents'
+		out.set(f.parentId, {
+			id: f.parentId,
+			title: f.title,
+			child: false,
+			rgb: hexToRgb(f.color),
+			color: f.color,
+			look: l,
+			state,
+			meta: `${state} · ${f.agent} · ${subs} · ${activity}`,
+			unread: f.unread,
+			asking: f.asking,
+			kids: kids.length,
+			allOpen: kids.length > 0 && kids.every((k) => isOpen(k.demo.id)),
+		})
+		for (const k of kids) {
+			const v = views.get(k.demo.id)
+			if (!v) continue
+			const state = k.state === 'running' ? `Running · ${v.elapsed}` : k.state === 'done' ? `Done in ${duration(v.ran)}` : k.state === 'failed' ? `Failed after ${duration(v.ran)}` : 'Waiting for an answer'
+			out.set(k.demo.id, {
+				id: k.demo.id,
+				title: k.demo.title,
+				agent: k.demo.agent,
+				task: k.demo.task,
+				child: true,
+				// its own frame: its own colour (as its busy band has), whatever colour its dots have in the list
+				rgb: k.own,
+				color: rgbHex(k.own),
+				look: v.look,
+				state,
+				meta: `${state} · subagent ${k.index} of “${f.title}”`,
+				unread: 0,
+				asking: k.state === 'waiting',
+				kids: 0,
+				allOpen: false,
+			})
+		}
+	}
+	return out
+}
+
+function drawChrome(now: number) {
+	if (!ui || !current) return
 	const cam = editor.camera.peek()
 	const { w, h } = editor.viewport.peek()
-	const mid = editor.screenToPage({ x: w / 2, y: h / 2 })
-	let best: { id: string; d: number } | null = null
-	for (const f of fam.states) {
-		const b = shownBox(f.demo.parentId)
-		if (!b) continue
-		const d = Math.hypot(b.x + b.w / 2 - mid.x, b.y + b.h / 2 - mid.y)
-		if (!best || d < best.d) best = { id: f.demo.parentId, d }
-	}
-	const b = best && shownBox(best.id)
-	anchor = best && b ? { id: best.id, x: (b.x + cam.x) * cam.z, y: (b.y + cam.y) * cam.z, until: performance.now() + 1500 } : null
-}
-function holdAnchor() {
-	if (!anchor) return
-	if (performance.now() > anchor.until) return void (anchor = null)
-	const b = shownBox(anchor.id)
-	if (!b) return
-	const cam = editor.camera.peek()
-	const dx = anchor.x - (b.x + cam.x) * cam.z
-	const dy = anchor.y - (b.y + cam.y) * cam.z
-	if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) editor.setCamera({ x: cam.x + dx / cam.z, y: cam.y + dy / cam.z, z: cam.z })
+	const dpr = canvasEl.width / Math.max(1, w)
+	const camKey = `${cam.x},${cam.y},${cam.z},${w},${h}`
+	const resized = ui.dots.setup(w, h, dpr, 5, 2)
+	const due = now - lastDraw >= 1000 / 30
+	if (!resized && camKey === lastCam && drawnPlan === current && !ui.animating && !due) return
+	lastCam = camKey
+	lastDraw = now
+	drawnPlan = current
+	ui.headStyle = String(L().head) as HeadStyle
+	ui.titlePx = Number(L().title)
+	ui.draw(current, headInfos(now), lists, now, dpr)
+	for (const el of overlay.querySelectorAll<HTMLElement>('.sa-head')) el.classList.toggle('hot', el.dataset.session === editor.hoveredFrameId.peek())
+	shell.setZoom(cam.z)
 }
 
-let lastZoom = 0
-editor.onFrame(() => {
-	holdAnchor()
-	const z = editor.camera.peek().z
-	if (Math.abs(z - lastZoom) > lastZoom * 1e-4) dirty = true
-	if (!dirty && !frame.animating) return
-	dirty = false
-	lastZoom = z
-	fam.zoom = z
-	fam.params = values()
-	// (the clock the tweens started on, not rAF's timestamp: they can differ)
-	frame = fam.frame(performance.now())
-	editor.families.set({ list: frame.families, gutter: Number(values().gutter) || 180 })
-})
-
-react(() => {
-	const c = editor.cursor.get()
-	container.style.cursor = hoverAction ? 'pointer' : c
-})
-
-/** The box a frame is drawn at right now: the renderer's eased one (it trails the layout while things move). */
-function shownBox(id: string): (Box & { opacity?: number }) | undefined {
-	return renderer?.sectionBox(id) ?? editor.layout.get().sections.find((s) => s.id === id)?.box
+function rgbHex(c: RGB) {
+	return `#${c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`
 }
 
-function lineStyle(): ConnectorStyle {
-	const l = settings.lines
-	return {
-		kind: (l.kind === 'curved bus' ? 'curvedBus' : l.kind) as ConnectorKind,
-		width: l.width as number,
-		color: l.color as ConnectorStyle['color'],
-		opacity: l.opacity as number,
-		dashed: !!l.dashed,
-		ends: l.ends as ConnectorStyle['ends'],
-		from: l.from as ConnectorStyle['from'],
-		to: l.to as ConnectorStyle['to'],
-		radius: l.radius as number,
-	}
-}
+// ---------- boot ----------
 
 async function boot() {
 	const data = await buildDemo()
+	demo = data
+	const coordinator = data.families[0]
+	coordinator.count = settings.count
+	sim = new Sim(data.families, performance.now() / 1000)
 	editor.loadSnapshot(data.sessions, data.items)
-	fam = new Families(data.families)
-	fam.idea = settings.idea
-	fam.params = values()
-	fam.sizes = naturalSizes(editor.naturalLayout.get(), data.families.flatMap((f) => f.children.map((c) => c.id)))
-	fam.reset(performance.now(), false)
-	busySessions = new Map(data.families.flatMap((f) => [...(f.busy ? [[f.parentId, f.color] as const] : []), ...f.children.filter((c) => c.busy).map((c) => [c.id, c.color] as const)]))
 	dirty = true
 	editor.whenViewportReady(() => requestAnimationFrame(() => fit(false)))
 	try {
-		renderer = await Renderer.create(canvasEl, overlay, editor, { readOnly: true, getRaisedSections: () => frame.raised })
+		renderer = await Renderer.create(canvasEl, overlay, editor, {
+			readOnly: true,
+			easeLayout: false,
+			busySessions: () => busySessions(),
+			getRaisedSections: () => raised,
+		})
 		;(window as unknown as { renderer: unknown }).renderer = renderer
 	} catch (e) {
 		console.error(e)
@@ -156,296 +369,221 @@ async function boot() {
 		return
 	}
 	loading.remove()
-	connectors = new Connectors(overlay, editor, shownBox)
-	overlay.append(controls)
-	// After the renderer has drawn: lines, titles, markers and chips follow the frames as drawn.
-	editor.onFrame(() => {
-		connectors!.families = frame.connectors
-		connectors!.style = lineStyle()
-		connectors!.draw()
-		decorate()
-		chrome.setZoom(editor.camera.peek().z)
+	ui = new Chrome(overlay, editor, {
+		toggleKid,
+		toggleAll,
+		showAll: (id) => {
+			if (showAll.has(id)) showAll.delete(id)
+			else showAll.add(id)
+			dirty = true
+		},
+		zoomTo: (id) =>
+			settle(
+				() => {
+					const s = editor.layout.get().sections.find((x) => x.id === id)
+					const list = current?.lists.get(id)
+					return s ? Box.union([s.box, s.header, ...(list ? [list.box] : [])]) : null
+				},
+				64,
+				true,
+			),
+		prompt: (id) => say(`Prompting “${titleOf(id)}” opens its prompt in the app (not in this demo)`),
+		attend: (id) => {
+			const f = demo?.families.find((x) => x.parentId === id)
+			say(f?.asking ? `“${titleOf(id)}” is asking a question (the app shows it here)` : `Plays the ${f?.unread ?? 0} steps “${titleOf(id)}” queued (in the app)`)
+			if (f && !f.asking) f.unread = 0
+		},
 	})
+	void fontReady.then(() => {
+		ui?.text.reset()
+		dirty = true
+	})
+	editor.onFrame((now) => drawChrome(now))
+}
+
+const busySet = new Set<string>()
+function busySessions() {
+	busySet.clear()
+	if (!demo || !sim) return busySet
+	for (const f of demo.families) {
+		if (f.busy && L().busy) busySet.add(f.parentId)
+		for (const k of sim.familyKids(f)) if (k.state === 'running' && L().busy) busySet.add(k.demo.id)
+	}
+	return busySet
+}
+
+function titleOf(id: string) {
+	return editor.sessions.peek()[id]?.title ?? id
+}
+
+let toastTimer = 0
+function say(text: string) {
+	toast.textContent = text
+	toast.classList.add('on')
+	clearTimeout(toastTimer)
+	toastTimer = window.setTimeout(() => toast.classList.remove('on'), 2400)
 }
 
 function fit(animate = true) {
-	const b = editor.layout.get().bounds
-	if (b) editor.setCamera(editor.getCameraForBounds(b, { padding: 56 }), { animate, duration: 480 })
+	settle(() => editor.layout.get().bounds, 48, animate)
 }
 
-// ---------- titles, busy markers, family chips ----------
-
-let busySessions = new Map<string, string>()
-const covered = new Set<string>()
-const labelCache = new Map<string, HTMLElement>()
-const markers = new Map<string, HTMLElement>()
-const chips = new Map<string, HTMLButtonElement>()
-const styleCache = new WeakMap<HTMLElement, string>()
-
-const setStyle = (e: HTMLElement, css: string) => {
-	if (styleCache.get(e) === css) return
-	styleCache.set(e, css)
-	e.style.cssText = css
-}
-
-function label(id: string) {
-	let e = labelCache.get(id)
-	if (!e || !e.isConnected) {
-		e = overlay.querySelector<HTMLElement>(`.section-label[data-session="${id}"]`) ?? undefined
-		if (e) labelCache.set(id, e)
+/**
+ * Points the camera at a box that depends on the zoom (headers and lists are a constant size on
+ * screen, so their page size changes with it): fits, re-plans at the new zoom, and again until it
+ * holds, then glides there from where it was (or jumps).
+ */
+function settle(target: () => Box | null, padding: number, animate: boolean) {
+	const from = editor.camera.peek()
+	let cam = from
+	for (let i = 0; i < 5; i++) {
+		const b = target()
+		if (!b) return
+		cam = editor.getCameraForBounds(b, { padding })
+		editor.setCamera(cam)
+		dirty = true
+		update(performance.now())
 	}
-	return e
-}
-
-function decorate() {
-	const cam = editor.camera.peek()
-	const screen = (x: number, y: number) => ({ x: (x + cam.x) * cam.z, y: (y + cam.y) * cam.z })
-	// Child titles at their frame's scale (never under the app's 13px on screen), hidden while another frame covers them.
-	const labelScale = Math.max(cam.z, 13 / 40)
-	covered.clear()
-	const front = frame.raised.map((r) => ({ id: r.id, box: shownBox(r.id) }))
-	for (const [id, c] of frame.children) {
-		const b = shownBox(id)
-		if (!b) continue
-		const row = { x: b.x + 24 * c.s, y: b.y + 30 * c.s, w: Math.max(1, b.w - 48 * c.s), h: 52 * c.s }
-		const i = front.findIndex((f) => f.id === id)
-		if (front.some((f, j) => j > i && f.box && Box.intersects(f.box, row))) covered.add(id)
-	}
-	for (const [id, c] of frame.children) {
-		const e = label(id)
-		if (!e) continue
-		e.style.fontSize = `${(Math.max(40 * c.s * cam.z, 13) / labelScale).toFixed(2)}px`
-		const shown = covered.has(id) ? 0 : c.reveal
-		e.style.visibility = shown < 0.02 ? 'hidden' : ''
-		e.style.filter = shown < 0.98 ? `opacity(${shown.toFixed(3)})` : ''
-	}
-	// Busy: a small static marker at the right end of the title row.
-	for (const [id, color] of busySessions) {
-		let m = markers.get(id)
-		if (!m) {
-			m = el('div', 'sf-busy', 'Running')
-			m.style.setProperty('--c', color)
-			controls.append(m)
-			markers.set(id, m)
-		}
-		const b = shownBox(id)
-		const c = frame.children.get(id)
-		const s = c?.s ?? 1
-		const reveal = covered.has(id) ? 0 : (c?.reveal ?? 1)
-		if (!b || !settings.busy || b.w * cam.z < 200 || reveal < 0.02) {
-			setStyle(m, 'display:none')
-			continue
-		}
-		const p = screen(b.x + b.w - 40 * s, b.y + TITLE_ROW * s)
-		setStyle(m, `--c:${color};transform:translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px) translate(-100%,-50%);opacity:${(reveal * (b.opacity ?? 1)).toFixed(3)}`)
-	}
-	// A chip over each family's children: how many, how many running, and Expand / Stack.
-	for (const f of fam.states) {
-		const id = f.demo.parentId
-		let chip = chips.get(id)
-		if (!chip) {
-			chip = el('button', 'sf-chip')
-			chip.type = 'button'
-			chip.addEventListener('pointerdown', (e) => e.stopPropagation())
-			chip.addEventListener('dblclick', (e) => e.stopPropagation())
-			chip.addEventListener('click', (e) => {
-				e.stopPropagation()
-				if (!fam.stackable) return
-				fam.setExpanded(f, fam.isStacked(f), performance.now())
-				dirty = true
-			})
-			controls.append(chip)
-			chips.set(id, chip)
-		}
-		const P = shownBox(id)
-		if (!P) continue
-		const n = f.demo.children.length
-		const running = f.demo.children.filter((c) => c.busy).length
-		const stacked = fam.isStacked(f)
-		const action = !fam.stackable ? '' : fam.idea === 'pull' ? (f.pulled.size ? 'Stack all' : 'Pull all out') : stacked ? 'Expand' : 'Stack'
-		const key = `${n}|${running}|${action}|${f.demo.color}`
-		if (chip.dataset.key !== key) {
-			chip.dataset.key = key
-			chip.replaceChildren(el('span', 'n', `${n} subagent${n === 1 ? '' : 's'}`))
-			chip.style.setProperty('--c', f.demo.color)
-			if (running) chip.append(el('span', 'sep', '·'), el('span', 'run', `${running} running`))
-			if (action) {
-				const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
-				icon.setAttribute('viewBox', '0 0 16 16')
-				icon.innerHTML = action === 'Expand' || action === 'Pull all out' ? '<path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>' : '<path d="M4 10l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>'
-				const act = el('span', 'act', action)
-				act.append(icon)
-				chip.append(el('span', 'sep', '·'), act)
-			}
-			chip.setAttribute('aria-disabled', String(!action))
-		}
-		const gutter = (Number(values().gutter) || 180) * cam.z
-		const p = screen(P.x + P.w, P.y)
-		const region = fam.sizes[f.ids[0]] ? Math.max(...f.ids.map((c) => (fam.sizes[c]?.w ?? 0) * (frame.children.get(c)?.s ?? 1))) : 0
-		const visible = region * cam.z > 170
-		setStyle(chip, visible ? `--c:${f.demo.color};transform:translate(${(p.x + gutter).toFixed(1)}px,${(p.y - 40).toFixed(1)}px);opacity:${(P.opacity ?? 1).toFixed(3)}` : 'display:none')
-	}
-}
-
-// ---------- clicking a stack ----------
-
-type Action = { kind: 'expand' | 'front' | 'pull'; family: ReturnType<Families['familyOf']> & object; id: string }
-
-function actionAt(clientX: number, clientY: number): Action | null {
-	if (!fam.stackable) return null
-	const r = container.getBoundingClientRect()
-	const page = editor.screenToPage({ x: clientX - r.left, y: clientY - r.top })
-	const t = editor.getTargetAt(page)
-	const id = t.type === 'item' ? editor.layout.get().sectionOf.get(t.id) : t.type === 'section' || t.type === 'frame_title' ? t.id : undefined
-	const f = id ? fam.familyOf(id) : undefined
-	if (!f || !id) return null
-	if (fam.idea === 'deck') return fam.isStacked(f) ? { kind: 'expand', family: f, id } : null
-	if (fam.idea === 'tabs') return !f.expanded && f.order[0] !== id ? { kind: 'front', family: f, id } : null
-	// Pull out: a stacked card anywhere; a pulled one by its title.
-	return !f.pulled.has(id) || t.type === 'frame_title' ? { kind: 'pull', family: f, id } : null
-}
-
-let press: { action: Action; x: number; y: number } | null = null
-let lastAction = 0
-container.addEventListener('wheel', () => (anchor = null), { capture: true, passive: true })
-container.addEventListener(
-	'pointerdown',
-	(e) => {
-		anchor = null
-		if (e.button !== 0 || e.shiftKey || e.metaKey || e.ctrlKey || editor.inputs.isSpaceDown || editor.currentToolId.get() !== 'select') return
-		if ((e.target as HTMLElement).closest('.sf-chip')) return
-		const action = actionAt(e.clientX, e.clientY)
-		if (!action) return
-		press = { action, x: e.clientX, y: e.clientY }
-		e.stopPropagation()
-	},
-	true,
-)
-container.addEventListener(
-	'pointerup',
-	(e) => {
-		if (!press) return
-		const { action, x, y } = press
-		press = null
-		e.stopPropagation()
-		if (Math.hypot(e.clientX - x, e.clientY - y) > 5) return
-		perform(action)
-	},
-	true,
-)
-
-function perform(action: Action) {
-	const now = performance.now()
-	if (action.kind === 'expand') fam.setExpanded(action.family, true, now)
-	else if (action.kind === 'front') fam.bringToFront(action.family, action.id, now)
-	else fam.togglePulled(action.family, action.id, now)
-	lastAction = now
+	if (!animate) return
+	editor.setCamera(from)
 	dirty = true
+	update(performance.now())
+	editor.setCamera(cam, { animate: true, duration: 480 })
 }
-container.addEventListener(
-	'dblclick',
-	(e) => {
-		if (performance.now() - lastAction < 500) e.stopPropagation()
-	},
-	true,
-)
-container.addEventListener('pointermove', (e) => {
-	const on = e.buttons === 0 && !!actionAt(e.clientX, e.clientY)
-	if (on === hoverAction) return
-	hoverAction = on
-	container.style.cursor = on ? 'pointer' : editor.cursor.peek()
+
+react(() => {
+	container.style.cursor = editor.cursor.get()
 })
 
 // ---------- panel ----------
 
-const refreshCaption = () => chrome.setCaption(idea().name, idea().note)
+const refreshCaption = () => shell.setCaption(rep().name, rep().note)
 
-chromeVariations(chrome, IDEAS, settings.idea, (id) => {
-	settings.idea = id as IdeaId
-	fam.idea = settings.idea
-	fam.params = values()
-	fam.reset(performance.now(), true)
-	dirty = true
+chromeVariations(shell, REPS, settings.rep, (id) => {
+	settings.rep = id as RepId
 	params.render()
 	refreshCaption()
-	chrome.save()
+	dirty = true
+	shell.save()
 })
 
-const onParam = () => {
-	anchorView()
-	fam.params = values()
-	fam.retarget(performance.now())
-	dirty = true
-	chrome.save()
-}
 const params = chromeParams(
-	chrome,
-	'Placement',
-	() => idea().params,
-	values,
-	onParam,
-	() => (settings.params[settings.idea] = defaults(idea().params)),
+	shell,
+	'Representation',
+	() => rep().params,
+	() => settings.params[settings.rep],
+	() => {
+		dirty = true
+		shell.save()
+	},
+	() => (settings.params[settings.rep] = defaults(rep().params)),
 )
 
-const linesBody = chrome.section(
-	'Lines',
+const layoutBody = shell.section(
+	'Frame & header',
 	button('Reset', () => {
-		settings.lines = defaults(CONNECTOR_PARAMS)
-		renderLines()
-		chrome.save()
+		settings.layout = defaults(LAYOUT_PARAMS)
+		renderLayout()
+		dirty = true
+		shell.save()
 	}, 'ghost', true),
 )
-function renderLines() {
-	linesBody.replaceChildren(...CONNECTOR_PARAMS.map((d) => paramControl(d, settings.lines, () => chrome.save())))
-}
-renderLines()
-
-chrome
-	.section('Families')
-	.append(
-		switchRow('Busy markers', settings.busy, (on) => {
-			settings.busy = on
-			chrome.save()
-		}),
-		el(
-			'div',
-			'pg-buttons',
-			button('Expand all', () => setAll(true), '', true),
-			button('Stack all', () => setAll(false), '', true),
-			button('Fit', () => fit(), '', true),
+const headNote = el('p', 'pg-note')
+function renderLayout() {
+	headNote.textContent = HEAD_NOTES[String(L().head)] ?? ''
+	layoutBody.replaceChildren(
+		...LAYOUT_PARAMS.map((d) =>
+			paramControl(d, settings.layout, () => {
+				headNote.textContent = HEAD_NOTES[String(L().head)] ?? ''
+				dirty = true
+				shell.save()
+			}),
 		),
+		headNote,
 	)
+}
+renderLayout()
 
-function setAll(on: boolean) {
-	if (!fam.stackable) return
-	const now = performance.now()
-	for (const f of fam.states) fam.setExpanded(f, on, now)
+const expandBody = shell.section(
+	'Expanding',
+	button('Reset', () => {
+		settings.expand = defaults(EXPAND_PARAMS)
+		renderExpand()
+		dirty = true
+		shell.save()
+	}, 'ghost', true),
+)
+function renderExpand() {
+	expandBody.replaceChildren(
+		...EXPAND_PARAMS.map((d) =>
+			paramControl(d, settings.expand, () => {
+				dirty = true
+				shell.save()
+			}),
+		),
+		el('div', 'pg-buttons', button('Expand all', () => expandEverything(true), '', true), button('Collapse all', () => expandEverything(false), '', true)),
+	)
+}
+renderExpand()
+
+shell.section('Demo').append(
+	segmentedRow('Coordinator’s', COUNTS, String(settings.count), (v) => setCount(Number(v))),
+	switchRow('Live states', settings.live, (on) => {
+		settings.live = on
+		shell.save()
+	}),
+	el('div', 'pg-buttons', button('Fit', () => fit(), '', true), button('Next state', () => nextState(), '', true)),
+)
+
+function setCount(n: number) {
+	settings.count = n
+	const f = demo?.families[0]
+	if (f) {
+		f.count = n
+		for (const k of f.kids.slice(n)) opens.delete(k.id)
+	}
 	dirty = true
+	shell.save()
+}
+
+/** Moves the demo on by one event, as the live states would. */
+function nextState() {
+	if (!sim) return
+	const was = sim.live
+	sim.live = true
+	;(sim as unknown as { next: number }).next = 0
+	sim.tick(performance.now() / 1000)
+	sim.live = was
 }
 
 const keys: [string, string][] = [
-	['Click', 'a stack: spread it (deck), a title: to the front (tabs) or out (pull)'],
-	['E', 'expand or stack every family'],
-	['Esc', 'stack everything'],
-	['L', 'next line style'],
-	['1–4', 'switch idea'],
+	['Click', 'a subagent: expand or collapse its frame'],
+	['1–8', 'representation'],
+	['E', 'expand or collapse every subagent'],
+	['Esc', 'collapse everything'],
+	['H', 'next header style'],
+	['L', 'subagents in the gap or inside'],
+	['P', 'next expand placement'],
 	['⇧1', 'zoom to fit'],
 ]
-chrome.section('Keys').append(el('div', 'sf-keys', ...keys.flatMap(([k, v]) => [el('kbd', '', k), el('span', '', v)])))
+shell.section('Keys').append(el('div', 'sa-keys', ...keys.flatMap(([k, v]) => [el('kbd', '', k), el('span', '', v)])))
+
+function cycle(values: ParamValues, key: string, options: string[]) {
+	values[key] = options[(options.indexOf(String(values[key])) + 1) % options.length]
+	dirty = true
+	shell.save()
+}
 
 window.addEventListener('keydown', (e) => {
 	if ((e.target as HTMLElement).closest('input, textarea, [role="slider"]') || e.metaKey || e.ctrlKey || e.altKey) return
-	if (e.key === 'e' || e.key === 'E') setAll(fam.states.some((f) => fam.isStacked(f)))
-	else if (e.key === 'Escape') setAll(false)
-	else if (e.key === 'l' || e.key === 'L') {
-		const kinds = ['elbow', 'bus', 'curve', 'curved bus']
-		settings.lines.kind = kinds[(kinds.indexOf(settings.lines.kind as string) + 1) % kinds.length]
-		renderLines()
-		chrome.save()
-	}
+	if (e.key === 'e' || e.key === 'E') expandEverything(!(demo?.families ?? []).every((f) => shownKids(f).every((k) => isOpen(k.id))))
+	else if (e.key === 'Escape') expandEverything(false)
+	else if (e.key === 'h' || e.key === 'H') (cycle(settings.layout, 'head', ['line', 'meta', 'dot']), renderLayout())
+	else if (e.key === 'l' || e.key === 'L') (cycle(settings.layout, 'list', ['gap', 'inside']), renderLayout())
+	else if (e.key === 'p' || e.key === 'P') (cycle(settings.expand, 'expand', ['below', 'right', 'inline']), renderExpand())
 })
 
-chrome.toolbar.append(button('Fit', () => fit(), '', true))
+shell.toolbar.append(button('Fit', () => fit(), '', true))
 refreshCaption()
 void boot()
 
@@ -455,71 +593,117 @@ Object.assign(window, {
 	playground: {
 		editor,
 		settings,
-		get families() {
-			return fam
+		get sim() {
+			return sim
 		},
+		get demo() {
+			return demo
+		},
+		ready: () => !!renderer && !!ui && !!current,
 		select: (id: string) => document.querySelector<HTMLElement>(`[role="option"][data-id="${id}"]`)?.click(),
-		ready: () => !!renderer && !!editor.layout.get().bounds,
-		expand(parentId: string, on: boolean) {
-			const f = fam.state(parentId)
-			if (f) fam.setExpanded(f, on, performance.now())
-			dirty = true
-		},
-		front(childId: string) {
-			const f = fam.familyOf(childId)
-			if (f) fam.bringToFront(f, childId, performance.now())
-			dirty = true
-		},
-		pull(childId: string) {
-			const f = fam.familyOf(childId)
-			if (f) fam.togglePulled(f, childId, performance.now())
-			dirty = true
-		},
-		setAll,
-		param(key: string, value: number) {
-			values()[key] = value
+		param(key: string, value: number | string | boolean) {
+			settings.params[settings.rep][key] = value
 			params.render()
-			onParam()
+			dirty = true
 		},
-		/** a click in the middle of a frame's title row, as a person would (through the same hit test) */
-		click(id: string) {
-			const b = shownBox(id)
-			if (!b) return false
+		layout(key: string, value: number | string | boolean) {
+			settings.layout[key] = value
+			renderLayout()
+			dirty = true
+		},
+		expandParam(key: string, value: number | string | boolean) {
+			settings.expand[key] = value
+			renderExpand()
+			dirty = true
+		},
+		live(on: boolean) {
+			settings.live = on
+		},
+		state(id: string, s: Kid['state']) {
+			sim?.set(id, s, performance.now() / 1000)
+		},
+		open: (id: string, on = true) => setOpen(id, on, performance.now()),
+		expandAll: (parentId: string, on = true) => {
+			const f = familyOf(parentId)
+			if (f) setAll(f, on)
+		},
+		expandEverything,
+		setCount,
+		showAll: (id: string, on = true) => {
+			if (on) showAll.add(id)
+			else showAll.delete(id)
+			dirty = true
+		},
+		/** the subagents a list draws (not folded under +N), in order */
+		visible: (parentId: string) => (listStates.get(parentId)?.layout?.entries ?? []).filter((e) => views.has(e.id)).map((e) => e.id),
+		kids: (parentId: string) => familyOf(parentId)?.kids.map((k) => ({ id: k.id, title: k.title, state: sim?.kids.get(k.id)?.state })),
+		families: () => demo?.families.map((f) => ({ id: f.parentId, title: f.title, kids: shownKids(f).length })),
+		/** where a subagent's entry is on screen (page coordinates of the browser), for real clicks */
+		entryPoint(id: string) {
+			const c = ui?.entryCentre(id)
+			if (!c) return null
 			const r = container.getBoundingClientRect()
+			return { x: r.left + c.x, y: r.top + c.y }
+		},
+		/** frames a session (its header and list included) and, optionally, room for what expands */
+		look(id: string, padding = 48, extraRight = 0, extraBottom = 0, extraTop = 0) {
+			settle(
+				() => {
+					const s = editor.layout.get().sections.find((x) => x.id === id)
+					const list = current?.lists.get(id)
+					const b = s && Box.union([s.box, s.header, ...(list ? [list.box] : [])])
+					return b ? { x: b.x, y: b.y - extraTop, w: b.w + extraRight, h: b.h + extraBottom + extraTop } : null
+				},
+				padding,
+				false,
+			)
+		},
+		/**
+		 * Where everything is on screen this frame, three ways: the plan, the renderer's drawn frames and
+		 * the DOM headers. They must agree (a header a frame behind its frame would be a one-frame jump).
+		 */
+		trace() {
 			const cam = editor.camera.peek()
-			const s = frame.children.get(id)?.s ?? 1
-			const action = actionAt(r.left + (b.x + b.w / 2 + cam.x) * cam.z, r.top + (b.y + TITLE_ROW * s + cam.y) * cam.z)
-			if (action) perform(action)
-			return !!action
-		},
-		line(key: string, value: string | number | boolean) {
-			settings.lines[key] = value
-			renderLines()
-		},
-		/** frames a family (its parent and children, as laid out now; expanded: as it would be spread) */
-		look(parentId: string, padding = 64, extraRight = 0, expanded = false, extraBottom = 0) {
-			const f = fam.state(parentId)
-			const was = f && { expanded: f.expanded, pulled: new Set(f.pulled) }
-			if (f && expanded) {
-				fam.setExpanded(f, true, performance.now(), false)
-				editor.families.set({ list: fam.frame(performance.now()).families, gutter: Number(values().gutter) || 180 })
-			}
-			const layout = editor.layout.get()
-			const ids = [parentId, ...(f?.ids ?? [])]
-			const boxes = layout.sections.filter((s) => ids.includes(s.id)).map((s) => s.box)
-			if (!boxes.length) return
-			const x0 = Math.min(...boxes.map((b) => b.x))
-			const y0 = Math.min(...boxes.map((b) => b.y))
-			const x1 = Math.max(...boxes.map((b) => b.x + b.w)) + extraRight
-			const y1 = Math.max(...boxes.map((b) => b.y + b.h)) + extraBottom
-			editor.setCamera(editor.getCameraForBounds({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, { padding }))
-			if (f && was && expanded) {
-				f.pulled = was.pulled
-				if (fam.idea === 'pull') fam.retarget(performance.now(), { families: [f], animate: false })
-				else fam.setExpanded(f, was.expanded, performance.now(), false)
-				dirty = true
+			const sx = (x: number) => (x + cam.x) * cam.z
+			const sy = (y: number) => (y + cam.y) * cam.z
+			const r = (b: Box) => [sx(b.x), sy(b.y), b.w * cam.z, b.h * cam.z].map((v) => Math.round(v * 100) / 100)
+			const plan = drawnPlan
+			const box = container.getBoundingClientRect()
+			return {
+				cam,
+				frames: Object.fromEntries((plan?.layout.sections ?? []).map((s) => [s.id, r(s.box)])),
+				drawn: Object.fromEntries((plan?.layout.sections ?? []).map((s) => [s.id, renderer?.sectionBox(s.id) ? r(renderer.sectionBox(s.id)!) : null])),
+				heads: Object.fromEntries((plan?.heads ?? []).map((h) => [h.id, r(h.box).slice(0, 2)])),
+				dom: Object.fromEntries(
+					[...overlay.querySelectorAll<HTMLElement>('.sa-head')]
+						.filter((e) => e.style.display !== 'none')
+						.map((e) => {
+							const b = e.getBoundingClientRect()
+							return [e.dataset.session!, [Math.round((b.left - box.left) * 100) / 100, Math.round((b.top - box.top) * 100) / 100]]
+						}),
+				),
 			}
 		},
+		/** a session's header and list (and, with `frame`, that much of its frame) in browser px, for cropping stills */
+		region(id: string, frame = 0, pad = 16) {
+			const cam = editor.camera.peek()
+			const p = current
+			const head = p?.heads.find((h) => h.id === id)
+			if (!p || !head) return null
+			const list = p.lists.get(id)
+			const top = head.box.y
+			const bottom = Math.max(head.box.y + head.box.h, list ? list.box.y + list.box.h : 0, head.frame.y + Math.min(head.frame.h, frame / cam.z))
+			const b = container.getBoundingClientRect()
+			return {
+				x: Math.round(b.left + (head.frame.x + cam.x) * cam.z - pad),
+				y: Math.round(b.top + (top + cam.y) * cam.z - pad),
+				width: Math.round(head.frame.w * cam.z + pad * 2),
+				height: Math.round((bottom - top) * cam.z + pad * 2),
+			}
+		},
+		camera: () => editor.camera.peek(),
+		setCamera: (x: number, y: number, z: number) => editor.setCamera({ x, y, z }),
 		fit: () => fit(false),
+		plan: () => current,
 	},
 })

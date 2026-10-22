@@ -25,6 +25,8 @@ export interface SectionLayout {
 	itemIds: string[]
 	/** the row under the groups saying how many older items are hidden, if any are */
 	more: { box: Box; hidden: number } | null
+	/** drawn this opaque, items included (default 1; only a renderer with easeLayout false reads it) */
+	opacity?: number
 }
 
 export interface Layout {

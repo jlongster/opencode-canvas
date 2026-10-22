@@ -61,6 +61,11 @@ export interface RendererOptions {
 	getRaisedSections?: () => readonly { id: string; shadow: number }[]
 	/** The sessions working right now (see SessionControl.busy): their frames get the busy band. */
 	busySessions?: () => ReadonlySet<string>
+	/**
+	 * false: frames and items are drawn exactly where the layout puts them, at its opacity
+	 * (SectionLayout.opacity), with no easing or fade-in: the caller animates the layout itself.
+	 */
+	easeLayout?: boolean
 }
 
 interface Displayed {
@@ -454,11 +459,13 @@ export class Renderer {
 			if (texAlpha < 1) pushRect(d, withAlpha(PLACEHOLDER, d.opacity * (1 - texAlpha)), NONE, 0, ITEM_RADIUS, false)
 
 			if (htmlMounted.has(id)) return
+			// (easeLayout false: an item fading with its frame takes its outlines with it)
+			const fade = this.options.easeLayout === false ? d.opacity : 1
 			// Someone else's selection sits outside ours, so both stay visible.
 			const remote = remoteSelected.get(id)
-			if (remote) overlays.push(() => pushRect(Box.expand(d, 3 / camera.z), NONE, remote, 2.5, ITEM_RADIUS + 3 / camera.z, false))
-			if (selected.has(id)) overlays.push(() => pushRect(d, NONE, ACCENT, 2, ITEM_RADIUS, false))
-			else if (hovered === id) overlays.push(() => pushRect(d, NONE, withAlpha(ACCENT, 0.7), 1.5, ITEM_RADIUS, false))
+			if (remote) overlays.push(() => pushRect(Box.expand(d, 3 / camera.z), NONE, withAlpha(remote, fade), 2.5, ITEM_RADIUS + 3 / camera.z, false))
+			if (selected.has(id)) overlays.push(() => pushRect(d, NONE, withAlpha(ACCENT, fade), 2, ITEM_RADIUS, false))
+			else if (hovered === id) overlays.push(() => pushRect(d, NONE, withAlpha(ACCENT, 0.7 * fade), 1.5, ITEM_RADIUS, false))
 		}
 		for (const [id, d] of this.displayedItems) if (!raisedIds.has(layout.sectionOf.get(id)!)) pushItem(id, d)
 
@@ -713,6 +720,7 @@ export class Renderer {
 
 	/** Eases displayed boxes toward their layout targets. Returns true while anything is still moving. */
 	private stepDisplay(layout: ReturnType<Editor['layout']['get']>, elapsed: number) {
+		if (this.options.easeLayout === false) return this.snapDisplay(layout)
 		const k = 1 - Math.exp(-elapsed / EASE_MS)
 		const fade = elapsed / FADE_MS
 		let moving = false
@@ -738,6 +746,22 @@ export class Renderer {
 		step(this.displayedItems, layout.items)
 		step(this.displayedSections, layout.sections.map((s) => [s.id, s.box] as [string, Box]))
 		return moving
+	}
+
+	/** easeLayout false: everything where the layout says, as opaque as its frame. Nothing animates on its own. */
+	private snapDisplay(layout: ReturnType<Editor['layout']['get']>) {
+		const opacity = new Map(layout.sections.map((s) => [s.id, s.opacity ?? 1]))
+		const put = (map: Map<string, Displayed>, targets: Iterable<[string, Box]>, alpha: (id: string) => number) => {
+			const seen = new Set<string>()
+			for (const [id, t] of targets) {
+				seen.add(id)
+				map.set(id, { x: t.x, y: t.y, w: t.w, h: t.h, opacity: alpha(id) })
+			}
+			for (const id of map.keys()) if (!seen.has(id)) map.delete(id)
+		}
+		put(this.displayedItems, layout.items, (id) => opacity.get(layout.sectionOf.get(id)!) ?? 1)
+		put(this.displayedSections, layout.sections.map((s) => [s.id, s.box] as [string, Box]), (id) => opacity.get(id) ?? 1)
+		return false
 	}
 
 	/** Where a frame is drawn right now (it eases toward its layout box) and its opacity. */

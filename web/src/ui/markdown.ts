@@ -1,7 +1,7 @@
 import { Marked, type Tokens } from 'marked'
 
 /**
- * Markdown for what sessions say (replies in their prompt, agents' `say` steps, questions). Safe to put in
+ * Markdown for what sessions say (replies in their prompt, agents' sticky notes, questions). Safe to put in
  * innerHTML: raw HTML in the source is shown as text, links only keep http(s) and mailto URLs (and
  * open in a new tab), and images become links to them. Everything else is escaped by marked.
  */

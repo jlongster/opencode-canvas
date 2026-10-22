@@ -68,10 +68,6 @@ export interface AnnotationDrafts {
 export interface FrameStatus {
 	/** the session's colour */
 	color: string
-	/** walkthrough steps it queued that nobody has stepped through yet */
-	unread: number
-	/** what it's waiting on its owner to answer, if anything */
-	asking: 'question' | 'permission' | null
 	/** this browser can open its prompt (edit links: its session is linked, or a paired OpenCode may have it) */
 	canPrompt: boolean
 	/** its prompt is open */
@@ -80,15 +76,13 @@ export interface FrameStatus {
 
 /**
  * Sessions' controls on their frame titles (set by the app once the canvas loads; drawn by the
- * renderer's SectionLabels): a prompt button and a badge for what it wants you to look at.
+ * renderer's SectionLabels): a prompt button.
  */
 export interface FrameChrome {
 	/** read while rendering: a change to what it reads makes the renderer redraw */
 	status(sessionId: string): FrameStatus | null
 	/** the prompt button: opens (or closes) the session's prompt at its frame */
 	prompt(sessionId: string): void
-	/** the badge: shows what it asks, or plays its queued steps */
-	attend(sessionId: string): void
 }
 
 /** Arranging session frames (edit links): saved on the canvas server, for everyone. */

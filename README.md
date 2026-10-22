@@ -2,7 +2,7 @@
 
 Review canvases for [OpenCode](https://opencode.ai) sessions, running on your own machine. Agents
 post the images, videos and HTML pages they make to a canvas; you look them over on an infinite,
-live, multiplayer canvas. Agents can queue things for you to look at on their session's frame.
+live, multiplayer canvas. Agents can put sticky notes where they want you to look.
 Connected to your local OpenCode, a canvas can also seed itself from your sessions' media, and let
 you prompt sessions from their frames and see when they're working.
 
@@ -26,10 +26,13 @@ On a canvas you can then:
   requests it asks show at its frame as soon as it asks (a chip at the screen's edge points to it
   when it's off screen). **Sessions** in the toolbar adds an OpenCode session's frame to the canvas.
 - Let agents **post** to it, over MCP or HTTP (below), replace what they posted with new versions in
-  place, and point you at things: their `say` and `highlight` steps wait as a badge on the session's
-  frame title (and "N things want your attention" at the top) until you play them through: a `say`
-  is a message card at the frame, a `highlight` glides the camera to what it points at and outlines
-  it. Stepping past one (Next) marks it done for everyone.
+  place, and point you at things: `say` and `highlight` place a sticky note from the session (its
+  colour and title) where it wants you to look. A `say` goes at the top of the session's frame; a
+  `highlight` goes right next to what it points at, with a pointer to the exact point or region it
+  means, and follows it as the canvas rearranges. **✓ Got it** on a note acknowledges it, which
+  removes it for everyone. "N things want your attention" at the top counts the notes, broken down
+  by session (with questions and permission requests sessions ask), and its arrows step you through
+  them: the camera glides to each note and what it points at.
 - **Draw on items** (toolbar → pencil, or `P`): draw on an image to circle or mark what you mean,
   then type an optional note (Enter); drawing again on the same item within a couple of seconds
   adds to the same annotation. `T` (or just typing) over an item drops a text-only note there.
@@ -113,8 +116,8 @@ ln -s "$PWD/skill/canvas" ~/.config/opencode/skills/canvas
 (`update_item` replaces an item's image, video or HTML in place: same id, place and comments, moved
 to the top of its group, swapped live on open canvases), post links to web pages (`post_item` with
 `page`, its URL, plus a screenshot as `path`; `url` is for media files), see what people have selected, read sticky notes and annotations (pencil drawings with optional notes,
-with the strokes in image pixels and a marked image: `list_annotations`, which consumes them unless `keep: true`), and `say` / `highlight` to queue things for you to
-look at on the session's frame. It's only a tool provider: agents using it don't appear on the
+with the strokes in image pixels and a marked image: `list_annotations`, which consumes them unless `keep: true`), and `say` / `highlight` to place a sticky
+note where they want you to look (you acknowledge it to remove it). It's only a tool provider: agents using it don't appear on the
 canvas themselves. In your OpenCode config:
 
 ```json

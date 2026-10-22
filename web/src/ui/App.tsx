@@ -3,7 +3,7 @@ import { Editor, type ToolId } from '../editor/Editor'
 import { describeError, Renderer } from '../render/Renderer'
 import { atom, react } from '../state/signals'
 import { sessionColor } from '../../../shared/sessionColor'
-import type { AttentionAction, Canvas, SessionLink } from '../../../shared/types'
+import type { Canvas, SessionLink } from '../../../shared/types'
 import { frameKey } from '../editor/selection'
 import {
 	connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, setSessionHidden, setSessionOrder, viewUrl, type CanvasLink,
@@ -17,7 +17,7 @@ import { Presence } from '../multiplayer/Presence'
 import { SharedAnnotations } from '../multiplayer/SharedAnnotations'
 import { SubmitAnnotations } from '../multiplayer/SubmitAnnotations'
 import { SharedNotes } from '../multiplayer/SharedNotes'
-import { AttentionTray, Walkthrough } from './Attention'
+import { AttentionTray } from './Attention'
 import { FrameAsks } from './FrameAsks'
 import { SessionsButton } from './Sessions'
 import { SessionPrompt } from './PromptThread'
@@ -90,8 +90,6 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 		const links = atom<SessionLink[]>('links', [])
 		// Which of them are working, as their owners' tabs report it (loaded with the canvas, then live): for everyone.
 		const busy = atom<Set<string>>('busySessions', new Set())
-		// What their sessions queued for attention (loaded with the canvas, then live).
-		const queued = atom<AttentionAction[]>('attention', [])
 		let canvasTitle = ''
 
 		editor.mount(container)
@@ -165,11 +163,6 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					const prev = busy.peek()
 					if (next.size !== prev.size || [...next].some((id) => !prev.has(id))) busy.set(next)
 				},
-				onAttention: (change) => {
-					if ('all' in change) queued.set(change.all)
-					else if ('put' in change) queued.set([...queued.peek().filter((a) => a.id !== change.put.id), change.put])
-					else queued.set(queued.peek().filter((a) => !change.done.includes(a.id)))
-				},
 				onLoad: (c, first) => {
 					canvasTitle = c.title
 					setCanvas(c)
@@ -186,24 +179,20 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					const annotations = new SharedAnnotations(overlayRef.current!, editor, p, link.role)
 					// Edit links can prompt sessions from their frames; view links just watch them work.
 					const control = new SessionControl(editor, p, c.id, link.role === 'edit', links, busy, () => canvasTitle)
-					// Edit links mark what they step through done; view links only look.
-					const calls = new Attention(editor, control, c.id, link.role === 'edit', queued)
+					// What sessions want people to look at: their sticky notes (and what they ask), for the bar at the top.
+					const calls = new Attention(editor, control, notes)
 					const cursors = new PeerCursors(overlayRef.current!, editor, p)
 					editor.frameChrome = {
 						status: (sessionId) => ({
 							color: sessionColor(sessionId),
-							unread: calls.count(sessionId),
-							asking: calls.asking.get().get(sessionId)?.kind ?? null,
 							canPrompt: control.canOpen(sessionId),
 							prompting: control.prompting.get() === sessionId,
 						}),
 						prompt: (sessionId) => control.toggle(sessionId),
-						attend: (sessionId) => (calls.asking.get().has(sessionId) ? calls.answer(sessionId) : calls.open(sessionId)),
 					}
 					disposers.push(
 						() => (editor.frameChrome = null),
 						() => cursors.destroy(),
-						() => calls.destroy(),
 						() => control.destroy(),
 						() => notes.destroy(),
 						() => annotations.destroy(),
@@ -257,7 +246,6 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			{presence && <CursorChat editor={editor} presence={presence} />}
 			{sessions?.canPrompt && <SessionPrompt editor={editor} sessions={sessions} />}
 			{sessions && attention && <FrameAsks editor={editor} sessions={sessions} attention={attention} />}
-			{attention && sessions && <Walkthrough editor={editor} attention={attention} sessions={sessions} />}
 			<div className="top-stack" ref={setTopStack}>
 				{attention && <AttentionTray attention={attention} />}
 			</div>

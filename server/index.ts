@@ -3,11 +3,11 @@ import { existsSync, statSync } from 'node:fs'
 import { basename, extname, join, resolve } from 'node:path'
 import * as Y from 'yjs'
 import type {
-	Annotation, AnnotationView, AttentionAction, Canvas, CanvasData, CanvasSummary, Item, MediaKind, Note, PresenceEntry, ResolvedSelection, ServerEvent, Session,
+	Annotation, AnnotationView, Canvas, CanvasData, CanvasSummary, Item, MediaKind, Note, NoteAnchor, PresenceEntry, ResolvedSelection, ServerEvent, Session,
 	SessionLink, SessionView,
 } from '../shared/types'
-import { orderSessions } from '../web/src/editor/layout'
-import { AttentionError, createAttention } from './attention'
+import { computeLayout, orderSessions } from '../web/src/editor/layout'
+import { AttentionError, createAttention, noteFrom } from './attention'
 import { imageSize } from './imageSize'
 import { createLinks, LinkError } from './links'
 import { createCanvasMcp } from './mcp'
@@ -57,8 +57,6 @@ interface StoredIndex {
 	trash?: TrashEntry[]
 	/** which OpenCode session each linked frame talks to (see links.ts) */
 	links?: SessionLink[]
-	/** sessions' queued attention actions (see attention.ts) */
-	attention?: AttentionAction[]
 }
 
 /**
@@ -87,7 +85,6 @@ const db: { canvases: Map<string, Canvas>; sessions: Map<string, Session>; items
 /** keyed "item:<id>", "session:<canvasId>/<sessionId>" and "annotation:<id>" */
 const trash = new Map<string, TrashEntry>()
 let storedLinks: unknown[] = []
-let storedAttention: AttentionAction[] = []
 const trashKey = (entry: TrashEntry) =>
 	entry.kind === 'item'
 		? `item:${entry.item.id}`
@@ -104,7 +101,6 @@ if (existsSync(INDEX_FILE)) {
 	for (const i of stored.items) db.items.set(i.id, withName(i))
 	for (const t of stored.trash ?? []) trash.set(trashKey(t), t.kind === 'item' ? { ...t, item: withName(t.item) } : t)
 	storedLinks = stored.links ?? []
-	storedAttention = stored.attention ?? []
 }
 
 /** Items saved before they had names get one: their title (or id) plus the file's extension. */
@@ -146,7 +142,6 @@ function storedIndex(): StoredIndex {
 		items: [...db.items.values()],
 		trash: [...trash.values()],
 		links: links.all(),
-		attention: attention.all(),
 	}
 }
 
@@ -159,23 +154,56 @@ const links = createLinks(
 	storedLinks,
 )
 
-const attention = createAttention(
-	{
-		canvasExists: (id) => db.canvases.has(id),
-		save,
-		broadcast: (event) => broadcast(event),
-		resolveTarget: (canvasId, target) => resolveTarget(canvasId, target),
-		itemSize: (target) => {
-			const item = db.items.get(target)
-			return item ? { width: item.width, height: item.height } : null
-		},
-		nameSession: (canvasId, sessionId, title) => {
-			// The frame follows the session's title (renames included), when it has a frame.
-			if (db.sessions.has(sessionKey(canvasId, sessionId))) ensureSession(canvasId, sessionId, title)
-		},
+/** Agent sticky notes (MCP say / highlight), kept in each canvas's room document (see attention.ts). */
+const attention = createAttention({
+	canvasExists: (id) => db.canvases.has(id),
+	resolveTarget: (canvasId, target) => resolveTarget(canvasId, target),
+	itemSize: (target) => {
+		const item = db.items.get(target)
+		return item ? { width: item.width, height: item.height } : null
 	},
-	storedAttention,
-)
+	nameSession: (canvasId, sessionId, title, create) => {
+		// The frame follows the session's title (renames included), when it has a frame.
+		if (create || db.sessions.has(sessionKey(canvasId, sessionId))) ensureSession(canvasId, sessionId, title)
+	},
+	sessionTitle: (canvasId, sessionId) => db.sessions.get(sessionKey(canvasId, sessionId))?.title ?? '',
+	roughPosition: (canvasId, sessionId, anchor) => roughNotePosition(canvasId, sessionId, anchor),
+	readDoc: (canvasId, read) => readRoomDoc(`canvas-${canvasId}`, read),
+	changeDoc: (canvasId, change) => changeRoomDoc(`canvas-${canvasId}`, change),
+})
+
+/** Page size of a sticky note, and the gap an agent's note keeps from what it's placed by (as the browser places them). */
+const NOTE_SIZE = { w: 220, h: 180, gap: 24 }
+
+/**
+ * About where an agent's note lands on the page right now, for its stored x/y (what the notes API
+ * reports): beside its target, or above the session's frame. Browsers place it exactly, following
+ * its target as the layout changes (see web/src/multiplayer/notePlacement.ts).
+ */
+function roughNotePosition(canvasId: string, sessionId: string, anchor: NoteAnchor): { x: number; y: number } {
+	const items = [...db.items.values()].filter((i) => i.canvasId === canvasId)
+	const layout = computeLayout(
+		Object.fromEntries(canvasSessions(canvasId).map((s) => [s.id, s])),
+		Object.fromEntries(items.map((i) => [i.id, i])),
+		db.canvases.get(canvasId)?.sessionOrder,
+	)
+	const { w, h, gap } = NOTE_SIZE
+	const target = anchor.target ?? ''
+	const item = layout.items.get(target)
+	const source = db.items.get(target)
+	if (item && source && (anchor.point || anchor.region)) {
+		const sx = item.w / source.width
+		const sy = item.h / source.height
+		const p = anchor.point ?? { x: anchor.region!.x + anchor.region!.w, y: anchor.region!.y }
+		return { x: item.x + p.x * sx + gap * 2, y: item.y + p.y * sy - h / 3 }
+	}
+	if (anchor.at) return { x: anchor.at.x + gap * 2, y: anchor.at.y - h / 3 }
+	const group = target.startsWith('group:') ? layout.groups.find((g) => g.id === target.slice(6)) : undefined
+	const box = item ?? group?.box
+	if (box) return { x: box.x + box.w + gap, y: box.y }
+	const frame = layout.sections.find((s) => s.id === sessionId)
+	return frame ? { x: frame.box.x, y: frame.box.y - gap - h } : { x: 0, y: -gap - h }
+}
 
 /**
  * A highlight target as a selection key, checked against the canvas: an item id, "frame:<sessionId>"
@@ -245,8 +273,6 @@ function eventCanvas(event: ServerEvent): string {
 			return event.item.canvasId
 		case 'link':
 			return event.link.canvasId
-		case 'attention':
-			return event.action.canvasId
 		default:
 			return event.canvasId
 	}
@@ -385,7 +411,6 @@ function canvasData(canvas: Canvas): CanvasData {
 		sessions: [...db.sessions.values()].filter((s) => s.canvasId === canvas.id),
 		items: [...db.items.values()].filter((i) => i.canvasId === canvas.id),
 		links: sessionLinks(canvas.id),
-		attention: attention.list(canvas.id),
 	}
 }
 
@@ -920,8 +945,8 @@ function deleteItem(id: string, opts: { keepSession?: boolean } = {}) {
 }
 
 /**
- * Moves a session and all its items to the trash, and drops its link (clearing its attention
- * queue). Restoring the session doesn't bring the link back: it can be linked again.
+ * Moves a session and all its items to the trash, drops its link and deletes the sticky notes it
+ * placed (say / highlight). Restoring the session doesn't bring those back: it can be linked again.
  */
 function deleteSession(session: Session) {
 	const items = sessionItems(session.canvasId, session.id)
@@ -932,7 +957,10 @@ function deleteSession(session: Session) {
 	save()
 	broadcast({ type: 'session_deleted', canvasId: session.canvasId, id: session.id })
 	links.drop(session.canvasId, session.id)
-	attention.clear(session.canvasId, session.id)
+	// A canvas being deleted throws its whole room away.
+	if (db.canvases.has(session.canvasId)) {
+		attention.dropSession(session.canvasId, session.id).catch((e) => console.error('could not remove the session\'s notes:', e))
+	}
 }
 
 /** Takes a session out of the trash (with the items deleted along with it). */
@@ -1057,7 +1085,6 @@ function createCanvas(title?: string): Canvas {
 async function deleteCanvas(canvas: Canvas) {
 	db.canvases.delete(canvas.id)
 	links.dropCanvas(canvas.id)
-	attention.dropCanvas(canvas.id)
 	for (const session of canvasSessions(canvas.id)) deleteSession(session)
 	// items whose session record is missing, just in case
 	for (const item of [...db.items.values()]) if (item.canvasId === canvas.id) deleteItem(item.id)
@@ -1099,22 +1126,13 @@ function presence(canvasId: string): PresenceEntry[] {
 	return entries.sort((a, b) => a.clientId - b.clientId)
 }
 
-/** Sticky notes in a room document (map "notes": id -> Y.Map {x, y, color, author, createdAt, text: Y.Text}). */
+/**
+ * Sticky notes in a room document (map "notes": id -> Y.Map {x, y, color, author, createdAt, text:
+ * Y.Text}, plus sessionId and the NoteAnchor fields on notes agents placed).
+ */
 function readNotes(doc: Y.Doc): Note[] {
 	const notes: Note[] = []
-	for (const [id, note] of doc.getMap<Y.Map<unknown>>('notes')) {
-		if (!(note instanceof Y.Map)) continue
-		const text = note.get('text')
-		notes.push({
-			id,
-			text: text instanceof Y.Text ? text.toString() : typeof text === 'string' ? text : '',
-			author: String(note.get('author') ?? ''),
-			color: String(note.get('color') ?? ''),
-			x: Number(note.get('x') ?? 0),
-			y: Number(note.get('y') ?? 0),
-			createdAt: Number(note.get('createdAt') ?? 0),
-		})
-	}
+	for (const [id, note] of doc.getMap<Y.Map<unknown>>('notes')) if (note instanceof Y.Map) notes.push(noteFrom(id, note))
 	return notes.sort((a, b) => a.createdAt - b.createdAt)
 }
 
@@ -1523,8 +1541,8 @@ const API_INDEX = {
 	mcp:
 		'This server is also an MCP server (Streamable HTTP) at /mcp (or /canvas/mcp): tools only, for everything ' +
 		'below: list_canvases, get_canvas, create_canvas, get_selection, get_presence, list_notes, list_annotations, find_items, ' +
-		'get_item, post_item, update_item, delete_item, restore, plus say and highlight, which queue things for ' +
-		'people to look at, shown on your session\'s frame. OpenCode config: ' +
+		'get_item, post_item, update_item, delete_item, restore, plus say and highlight, which place a sticky note ' +
+		'where you want people to look (they acknowledge it to remove it). OpenCode config: ' +
 		`{"mcp": {"canvas": {"type": "remote", "url": "http://localhost:${PORT}/mcp"}}}. Pass your $OPENCODE_SESSION_ID ` +
 		'as "sessionId" and your session\'s title as "sessionTitle" to post_item, say and highlight.',
 	endpoints: {
@@ -1588,7 +1606,11 @@ const API_INDEX = {
 			'selection holds item ids as they are, "frame:<sessionId>" for session frames and "note:<noteId>" for sticky notes; ' +
 			'cursor and view are in page coordinates. A linked session\'s live state (shared by its owner\'s tab) shows as a user ' +
 			'with "agent": true and its "sessionId", without a cursor, plus "thinking" while it works. [] when nobody is there',
-		'GET /api/canvases/:cid/notes': 'The canvas\'s sticky notes: [{"id", "text", "author", "color", "x", "y", "createdAt"}]',
+		'GET /api/canvases/:cid/notes':
+			'The canvas\'s sticky notes: [{"id", "text", "author", "color", "x", "y", "createdAt"}]. Notes a session placed (say / ' +
+			'highlight) also have "sessionId", "kind" and what they point at ("target", "point", "region", "at"); their x/y is where ' +
+			'they were placed (on the canvas they follow their target)',
+		'DELETE /api/canvases/:cid/notes/:noteId': 'Acknowledge (delete) a sticky note, for everyone: {"ok", "removed"}',
 		'GET /api/canvases/:cid/annotations':
 			'The user\'s annotations: freehand pencil drawings on an item (circling, underlining, arrows) with an optional ' +
 			'text note, or text-only notes dropped on a spot, oldest first. Optional ?sessionId= (only that ' +
@@ -1619,22 +1641,21 @@ const API_INDEX = {
 			'Link an OpenCode session to this browser. Body: {"sessionId", "serverKey" (non-secret id of its OpenCode), "ownerId" ' +
 			'(the owner browser\'s random id), "title"?}. 409 if another browser linked it',
 		'PATCH /api/canvases/:cid/links/:sessionId': 'Rename a link. Body: {"title"}',
-		'DELETE /api/canvases/:cid/links/:sessionId': 'Unlink a session (and clear its attention queue)',
+		'DELETE /api/canvases/:cid/links/:sessionId': 'Unlink a session',
 		'PUT /api/canvases/:cid/sessions/:sessionId/status':
 			'The owner\'s browser reports whether a linked session is working: {"busy": true|false, "ownerId"}. Everyone looking sees ' +
 			'the busy band round its frame; a busy status not refreshed within a minute expires',
-		'GET /api/canvases/:cid/actions': 'Every queued attention action on the canvas, oldest first: [{"id", "sessionId", "kind", "text"?, "target"?, "point"?, "region"?, "at"?, "createdAt"}]',
-		'GET /api/canvases/:cid/sessions/:sessionId/actions': 'The session\'s queued attention actions, in order',
-		'POST /api/canvases/:cid/sessions/:sessionId/actions':
-			'Queue something for people to look at: a badge on the session\'s frame title counts what\'s queued, and people step through ' +
-			'it (a message card at the frame; the camera gliding to what you highlight, outlined). Body: ' +
-			'{"kind": "say", "text"} (Markdown) or {"kind": "highlight", "target", "text"?} with target an item id, ' +
+		'GET /api/canvases/:cid/sessions/:sessionId/notes': 'The sticky notes the session placed that nobody has acknowledged yet, oldest first',
+		'POST /api/canvases/:cid/sessions/:sessionId/notes':
+			'Place a sticky note where you want people to look, from your session (its colour and title): it stays on the canvas, ' +
+			'and in the "N things want your attention" bar at the top, until someone acknowledges it, which removes it. Body: ' +
+			'{"kind": "say", "text"} (Markdown; the note goes at the top of your session\'s frame, which it creates if you have none yet) ' +
+			'or {"kind": "highlight", "target", "text"?} (the note goes right next to the target) with target an item id, ' +
 			'"<sessionId>/<group name>", "frame:<sessionId>" or "note:<noteId>". Point at what you mean: on an item pass "point": {"x", "y"} or ' +
-			'"region": {"x", "y", "w", "h"} in the item\'s image pixels (same units as annotation px/py and the item\'s width/height); omit them only ' +
-			'to highlight the whole item. On a frame, group or note, "at": {"x", "y"} (canvas page coordinates) points at a spot. Plus "sessionTitle" (names the session\'s frame, if it has one, after your session). ' +
-			'Returns {"id", "position", "queued", "action"}. Fire-and-forget: people step through the queue on the canvas',
-		'DELETE /api/canvases/:cid/sessions/:sessionId/actions': 'Clear the session\'s queue: {"ok", "cleared"}',
-		'DELETE /api/canvases/:cid/sessions/:sessionId/actions/:actionId': 'Mark one action done (removes it): {"ok", "done"}',
+			'"region": {"x", "y", "w", "h"} in the item\'s image pixels (same units as annotation px/py and the item\'s width/height): the note ' +
+			'sits beside the spot without covering it, with a pointer to it; omit them only to mean the whole item. On a frame, group or note, ' +
+			'"at": {"x", "y"} (canvas page coordinates) points at a spot. Plus "sessionTitle" (names your session\'s frame after your session). ' +
+			'Returns {"noteId", "waiting" (your notes not yet acknowledged on this canvas), "note"}. Fire-and-forget: you aren\'t told when it\'s acknowledged',
 	},
 	items:
 		'Every item has a "name": its file name. On upload it is the original file name (the path\'s basename, the ' +
@@ -1959,7 +1980,6 @@ async function handle(req: Request): Promise<Response> {
 		const canvas = getCanvas(decodeURIComponent(m[1]))
 		const sessionId = decodeURIComponent(m[2])
 		links.unlink(canvas.id, sessionId)
-		attention.clear(canvas.id, sessionId)
 		return json({ ok: true })
 	}
 	if (m && method === 'PATCH') {
@@ -1973,29 +1993,24 @@ async function handle(req: Request): Promise<Response> {
 		return json(links.status(canvas.id, decodeURIComponent(m[2]), (await req.json().catch(() => null)) as Record<string, unknown> | null))
 	}
 
-	// ---- attention: what sessions want people to look at ----
+	// ---- agent sticky notes: what sessions want people to look at ----
 
-
-	m = /^\/api\/canvases\/([^/]+)\/actions$/.exec(p)
-	if (m && method === 'GET') return json(attention.list(getCanvas(decodeURIComponent(m[1])).id))
-
-	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/actions$/.exec(p)
+	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/notes$/.exec(p)
 	if (m) {
 		const canvas = getCanvas(decodeURIComponent(m[1]))
 		const sessionId = decodeURIComponent(m[2])
-		if (method === 'GET') return json(attention.list(canvas.id, sessionId))
+		if (method === 'GET') return json(await attention.list(canvas.id, sessionId))
 		if (method === 'POST') {
 			const body = (await req.json().catch(() => null)) as Record<string, unknown> | null
-			const { action, position, queued } = await attention.queue(canvas.id, sessionId, body)
-			return json({ id: action.id, position, queued, action }, 201)
+			const { note, waiting } = await attention.place(canvas.id, sessionId, body)
+			return json({ noteId: note.id, waiting, note }, 201)
 		}
-		if (method === 'DELETE') return json({ ok: true, cleared: attention.clear(canvas.id, sessionId) })
 	}
 
-	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/actions\/([^/]+)$/.exec(p)
+	m = /^\/api\/canvases\/([^/]+)\/notes\/([^/]+)$/.exec(p)
 	if (m && method === 'DELETE') {
 		const canvas = getCanvas(decodeURIComponent(m[1]))
-		return json({ ok: true, done: attention.done(canvas.id, decodeURIComponent(m[2]), decodeURIComponent(m[3])) })
+		return json({ ok: true, removed: await attention.acknowledge(canvas.id, decodeURIComponent(m[2])) })
 	}
 
 	// ---- groups (named sets of items within a session) ----
@@ -2127,7 +2142,7 @@ const mcp = createCanvasMcp({
 	updateItem: async (id, body) => patchItem(getItem(id), body, await jsonSource(body)),
 	deleteItem: (id) => deleteItem(getItem(id).id),
 	restore,
-	queueAction: (canvasId, sessionId, body) => attention.queue(getCanvas(canvasId).id, sessionId, body),
+	placeNote: (canvasId, sessionId, body) => attention.place(getCanvas(canvasId).id, sessionId, body),
 	mediaFile: (src) => Bun.file(join(MEDIA_DIR, basename(src))),
 	mediaOrigin: MEDIA_ORIGIN,
 	webBase: WEB_BASE,

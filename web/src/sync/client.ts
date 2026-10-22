@@ -1,4 +1,4 @@
-import type { AnnotationView, AttentionAction, Canvas, CanvasData, CanvasSummary, Item, ServerEvent, SessionLink } from '../../../shared/types'
+import type { AnnotationView, Canvas, CanvasData, CanvasSummary, Item, ServerEvent, SessionLink } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { API_BASE, BASE, url as withBase, wsUrl } from '../base'
 
@@ -113,18 +113,6 @@ export const reportStatus = (canvasId: string, sessionId: string, status: { busy
 		...json('PUT', status),
 		keepalive: true,
 	})
-
-// ---------- attention (sessions' queued says and highlights, see server/attention.ts) ----------
-
-const actionsPath = (canvasId: string, sessionId: string, actionId?: string) =>
-	`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/actions${actionId ? `/${encodeURIComponent(actionId)}` : ''}`
-
-/** Marks one queued action done (it's removed for everyone). */
-export const markActionDone = (canvasId: string, sessionId: string, actionId: string) =>
-	request<{ ok: boolean; done: boolean }>(actionsPath(canvasId, sessionId, actionId), { method: 'DELETE' })
-/** Clears a session's whole queue. */
-export const clearActions = (canvasId: string, sessionId: string) =>
-	request<{ ok: boolean; cleared: number }>(actionsPath(canvasId, sessionId), { method: 'DELETE' })
 
 /** Thrown when a canvas doesn't exist (or was deleted). */
 export class CanvasNotFound extends Error {}
@@ -244,8 +232,6 @@ export function connectCanvas(
 		onLinks?: (change: { all: SessionLink[] } | { put: SessionLink } | { deleted: string }) => void
 		/** which linked sessions are working: all of them on every load, then each change */
 		onStatus?: (change: { all: string[] } | { sessionId: string; busy: boolean }) => void
-		/** the canvas's queued attention actions: all of them on every load, then each change */
-		onAttention?: (change: { all: AttentionAction[] } | { put: AttentionAction } | { done: string[] }) => void
 		onGone: () => void
 		onError: (error: Error) => void
 	},
@@ -274,7 +260,6 @@ export function connectCanvas(
 			loaded = true
 			handlers.onLinks?.({ all: data.links ?? [] })
 			handlers.onStatus?.({ all: (data.links ?? []).filter((l) => l.busy).map((l) => l.sessionId) })
-			handlers.onAttention?.({ all: data.attention ?? [] })
 			handlers.onLoad(data.canvas, first)
 		} catch (e) {
 			if (closed) return
@@ -314,12 +299,6 @@ export function connectCanvas(
 				return
 			case 'status':
 				if (event.canvasId === canvasId) handlers.onStatus?.({ sessionId: event.sessionId, busy: event.busy })
-				return
-			case 'attention':
-				if (event.action.canvasId === canvasId) handlers.onAttention?.({ put: event.action })
-				return
-			case 'attention_done':
-				if (event.canvasId === canvasId) handlers.onAttention?.({ done: event.ids })
 				return
 			case 'annotations_consumed':
 				if (event.canvasId === canvasId) editor.annotationsConsumed?.(event.ids, event.sessionId)

@@ -14,9 +14,9 @@
  * by themselves.
  *
  * MCP is only a way to call tools: agents have no presence of their own on a canvas. To get
- * people's attention, say and highlight queue actions for the calling session (see attention.ts),
- * which people step through on the canvas: message cards on the session's frame, and the camera
- * gliding to what's highlighted.
+ * people's attention, say and highlight place a sticky note for the calling session (see
+ * attention.ts) where it wants people to look: a say at the top of its frame, a highlight right
+ * next to what it points at. People acknowledge a note to remove it.
  */
 import type { BunFile } from 'bun'
 import { isAbsolute } from 'node:path'
@@ -25,14 +25,14 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { LATEST_PROTOCOL_VERSION, type CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
 import type {
-	Annotation, AnnotationView, AttentionAction, Canvas, CanvasData, CanvasSummary, Item, Note, PresenceEntry, ResolvedSelection, Session, SessionView,
+	Annotation, AnnotationView, Canvas, CanvasData, CanvasSummary, Item, Note, NoteAnchor, PresenceEntry, ResolvedSelection, Session, SessionView,
 } from '../shared/types'
 import { ATTENTION_TEXT_MAX } from './attention'
 
-/** What the MCP tools need from the canvas server. Functions throw (with a readable message) on bad input. */
-/** A highlight's optional precise spot (see AttentionAction). */
-type Precise = { point?: { x: number; y: number }; region?: { x: number; y: number; w: number; h: number }; at?: { x: number; y: number } }
+/** A highlight's optional precise spot (see NoteAnchor). */
+type Precise = Pick<NoteAnchor, 'point' | 'region' | 'at'>
 
+/** What the MCP tools need from the canvas server. Functions throw (with a readable message) on bad input. */
 export interface CanvasMcpDeps {
 	listCanvases(): CanvasSummary[]
 	getCanvas(id: string): Canvas
@@ -63,8 +63,8 @@ export interface CanvasMcpDeps {
 		itemIds: string[],
 		annotationIds?: string[],
 	): Promise<{ sessions: Session[]; items: Item[]; annotations: Annotation[] }>
-	/** same body and validation as POST /api/canvases/:cid/sessions/:sessionId/actions */
-	queueAction(canvasId: string, sessionId: string, body: Record<string, unknown>): Promise<{ action: AttentionAction; position: number; queued: number }>
+	/** same body and validation as POST /api/canvases/:cid/sessions/:sessionId/notes: the note, and how many of the session's wait */
+	placeNote(canvasId: string, sessionId: string, body: Record<string, unknown>): Promise<{ note: Note; waiting: number }>
 	/** a /media/… path as a file */
 	mediaFile(src: string): BunFile
 	/** absolute base for /media/… URLs in results */
@@ -131,7 +131,15 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 		id: a.id, text: a.text, author: a.author, itemId: a.item.id, anchor: a.anchor, ...(a.bbox ? { bbox: a.bbox, strokes: a.strokes.length } : {}), createdAt: a.createdAt,
 	})
 
-	const noteSummary = (n: Note) => ({ id: n.id, text: n.text, author: n.author, color: n.color, x: Math.round(n.x), y: Math.round(n.y) })
+	const noteSummary = (n: Note) => ({
+		id: n.id,
+		text: n.text,
+		author: n.author,
+		color: n.color,
+		x: Math.round(n.x),
+		y: Math.round(n.y),
+		...(n.sessionId ? { sessionId: n.sessionId, kind: n.kind, ...(n.target ? { target: n.target } : {}) } : {}),
+	})
 
 	// ---------- MCP sessions ----------
 
@@ -267,11 +275,11 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'Review canvases where you post images, videos, HTML and links to web pages for the user. These are tools only: you have no ' +
 					'presence on the canvas yourself. Your OpenCode session has a frame (what you post); people can prompt your session ' +
 					'from it and see when it is working. To get the user\'s attention, say (a Markdown message) and highlight ' +
-					'(point at an item, group, frame or note) queue steps for your session: a badge on your frame\'s title counts them, ' +
-					'and the user steps through them with Next (a message card at your frame; the camera gliding to what you highlight, ' +
-					'outlined); queue them in the order they should be read. Point at what you mean: pass highlight a point {x,y} or ' +
-					'region {x,y,w,h} in the item\'s image pixels (same units as annotation px/py and get_item\'s width/height); ' +
-					'omit them only to highlight the whole item. Pass sessionId and sessionTitle (your OpenCode session\'s ' +
+					'(point at an item, group, frame or note) place a sticky note from your session where you want the user to look: ' +
+					'say at the top of your frame, highlight right next to what you point at. Notes stay until the user acknowledges ' +
+					'them, which removes them; the user steps through them from the bar at the top. Point at what you mean: pass highlight ' +
+					'a point {x,y} or region {x,y,w,h} in the item\'s image pixels (same units as annotation px/py and get_item\'s ' +
+					'width/height): the note sits beside it with a pointer to it; omit them only to mean the whole item. Pass sessionId and sessionTitle (your OpenCode session\'s ' +
 					'title) on every post_item, say and highlight. The user gives feedback on a specific spot of an image with ' +
 					'annotations: check list_annotations (filter by your sessionId) for feedback on what you posted: freehand ' +
 					'drawings with optional text (strokes and bbox in pixels of the original image; look at markedImageUrl to ' +
@@ -396,15 +404,15 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 			}),
 		)
 
-		/** Queues one attention action for the caller's session. */
-		async function queue(
+		/** Places one sticky note for the caller's session. */
+		async function place(
 			args: { canvas: string; sessionId: string; sessionTitle?: string; text?: string; target?: string } & Precise,
 			kind: 'say' | 'highlight',
 			extra: Extra,
 		) {
 			const sessionId = sessionOf(extra, args.sessionId)
 			const id = canvasId(args.canvas)
-			const { action, position, queued } = await deps.queueAction(id, sessionId, {
+			const { note, waiting } = await deps.placeNote(id, sessionId, {
 				kind,
 				text: args.text,
 				target: args.target,
@@ -413,18 +421,19 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				at: args.at,
 				sessionTitle: args.sessionTitle,
 			})
-			return ok({ id: action.id, position, queued, canvasId: id, ...(action.target ? { target: action.target } : {}), link: canvasLink(deps.getCanvas(id)) })
+			return ok({ noteId: note.id, canvasId: id, kind, ...(note.target ? { target: note.target } : {}), waiting, link: canvasLink(deps.getCanvas(id)) })
 		}
 
 		server.registerTool(
 			'say',
 			{
 				description:
-					'Queue a message for the people on the canvas, from your session: a badge on your frame\'s title and the attention ' +
-					'tray call for attention until someone reads it, and it shows as a message card at your frame. Markdown. Each call adds one step to ' +
-					'your queue, played in order with highlight steps: e.g. say what you did, highlight the item to look at, say ' +
-					'what you want to know. Returns the step\'s id and position in your queue. Fire-and-forget: you are not told ' +
-					'when it is read.',
+					'Place a sticky note with a message for the people on the canvas, from your session (in its colour, with its title), ' +
+					'at the top of your session\'s frame (made for you if you haven\'t posted yet). Markdown. It stays there, and counts in ' +
+					'the "things want your attention" bar at the top, until the user acknowledges it, which removes it. Several stack ' +
+					'neatly, oldest first: e.g. say what you did, highlight the item to look at, say what you want to know. To ' +
+					'point at something specific, use highlight instead. Returns the note\'s id (noteId) and how many of your notes ' +
+					'are waiting. Fire-and-forget: you are not told when it is acknowledged.',
 				inputSchema: {
 					canvas: canvasArg,
 					sessionId: sessionIdArg,
@@ -432,20 +441,21 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					text: z.string().describe(`The message, in Markdown (1-${ATTENTION_TEXT_MAX} characters)`),
 				},
 			},
-			tool(async (args: { canvas: string; sessionId: string; sessionTitle?: string; text: string }, extra) => queue(args, 'say', extra)),
+			tool(async (args: { canvas: string; sessionId: string; sessionTitle?: string; text: string }, extra) => place(args, 'say', extra)),
 		)
 
 		server.registerTool(
 			'highlight',
 			{
 				description:
-					'Queue a step that points the people on the canvas at something: when they reach it, the camera glides there and ' +
-					'it is outlined (a point gets a ring, a region an outline of just that part), with your optional Markdown message ' +
-					'beside it. Point at what you mean: pass point ' +
+					'Place a sticky note from your session right next to something on the canvas, where you want the user to look, ' +
+					'with your optional Markdown message on it. It never covers the spot it points at and follows it as the canvas ' +
+					'rearranges; it stays until the user acknowledges it, which removes it. Point at what you mean: pass point ' +
 					'{x,y} or region {x,y,w,h} in the item\'s image pixels (same units as annotation px/py and get_item\'s ' +
-					'width/height); omit them only to highlight the whole item. Like say, it goes on your session\'s queue, in ' +
-					'order. Target: an item id, a group as "<sessionId>/<group name>", a session frame "frame:<sessionId>", or a ' +
-					'sticky note "note:<noteId>" (for these, "at" {x,y} in canvas page coordinates points at a spot; else the whole thing is outlined).',
+					'width/height): the note gets a pointer to that point (a ring) or region (an outline); omit them only to mean ' +
+					'the whole item. Target: an item id, a group as "<sessionId>/<group name>", a session frame "frame:<sessionId>", or a ' +
+					'sticky note "note:<noteId>" (for these, "at" {x,y} in canvas page coordinates points at a spot; a frame without ' +
+					'"at" gets the note at its top). Returns the note\'s id (noteId) and how many of your notes are waiting.',
 				inputSchema: {
 					canvas: canvasArg,
 					sessionId: sessionIdArg,
@@ -467,14 +477,16 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				},
 			},
 			tool(async (args: { canvas: string; sessionId: string; sessionTitle?: string; target: string; text?: string } & Precise, extra) =>
-				queue(args, 'highlight', extra),
+				place(args, 'highlight', extra),
 			),
 		)
 
 		server.registerTool(
 			'list_notes',
 			{
-				description: 'The sticky notes on a canvas: id, text, author, colour and position.',
+				description:
+					'The sticky notes on a canvas: id, text, author, colour and position. Notes a session placed with say / highlight ' +
+					'(waiting to be acknowledged) also have sessionId, kind and target.',
 				inputSchema: { canvas: canvasArg },
 			},
 			tool(async ({ canvas }: { canvas: string }) => ok((await deps.notes(canvasId(canvas))).map(noteSummary))),

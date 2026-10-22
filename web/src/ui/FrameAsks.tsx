@@ -18,8 +18,8 @@ const CARD_W = 360
  * What sessions wait on their owner to answer (questions, permission requests), shown at their
  * frames as soon as they ask: to answer for the owner, read-only for everyone else. A session whose
  * frame is off screen gets a small chip at the screen's edge instead, toward the frame; clicking it
- * brings the frame into view. A card's × puts it away until the session asks something else (the
- * "?" badge on its frame's title brings it back). The session whose prompt is open shows them in
+ * brings the frame into view. A card's × puts it away until the session asks something else (its
+ * row in the attention bar at the top brings it back). The session whose prompt is open shows them in
  * its prompt instead.
  */
 export function FrameAsks({ editor, sessions, attention }: { editor: Editor; sessions: SessionControl; attention: Attention }) {
@@ -106,7 +106,7 @@ function AskCard({
 				<AskWaiting asking={asking} loading={owner && loading} />
 			)}
 			<div className={`pt-ctl ${ctlSide}`}>
-				<button className="pt-fb" title="Later (Esc): the ? on its frame brings it back" aria-label="Later" onClick={onAway}>
+				<button className="pt-fb" title="Later (Esc): its row in the attention bar at the top brings it back" aria-label="Later" onClick={onAway}>
 					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
 						<path d="M6 6l12 12M18 6 6 18" />
 					</svg>

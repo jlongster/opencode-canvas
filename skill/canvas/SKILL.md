@@ -8,8 +8,9 @@ description: >
   canvas URL or id: post each one immediately, as soon as it exists, without waiting to be asked.
   Also use to post HTML (diagrams, flowcharts, charts, annotated explanations, SVG drawings) to
   tell the user things visually, to post links to web pages (page, with a screenshot when you
-  have one), to point the user at what to look at (say / highlight, shown at your session's
-  frame), and to create, list, rename, delete or restore canvases, sessions, groups and items.
+  have one), to point the user at what to look at (say / highlight place a sticky note where you
+  want them to look), and to create, list, rename, delete or restore canvases, sessions, groups
+  and items.
 ---
 
 # Canvas API
@@ -271,46 +272,51 @@ EOF
 
 ## Getting the user's attention: say and highlight
 
-Your session has a **frame** on the canvas (what you post; the canvas makes an empty one if you
-haven't posted yet, named after `sessionTitle`). When you want the user to look at something,
-queue it for your session: a badge on your frame's title counts what's waiting, and so does the
-"N things want your attention" tray at the top, without interrupting anyone; the user plays your
-queue as a walkthrough when they're ready, stepping through it with Next.
+Your session has a **frame** on the canvas (what you post). When you want the user to look at
+something, place a **sticky note** from your session where you want them to look. It's a note
+like the ones people put on the canvas, in your session's colour with its title on it. Each note
+stays on the canvas until the user acknowledges it ("✓ Got it"), which removes it. The
+"N things want your attention" bar at the top counts the notes, broken down by session, and its
+arrows step the user through them in order. Nothing interrupts anyone.
 
-- **say**: a Markdown message from your session, shown as a card at your frame.
-- **highlight**: point at something (the camera glides there and outlines it, with your optional
-  Markdown message beside it). Targets: an item id, a group as `<sessionId>/<group name>`,
-  your frame `frame:<sessionId>`, or a sticky note `note:<noteId>`. **Point at what you mean:**
-  pass `point {x,y}` or `region {x,y,w,h}` in the item's image pixels (same units as annotation
-  px/py and get_item's width/height); omit them only to highlight the whole item. A point gets a
-  crisp ring, a region an outline of just that part, and the camera zooms in just enough to show it.
-  On a frame, group or note, `at {x,y}` (canvas page coordinates) points at a spot on the canvas;
-  without it the whole thing is outlined.
+- **say**: a Markdown message, on a note at the top of your frame (`say` makes your frame if you
+  haven't posted yet, named after `sessionTitle`). Several notes stack neatly above the frame,
+  oldest first.
+- **highlight**: a note right next to something, with your optional Markdown message on it.
+  Targets: an item id, a group as `<sessionId>/<group name>`, a frame `frame:<sessionId>` (the
+  note goes at the top of that frame), or a sticky note `note:<noteId>`. **Point at what you
+  mean:** pass `point {x,y}` or `region {x,y,w,h}` in the item's image pixels (same units as
+  annotation px/py and get_item's width/height). The note then sits beside that spot without
+  covering it, with a pointer to it (a ring on a point, an outline round a region). Leave them out
+  only when you mean the whole item. On a frame, group or note, `at {x,y}` (canvas page
+  coordinates) points at a spot. The note follows its target as the canvas rearranges.
 
-Each call appends one step, in order, so tell a short story: say what you did, highlight what to
-look at, say what you need. Keep steps short. It's fire-and-forget: you aren't told when they're
-read, so don't wait for it; ask in your reply if you need an answer. Don't queue a step for every
-post: use it when there's something worth a look or a question.
+Each call places one note and returns its `noteId`, plus `waiting` (how many of your notes the
+user hasn't acknowledged yet on this canvas). Tell a short story: say what you did, highlight what
+to look at, say what you need. Keep notes short. It's fire-and-forget: you aren't told when a
+note is acknowledged, so don't wait for it; ask in your reply if you need an answer. Don't place a
+note for every post: use one when there's something worth a look or a question.
 
-Over HTTP: `POST $API/canvases/$CID/sessions/$SID/actions` with
+Over HTTP: `POST $API/canvases/$CID/sessions/$SID/notes` with
 `{"kind": "say", "text"}` or `{"kind": "highlight", "target", "point"? | "region"? | "at"?, "text"}`,
-plus `"sessionTitle"` → `{id, position, queued}`. `GET` the same path lists your queue; `DELETE` clears it.
+plus `"sessionTitle"` → `{noteId, waiting, note}`. `GET` the same path lists your notes that are
+still waiting; `DELETE $API/canvases/$CID/notes/<noteId>` removes one (as acknowledging does).
 
 ```bash
 # BASE, API, CID, SID and SESSION_TITLE set as above
-act() { curl -s -X POST $API/canvases/$CID/sessions/$SID/actions -H 'content-type: application/json' \
+note() { curl -s -X POST $API/canvases/$CID/sessions/$SID/notes -H 'content-type: application/json' \
   -d "$(bun -e 'const [k, t, x, s] = process.argv.slice(1); console.log(JSON.stringify({kind: k, target: t || undefined, text: x, sessionTitle: s}))' "$@")"; }
-act say "" "Two palettes are up: **warm** and **cool**." "$SESSION_TITLE"
-act highlight "$SID/2. Cool palette" "These read calmer but lose contrast. Which way?" "$SESSION_TITLE"
+note say "" "Two palettes are up: **warm** and **cool**." "$SESSION_TITLE"
+note highlight "$SID/2. Cool palette" "These read calmer but lose contrast. Which way?" "$SESSION_TITLE"
 ```
 
 Pointing at a spot in an image (here the button at 1400,200 of a 1600×1000 screenshot, then a
 300×200 panel at 100,700):
 
 ```bash
-curl -s -X POST $API/canvases/$CID/sessions/$SID/actions -H 'content-type: application/json' \
+curl -s -X POST $API/canvases/$CID/sessions/$SID/notes -H 'content-type: application/json' \
   -d '{"kind":"highlight","target":"<itemId>","point":{"x":1400,"y":200},"text":"This button is clipped.","sessionTitle":"…"}'
-curl -s -X POST $API/canvases/$CID/sessions/$SID/actions -H 'content-type: application/json' \
+curl -s -X POST $API/canvases/$CID/sessions/$SID/notes -H 'content-type: application/json' \
   -d '{"kind":"highlight","target":"<itemId>","region":{"x":100,"y":700,"w":300,"h":200},"text":"This panel is new.","sessionTitle":"…"}'
 ```
 
@@ -357,13 +363,14 @@ back. `get_canvas` lists annotations too (with their bbox), without consuming th
 
 The same server speaks MCP (Streamable HTTP) at `<base>/mcp`, usually configured in OpenCode as
 the `canvas` MCP server. It only provides tools: you don't appear on the canvas yourself (say and
-highlight show at your frame). Tools take a canvas id or URL; the ones that act for your session
+highlight place sticky notes). Tools take a canvas id or URL; the ones that act for your session
 take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
 
 - `post_item {canvas, sessionId, sessionTitle, path | url | html | page (+ path as its screenshot), width?, height?, group?, title?, caption?, name?}`:
   post into your frame (`path` must be absolute, on the canvas server's machine). **Always pass `sessionTitle`.**
 - `say {canvas, sessionId, sessionTitle, text}` and `highlight {canvas, sessionId, sessionTitle, target, point? | region? | at?, text?}`:
-  queue steps for your session (see above). Return the step's `id` and `position` in your queue.
+  place a sticky note from your session where you want the user to look (see above); the user
+  acknowledges it to remove it. Return the note's `noteId` and how many of yours are `waiting`.
 - `update_item {itemId, path | url | html | page, width?, height?, name?, title?, caption?, group?}`: replace an
   item's file in place (a new version of the same visual; see "Updating an item") and/or change its
   metadata (`null` clears title, caption, group).

@@ -1239,8 +1239,6 @@ const EYE_OFF_ICON =
 
 /** On-screen size of a frame title's prompt, hide and remove buttons (keep in step with frameButtons.css). */
 const BUTTON_PX = 24
-/** Room a frame title's badge takes on screen, with its gap (see .frame-badge in frameButtons.css). */
-const BADGE_PX = 30
 const PROMPT_ICON =
 	'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
 	'<path d="M20 12.5a7.5 7.5 0 0 1-11.1 6.6L4 20l1-4.4A7.5 7.5 0 1 1 20 12.5z"/><path d="M9 11.5h6M9 14.5h3.5"/></svg>'
@@ -1274,17 +1272,6 @@ class SectionLabels {
 		el.className = 'section-label'
 		el.dataset.session = id
 		el.innerHTML = '<span class="title"></span>'
-		// Right after the title: unread walkthrough steps, or that it's asking something (see FrameChrome).
-		const badge = document.createElement('button')
-		badge.className = 'frame-badge'
-		badge.hidden = true
-		badge.addEventListener('pointerdown', (e) => e.stopPropagation())
-		badge.addEventListener('dblclick', (e) => e.stopPropagation())
-		badge.addEventListener('click', (e) => {
-			e.stopPropagation()
-			editor.frameChrome?.attend(id)
-		})
-		el.appendChild(badge)
 		if (!this.onHide && !this.onClose) return el
 		// Screen-space buttons at the end of the title row (see frameButtons.css and update's room rule).
 		const buttons = document.createElement('span')
@@ -1346,24 +1333,8 @@ class SectionLabels {
 		return el
 	}
 
-	/** The session's badge and prompt button, as its FrameChrome status says. */
+	/** The session's prompt button, as its FrameChrome status says. */
 	private showStatus(el: HTMLElement, status: FrameStatus | null) {
-		const badge = el.querySelector<HTMLButtonElement>('.frame-badge')!
-		const asking = status?.asking ?? null
-		const unread = status?.unread ?? 0
-		const text = asking ? '?' : unread ? String(unread) : ''
-		badge.hidden = !text
-		if (text) {
-			if (badge.textContent !== text) badge.textContent = text
-			badge.title = asking
-				? asking === 'permission'
-					? 'Waiting for permission: show it'
-					: 'Asking a question: show it'
-				: `${unread} step${unread === 1 ? '' : 's'} to look at: play ${unread === 1 ? 'it' : 'them'}`
-			badge.classList.toggle('asking', !!asking)
-			badge.style.setProperty('--c', status!.color)
-			badge.style.setProperty('--ink', readableInk(status!.color))
-		}
 		const prompt = el.querySelector<HTMLButtonElement>('.prompt-frame')
 		if (!prompt) return
 		prompt.hidden = !status?.canPrompt
@@ -1439,14 +1410,14 @@ class SectionLabels {
 			}
 			const scale = Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx)
 			place(el, shift(s.header), scale)
-			// The badge and buttons keep a constant screen size inside the scaled label.
+			// The buttons keep a constant screen size inside the scaled label.
 			el.style.setProperty('--u', String(1 / scale))
 			if (this.onHide || this.onClose) {
 				// The buttons only show when the frame is wide enough, the title line is tall enough, and
 				// the title keeps enough room.
 				const width = s.header.w * z
 				const buttons =
-					(status?.canPrompt ? BUTTON_PX : 0) + (this.onHide ? BUTTON_PX : 0) + (this.onClose ? BUTTON_PX : 0) + 2 + 16 * scale + (status && (status.unread || status.asking) ? BADGE_PX : 0)
+					(status?.canPrompt ? BUTTON_PX : 0) + (this.onHide ? BUTTON_PX : 0) + (this.onClose ? BUTTON_PX : 0) + 2 + 16 * scale
 				const titleWidth = (this.titleWidths.get(s.id) ?? 0) * scale
 				const roomy =
 					s.box.w * z >= MIN_FRAME_PX_FOR_BUTTONS &&
@@ -1595,10 +1566,4 @@ function css([r, g, b, a]: RGBA) {
 
 function withAlpha([r, g, b, a]: RGBA, k: number): RGBA {
 	return [r, g, b, a * k]
-}
-
-/** Dark or white text, whichever reads better on a session colour. */
-function readableInk(hex: string) {
-	const [r, g, b] = hexToRgba(hex)
-	return 0.2126 * r * r + 0.7152 * g * g + 0.0722 * b * b > 0.18 ? '#0d0d0f' : '#ffffff'
 }

@@ -43,8 +43,6 @@ export interface CanvasData {
 	items: Item[]
 	/** which OpenCode session each linked frame talks to (see SessionLink) */
 	links: SessionLink[]
-	/** what sessions want people to look at, oldest first (see AttentionAction) */
-	attention: AttentionAction[]
 }
 
 /** Sessions belong to a canvas; the same OpenCode session id may appear in several canvases. */
@@ -109,15 +107,39 @@ export interface SessionView extends Session {
 	groups: { name: string | null; items: Item[] }[]
 }
 
-/** A sticky note from a canvas's room document, as GET /api/canvases/:cid/notes returns it. */
-export interface Note {
+/**
+ * A sticky note from a canvas's room document, as GET /api/canvases/:cid/notes returns it. Notes
+ * with a sessionId were placed by that session's say / highlight (see NoteAnchor): they wait where
+ * the session wants people to look until someone acknowledges them, which deletes them.
+ */
+export interface Note extends Partial<NoteAnchor> {
 	id: string
 	text: string
 	author: string
 	color: string
+	/** page position of its top-left corner (agent notes follow what they point at, so theirs is where it was placed) */
 	x: number
 	y: number
 	createdAt: number
+	/** the session that placed it (MCP say / highlight); missing on people's notes */
+	sessionId?: string
+}
+
+/**
+ * Where an agent's sticky note goes, stored on it in the room document (beside the note's usual
+ * fields). Browsers place it from this as the layout moves: a highlight next to its target (with a
+ * pointer to the exact point or region), a say at the top of the session's frame.
+ */
+export interface NoteAnchor {
+	kind: 'say' | 'highlight'
+	/** highlight: a selection key: an item id, "frame:<sessionId>", "note:<noteId>" or "group:<sessionId>/<name>" */
+	target?: string
+	/** highlight of an item: the exact spot meant, in pixels of the item's original image/page (like annotation px/py) */
+	point?: { x: number; y: number }
+	/** highlight of an item: the part meant, in the same pixels as point */
+	region?: { x: number; y: number; w: number; h: number }
+	/** highlight of a frame, group or note: a spot on the canvas (page coordinates) to point at */
+	at?: { x: number; y: number }
 }
 
 /**
@@ -262,29 +284,6 @@ export interface ResolvedSelection {
 	missing: string[]
 }
 
-/**
- * One thing a session wants people on the canvas to look at, queued with the MCP say /
- * highlight tools (or POST /api/canvases/:cid/sessions/:sid/actions). The queue plays in order;
- * stepping past an action on an edit link marks it done, which removes it for everyone.
- */
-export interface AttentionAction {
-	id: string
-	canvasId: string
-	sessionId: string
-	kind: 'say' | 'highlight'
-	/** Markdown: the message (say), or what to say about the target (highlight, optional) */
-	text?: string
-	/** highlight: a selection key: an item id, "frame:<sessionId>", "note:<noteId>" or "group:<sessionId>/<name>" */
-	target?: string
-	/** highlight of an item: the exact spot meant, in pixels of the item's original image/page (like annotation px/py) */
-	point?: { x: number; y: number }
-	/** highlight of an item: the part meant, in the same pixels as point */
-	region?: { x: number; y: number; w: number; h: number }
-	/** highlight of a frame, group or note: a spot on the canvas (page coordinates) to point at */
-	at?: { x: number; y: number }
-	createdAt: number
-}
-
 export type ServerEvent =
 	| { type: 'canvas'; canvas: Canvas }
 	| { type: 'canvas_deleted'; id: string }
@@ -296,8 +295,6 @@ export type ServerEvent =
 	| { type: 'link_deleted'; canvasId: string; sessionId: string }
 	/** a linked session started or stopped working */
 	| { type: 'status'; canvasId: string; sessionId: string; busy: boolean }
-	| { type: 'attention'; action: AttentionAction }
-	| { type: 'attention_done'; canvasId: string; ids: string[] }
 	/**
 	 * Annotations an agent just read, sent right before they're removed from the room document, so
 	 * open canvases can animate them away (into the reading session's frame).

@@ -1,86 +1,54 @@
 import { sessionColor } from '../../../shared/sessionColor'
-import type { AttentionAction } from '../../../shared/types'
-import { FOCUS_MAX_WIDTH, FOCUS_MAX_ZOOM, GROUP_OUTLINE_PADDING, type Editor } from '../editor/Editor'
-import { Box } from '../editor/geometry'
+import { FOCUS_MAX_ZOOM, type Editor } from '../editor/Editor'
+import { Box, clamp } from '../editor/geometry'
 import { frameTitleBox } from '../editor/layout'
-import { parseSelectionId } from '../editor/selection'
-import { atom, computed, react, type Atom } from '../state/signals'
-import { clearActions, markActionDone } from '../sync/client'
+import { atom, computed } from '../state/signals'
+import type { NotePlacement } from './notePlacement'
 import type { AskingInfo } from './Presence'
 import type { SessionControl } from './SessionControl'
+import type { AgentNoteInfo, SharedNotes } from './SharedNotes'
 
-/** A session's walkthrough of its queue, open here. */
-export interface Walk {
-	sessionId: string
-	/** the queue as it was when opened, plus whatever was queued since; done steps stay so Back can show them */
-	steps: AttentionAction[]
-	index: number
-}
-
-/**
- * A highlight step's exact spot on the page: a point (box of no size) or a region, and the box of
- * what it's on (the item, or the frame / group / note for "at").
- */
-export interface Focus {
-	kind: 'point' | 'region'
-	box: Box
-	within: Box | undefined
-}
-
-/** One session calling for attention, as the tray lists it. */
+/** One session calling for attention, as the bar at the top lists it. */
 export interface Caller {
 	sessionId: string
 	name: string
 	color: string
-	actions: AttentionAction[]
+	/** the sticky notes it placed that nobody has acknowledged yet, oldest first */
+	notes: AgentNoteInfo[]
 	/** it waits on its owner to answer questions or permission requests (see SessionHost) */
 	asking: AskingInfo | null
 }
 
-/** room (screen px) kept around a highlighted target when the camera brings it into view */
+/** room (screen px) kept around what the camera brings into view */
 const REVEAL_PAD = 96
-/** what's along the top of the screen (the top bar and the attention tray), kept clear when revealing */
+/** what's along the top of the screen (the top bar and the attention bar), kept clear when revealing */
 const TOP_INSET = 116
-/** room (screen px) kept above a frame's title brought into view, for the card shown there */
+/** room (screen px) kept above a frame's title brought into view, for what's shown there */
 const FRAME_CARD_ROOM = 240
-/** how long the camera glides to a step's exact spot (ms) */
-const FOCUS_GLIDE_MS = 560
-/** a region is zoomed to at least this big on screen (its longer side, screen px)... */
-const REGION_MIN_PX = 200
-/** ...and at most this share of the room on screen */
-const REGION_MAX_SHARE = 0.7
-/** an item pointed into is zoomed to at least this big on screen (its longer side, screen px) */
-const POINT_CONTEXT_PX = 480
-/** a spot this close to the screen's edge (share of the smaller side) gets centred */
-const EDGE_SHARE = 0.14
+/** how long the camera glides to a note stepped to (ms) */
+const GLIDE_MS = 560
+/** stepping to a note keeps the zoom in this range, so the note can be read... */
+const READ_ZOOM = { min: 0.75, max: 1.25 }
+/** ...zooming out further only to fit what it points at in too, down to this */
+const CONTEXT_MIN_ZOOM = 0.3
 
 /**
- * Attention queues on a canvas (see server/attention.ts): what each session wants people to look
- * at. The badge on its frame's title and the tray at the top show what's waiting; opening one plays
- * its queue as a walkthrough: say steps are message cards at the session's frame (the camera brings
- * the frame into view if it's off screen), highlight steps glide the camera to their target, outline
- * it, and show their message beside it; with an exact spot (a point or region), the camera glides to
- * that spot and only it is outlined.
- *
- * On edit links, stepping past an action marks it done for everyone (it leaves the queue); view
- * links step through the same queue read-only.
+ * What sessions want the people on a canvas to look at: the sticky notes they placed (MCP say /
+ * highlight, see SharedNotes) until someone acknowledges them, and the questions and permission
+ * requests they wait on. The bar at the top counts them by session, and its arrows step through the
+ * notes, everyone's or one session's: each step glides the camera to the note and what it points
+ * at, and briefly emphasises the note.
  */
 export class Attention {
-	readonly walk = atom<Walk | null>('attentionWalk', null)
-	/** when the current step started, for the highlight's pulse */
-	stepAt = 0
-	/**
-	 * The zoom the camera settles at for the current step (where it went, or stayed): the pointer
-	 * stands off an exact spot by its size at this zoom, worked out once so zooming doesn't move it.
-	 */
-	stepZoom = 1
-	/** queued actions by session, oldest first */
-	readonly bySession = computed<Map<string, AttentionAction[]>>('attentionBySession', () => {
-		const map = new Map<string, AttentionAction[]>()
-		for (const a of this.queue.get()) {
-			let list = map.get(a.sessionId)
-			if (!list) map.set(a.sessionId, (list = []))
-			list.push(a)
+	/** the note last stepped to (its createdAt carries the stepping on from there once it's acknowledged) */
+	readonly current = atom<{ id: string; createdAt: number } | null>('attentionCurrent', null)
+	/** agents' notes by session, oldest first */
+	readonly bySession = computed<Map<string, AgentNoteInfo[]>>('attentionBySession', () => {
+		const map = new Map<string, AgentNoteInfo[]>()
+		for (const n of this.notes.agentNotes.get()) {
+			let list = map.get(n.sessionId)
+			if (!list) map.set(n.sessionId, (list = []))
+			list.push(n)
 		}
 		return map
 	})
@@ -90,70 +58,64 @@ export class Attention {
 		for (const [sessionId, p] of this.sessions.live.get()) if (p.asking?.count) map.set(sessionId, p.asking)
 		return map
 	})
-	/** sessions asking something first, then those with something queued, in the order they first asked */
+	/** sessions asking something first, then those with notes waiting, in the order they first placed one */
 	readonly callers = computed<Caller[]>('attentionCallers', () => {
 		const asking = this.asking.get()
-		const queued = this.bySession.get()
-		return [...new Set([...asking.keys(), ...queued.keys()])].map((sessionId) => ({
+		const notes = this.bySession.get()
+		return [...new Set([...asking.keys(), ...notes.keys()])].map((sessionId) => ({
 			sessionId,
 			name: this.sessions.label(sessionId),
 			color: sessionColor(sessionId),
-			actions: queued.get(sessionId) ?? [],
+			notes: notes.get(sessionId) ?? [],
 			asking: asking.get(sessionId) ?? null,
 		}))
 	})
-	private disposers: (() => void)[] = []
 
 	constructor(
 		readonly editor: Editor,
 		readonly sessions: SessionControl,
-		readonly canvasId: string,
-		/** edit links mark steps done; view links only step through */
-		readonly canEdit: boolean,
-		/** the canvas's queued actions, from the server (live) */
-		readonly queue: Atom<AttentionAction[]>,
-	) {
-		// Steps queued while a walkthrough is open join its end.
-		this.disposers.push(
-			react(() => {
-				const queued = this.bySession.get()
-				const walk = this.walk.peek()
-				if (!walk) return
-				const fresh = (queued.get(walk.sessionId) ?? []).filter((a) => !walk.steps.some((s) => s.id === a.id))
-				if (fresh.length) this.walk.set({ ...walk, steps: [...walk.steps, ...fresh] })
-			}),
-		)
+		readonly notes: SharedNotes,
+	) {}
+
+	/** The notes the arrows step through, oldest first: everyone's or one session's, those on the canvas (reactive). */
+	steps(sessionId?: string): AgentNoteInfo[] {
+		const all = sessionId === undefined ? this.notes.agentNotes.get() : (this.bySession.get().get(sessionId) ?? [])
+		return all.filter((n) => n.shown)
 	}
 
-	/** How many actions the session has queued (reactive). */
-	count(sessionId: string) {
-		return this.bySession.get().get(sessionId)?.length ?? 0
-	}
-
-	/** Whether an action is still queued (not yet done by anyone). */
-	queued(id: string) {
-		return this.queue.get().some((a) => a.id === id)
-	}
-
-	isOpen(sessionId: string) {
-		return this.walk.peek()?.sessionId === sessionId
+	/** Which of those the last step showed (1-based; 0 when it's none of them), and how many there are (reactive). */
+	position(sessionId?: string): { index: number; total: number } {
+		const list = this.steps(sessionId)
+		const id = this.current.get()?.id
+		return { index: list.findIndex((n) => n.id === id) + 1, total: list.length }
 	}
 
 	/**
-	 * Opens the session's walkthrough at its first queued step. From the tray, the camera first
-	 * brings the session's frame into view (unless the first step shows something else).
+	 * Steps to the next (1) or previous (-1) note, everyone's or one session's, wrapping round. After
+	 * the note shown last was acknowledged, the next is the one after it.
 	 */
-	open(sessionId: string, opts: { fromTray?: boolean } = {}) {
-		const steps = this.bySession.get().get(sessionId) ?? []
-		if (!steps.length) return
-		this.sessions.close()
-		this.walk.set({ sessionId, steps: [...steps], index: 0 })
-		const first = this.showStep()
-		if (opts.fromTray && !first) this.revealFrame(sessionId)
+	step(dir: 1 | -1, sessionId?: string) {
+		const list = this.steps(sessionId)
+		if (!list.length) return
+		const cur = this.current.peek()
+		const at = cur ? list.findIndex((n) => n.id === cur.id) : -1
+		let next: AgentNoteInfo
+		if (at >= 0) next = list[(at + dir + list.length) % list.length]!
+		else if (cur && dir > 0) next = list.find((n) => n.createdAt > cur.createdAt) ?? list[0]!
+		else if (cur) next = [...list].reverse().find((n) => n.createdAt < cur.createdAt) ?? list[list.length - 1]!
+		else next = dir > 0 ? list[0]! : list[list.length - 1]!
+		this.show(next.id)
 	}
 
-	close() {
-		this.walk.set(null)
+	/** Glides the camera to a note and what it points at, and briefly emphasises it. */
+	show(id: string) {
+		const info = this.notes.agentNotes.peek().find((n) => n.id === id)
+		const placed = this.notes.placementOf(id)
+		if (!info || !placed) return
+		this.current.set({ id, createdAt: info.createdAt })
+		this.sessions.close()
+		this.glideTo(placed)
+		this.notes.emphasize(id)
 	}
 
 	/**
@@ -161,157 +123,50 @@ export class Attention {
 	 * answer for its owner, read-only for everyone else; see FrameAsks).
 	 */
 	answer(sessionId: string) {
-		this.close()
 		this.sessions.showAsks(sessionId)
 		this.revealFrame(sessionId)
 	}
 
-	/** Marks the current step done (edit links) and moves on; past the last one, closes. */
-	next() {
-		const walk = this.walk.peek()
-		if (!walk) return
-		this.markDone(walk.steps[walk.index])
-		if (walk.index >= walk.steps.length - 1) return this.close()
-		this.walk.set({ ...walk, index: walk.index + 1 })
-		this.showStep()
-	}
-
-	back() {
-		const walk = this.walk.peek()
-		if (!walk || walk.index === 0) return
-		this.walk.set({ ...walk, index: walk.index - 1 })
-		this.showStep()
-	}
-
-	/** Clears the session's whole queue for everyone (edit links) and closes. */
-	dismissAll() {
-		const walk = this.walk.peek()
-		if (!walk) return
-		this.close()
-		if (this.canEdit) clearActions(this.canvasId, walk.sessionId).catch((e) => console.error('dismissing failed', e))
-	}
-
-	/** The current step, if a walkthrough is open. */
-	current(): AttentionAction | null {
-		const walk = this.walk.get()
-		return walk ? (walk.steps[walk.index] ?? null) : null
-	}
-
-	/** Where the session's frame title is on the page (as drawn at the current zoom), if it has a frame showing. */
-	frameTitle(sessionId: string): Box | undefined {
-		const section = this.editor.layout.get().sections.find((s) => s.id === sessionId)
-		return section && frameTitleBox(section, this.editor.camera.get().z)
-	}
-
-	/** A highlight target's page box (groups with their outline's padding), if it's still on the canvas. */
-	targetBox(target: string): Box | undefined {
-		const { kind, id } = parseSelectionId(target)
-		if (kind === 'group') {
-			const group = this.editor.layout.get().groups.find((g) => g.id === id)
-			return group && Box.expand(group.box, GROUP_OUTLINE_PADDING)
-		}
-		if (kind === 'item') return this.editor.getItemBoundsWithTitle(id)
-		return this.editor.getSelectionBounds(target)
-	}
-
-	/** A highlight step's exact spot (point / region on an item, or "at" on anything else), if it has one and its target is here. */
-	focusOf(step: AttentionAction | null | undefined): Focus | undefined {
-		if (step?.kind !== 'highlight' || !step.target) return undefined
-		const { kind, id } = parseSelectionId(step.target)
-		if (kind === 'item' && (step.point || step.region)) {
-			const box = this.editor.layout.get().items.get(id)
-			const item = this.editor.items.get()[id]
-			if (!box || !item?.width || !item.height) return undefined
-			const sx = box.w / item.width
-			const sy = box.h / item.height
-			if (step.point) return { kind: 'point', box: { x: box.x + step.point.x * sx, y: box.y + step.point.y * sy, w: 0, h: 0 }, within: box }
-			const r = step.region!
-			return { kind: 'region', box: { x: box.x + r.x * sx, y: box.y + r.y * sy, w: r.w * sx, h: r.h * sy }, within: box }
-		}
-		if (kind !== 'item' && step.at) {
-			const within = this.targetBox(step.target)
-			return within && { kind: 'point', box: { x: step.at.x, y: step.at.y, w: 0, h: 0 }, within }
-		}
-		return undefined
-	}
-
-	/** A short name for a highlight target, for previews. */
-	targetLabel(target: string): string {
-		const { kind, id } = parseSelectionId(target)
-		if (kind === 'group') return `the group “${id.slice(id.indexOf('/') + 1) || 'Untitled'}”`
-		if (kind === 'frame') {
-			const s = this.editor.sessions.get()[id]
-			return s?.title.trim() && s.title !== s.id ? `the session “${s.title}”` : 'the session'
-		}
-		if (kind === 'note') return 'a sticky note'
-		const item = this.editor.items.get()[id]
-		return item ? `“${item.title || item.name}”` : 'an item'
-	}
-
 	/**
-	 * Brings the current step into view: a highlight's target (true, it moved the camera there), or
-	 * for a say step, the session's frame title, where its card shows.
+	 * Centres a note and what it points at below the top bar, at a zoom the note reads at (keeping
+	 * the current one if it does), zooming out as needed to fit both, but not so far the note can't
+	 * be made out: then it centres the note and the part of the target nearest it.
 	 */
-	showStep(): boolean {
-		this.stepAt = performance.now()
-		const step = this.current()
-		if (!step) return false
-		if (step.kind !== 'highlight' || !step.target) {
-			this.revealFrame(step.sessionId)
-			return false
-		}
-		this.editor.revealKey(step.target)
-		const focus = this.focusOf(step)
-		if (focus) {
-			this.stepZoom = this.revealFocus(focus)
-			return true
-		}
-		const box = this.targetBox(step.target)
-		if (!box) return false
-		this.reveal(box, REVEAL_PAD)
-		this.stepZoom = this.editor.camera.peek().z
-		return true
-	}
-
-	/**
-	 * Glides the camera so an exact spot is comfortably in view: centred if it's off screen or near
-	 * the edge, zoomed in only as needed (a region to at least REGION_MIN_PX, an item pointed into to
-	 * POINT_CONTEXT_PX, never past the focus caps), and out only if a region wouldn't fit in
-	 * REGION_MAX_SHARE of the screen. Returns the zoom it settles at.
-	 */
-	revealFocus(focus: Focus): number {
+	private glideTo(placed: NotePlacement) {
 		const editor = this.editor
 		const cam = editor.camera.peek()
 		const { w, h } = editor.viewport.peek()
-		const p = Math.min(REVEAL_PAD, w / 6, h / 6)
-		const top = Math.min(Math.max(p, TOP_INSET), h / 4)
-		const roomW = w - p * 2
-		const roomH = h - p - top
-		const { box, within } = focus
-		const cap = Math.min(FOCUS_MAX_ZOOM, within ? FOCUS_MAX_WIDTH / within.w : FOCUS_MAX_ZOOM)
-		let z = cam.z
-		const grow = (need: number) => {
-			if (need > z) z = Math.max(z, Math.min(need, cap))
+		const pad = Math.min(REVEAL_PAD, w / 8, h / 8)
+		const top = Math.min(Math.max(pad, TOP_INSET), h / 4)
+		const roomW = w - pad * 2
+		const roomH = h - pad - top
+		const fit = (b: Box) => Math.min(roomW / Math.max(b.w, 1), roomH / Math.max(b.h, 1))
+		const note = placed.box
+		// A note at the top of its frame shows with the part of the title row under it.
+		const title = placed.frameTitle
+		const spot = placed.spot?.box ?? (title && { x: note.x, y: title.y, w: note.w, h: title.h })
+		let box = spot ? Box.union([note, spot])! : note
+		let z = clamp(cam.z, READ_ZOOM.min, READ_ZOOM.max)
+		if (fit(box) < z) {
+			z = Math.max(fit(box), CONTEXT_MIN_ZOOM)
+			if (spot && fit(box) < CONTEXT_MIN_ZOOM) {
+				const c = { x: note.x + note.w / 2, y: note.y + note.h / 2 }
+				const near = { x: clamp(c.x, spot.x, spot.x + spot.w), y: clamp(c.y, spot.y, spot.y + spot.h), w: 0, h: 0 }
+				box = Box.union([note, near])!
+				z = clamp(fit(box), CONTEXT_MIN_ZOOM, z)
+			}
 		}
-		if (focus.kind === 'region') {
-			grow(REGION_MIN_PX / Math.max(box.w, box.h))
-			z = Math.min(z, REGION_MAX_SHARE * Math.min(roomW / box.w, roomH / box.h))
-		} else if (within) grow(POINT_CONTEXT_PX / Math.max(within.w, within.h))
-		const centre = { x: box.x + box.w / 2, y: box.y + box.h / 2 }
-		const s = editor.pageToScreen(box)
-		const m = Math.max(p, Math.min(w, h) * EDGE_SHARE)
-		const comfy = s.x >= m && s.y >= top && s.x + box.w * z <= w - m && s.y + box.h * z <= h - m
-		if (z === cam.z && comfy) return z
+		z = Math.min(z, FOCUS_MAX_ZOOM)
 		editor.stopCameraMotion()
-		editor.setCamera({ x: w / 2 / z - centre.x, y: (top + roomH / 2) / z - centre.y, z }, { animate: true, duration: FOCUS_GLIDE_MS })
-		return z
+		editor.setCamera({ x: w / 2 / z - (box.x + box.w / 2), y: (top + roomH / 2) / z - (box.y + box.h / 2), z }, { animate: true, duration: GLIDE_MS })
 	}
 
 	/** Slides the camera to bring the session's frame title (and room above it for a card) into view. */
 	revealFrame(sessionId: string) {
-		const title = this.frameTitle(sessionId)
-		if (!title) return
+		const section = this.editor.layout.get().sections.find((s) => s.id === sessionId)
+		if (!section) return
 		const z = this.editor.camera.peek().z
+		const title = frameTitleBox(section, z)
 		const { w } = this.editor.viewport.peek()
 		const width = Math.min(title.w, (w - 48) / z)
 		this.reveal({ x: title.x, y: title.y - FRAME_CARD_ROOM / z, w: width, h: title.h + FRAME_CARD_ROOM / z }, 24)
@@ -321,7 +176,7 @@ export class Attention {
 	 * The smallest camera move that shows the box with `pad` screen px around it: a pan at the
 	 * current zoom, or zoomed out to fit if it's too big for the screen at this zoom.
 	 */
-	reveal(box: Box, pad: number) {
+	private reveal(box: Box, pad: number) {
 		const editor = this.editor
 		const cam = editor.camera.peek()
 		const { w, h } = editor.viewport.peek()
@@ -347,16 +202,5 @@ export class Attention {
 		if (!dx && !dy) return
 		editor.stopCameraMotion()
 		editor.setCamera({ x: cam.x - dx, y: cam.y - dy, z }, { animate: true })
-	}
-
-	private markDone(step: AttentionAction | undefined) {
-		if (!step || !this.canEdit || !this.queue.peek().some((a) => a.id === step.id)) return
-		// Gone here right away; the server's event confirms it (and tells everyone else).
-		this.queue.set(this.queue.peek().filter((a) => a.id !== step.id))
-		markActionDone(this.canvasId, step.sessionId, step.id).catch((e) => console.error('marking done failed', e))
-	}
-
-	destroy() {
-		for (const d of this.disposers.splice(0)) d()
 	}
 }

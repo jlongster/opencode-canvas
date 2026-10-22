@@ -4,7 +4,7 @@ import { basename, extname, join, resolve } from 'node:path'
 import * as Y from 'yjs'
 import { frameTitle } from '../shared/sessionTitle'
 import type {
-	Annotation, AnnotationView, Canvas, CanvasData, CanvasSummary, Item, MediaKind, Note, NoteAnchor, OpenCodeSessionInfo, PresenceEntry, ResolvedSelection,
+	Annotation, AnnotationView, Canvas, CanvasData, CanvasSummary, Item, ItemDelivery, MediaKind, Note, NoteAnchor, OpenCodeSessionInfo, PresenceEntry, ResolvedSelection,
 	ServerEvent, Session, SessionLink, SessionView,
 } from '../shared/types'
 import { computeLayout, orderSessions } from '../web/src/editor/layout'
@@ -542,6 +542,7 @@ function textField(value: unknown): string | undefined {
 }
 
 const NAME_MAX = 200
+const ADDED_BY_MAX = 60
 
 /** An item's "name" (file name) from the request; undefined when not given. */
 function nameField(value: unknown): string | undefined {
@@ -572,6 +573,8 @@ interface ItemOptions {
 	/** a frame extracted from a video (see Item.sourceItemId) */
 	sourceItemId?: string
 	sourceTime?: number
+	/** someone dragged or pasted it onto the frame in a browser (multipart "addedBy"): a person item (see Item.origin) */
+	addedBy?: string
 }
 
 /** An item's media: what posting a file (or replacing an item's file) sets. */
@@ -660,6 +663,7 @@ async function addItem(canvasId: string, sessionId: string, source: MediaSource,
 		title: opts.title,
 		caption: opts.caption,
 		...(opts.sourceItemId ? { sourceItemId: opts.sourceItemId, sourceTime: opts.sourceTime } : {}),
+		...(opts.addedBy ? { origin: 'person' as const, addedBy: opts.addedBy } : {}),
 		createdAt: opts.createdAt ?? Date.now(),
 	}
 	db.items.set(id, item)
@@ -774,8 +778,9 @@ async function patchItem(item: Item, body: Record<string, unknown>, source: Medi
 		throw new HttpError(404, `item ${item.id} was deleted while its new file was processed`)
 	}
 	const filename = 'data' in source ? source.filename : undefined
-	// No longer a frame of the video it was taken from, nor its old length, nor a web page.
-	const { duration: _, sourceItemId: __, sourceTime: ___, pageUrl: _p, page: _pi, snapshotAt: _s, ...rest } = current
+	// No longer a frame of the video it was taken from, nor its old length, nor a web page; and a
+	// person's item replaced (by its session's update_item) is now the session's output.
+	const { duration: _, sourceItemId: __, sourceTime: ___, pageUrl: _p, page: _pi, snapshotAt: _s, origin: _o, addedBy: _a, delivered: _d, ...rest } = current
 	const next = applyChanges(
 		{ ...rest, ...media, name: (filename && basename(filename)) || withExtension(current.name, media.src), createdAt: Date.now() },
 		changes,
@@ -880,7 +885,7 @@ async function replacePage(item: Item, url: string | null, screenshot: MediaSour
 		if (media) await removeItemFiles(media)
 		throw new HttpError(404, `item ${item.id} was deleted while its screenshot was processed`)
 	}
-	const { duration: _, sourceItemId: __, sourceTime: ___, snapshotAt: _s, ...rest } = current
+	const { duration: _, sourceItemId: __, sourceTime: ___, snapshotAt: _s, origin: _o, addedBy: _a, delivered: _d, ...rest } = current
 	const name = media?.src ? `${pageHost(pageUrl)}${extname(media.src)}` : media || url ? pageHost(pageUrl) : current.name
 	const next = applyChanges({ ...rest, ...(media ?? {}), kind: 'page', name, pageUrl, page: { url: pageUrl }, createdAt: Date.now() }, changes)
 	commitItem(next)
@@ -991,6 +996,50 @@ async function removeItemFiles(item: Pick<Item, 'src' | 'thumb'>) {
 
 function sessionItems(canvasId: string, sessionId: string) {
 	return [...db.items.values()].filter((i) => i.canvasId === canvasId && i.sessionId === sessionId)
+}
+
+type DeliveryChange = { itemIds: string[]; messageId?: string; via: ItemDelivery['via'] } | { clear: true }
+
+/**
+ * Records that a session now has these person items' media (sent with a prompt or seen through a
+ * tool), as of their current file; or, with clear, that it has none of them any more (it compacted).
+ * Other sessions' items and items people didn't add are left alone. Returns the items changed.
+ */
+function markDelivered(canvasId: string, sessionId: string, change: DeliveryChange): Item[] {
+	const changed: Item[] = []
+	const at = Date.now()
+	const ids = 'clear' in change ? null : new Set(change.itemIds)
+	for (const item of sessionItems(canvasId, sessionId)) {
+		if (item.origin !== 'person') continue
+		if (!ids) {
+			if (!item.delivered) continue
+			const { delivered: _, ...next } = item
+			changed.push(next)
+			continue
+		}
+		if (!ids.has(item.id) || 'clear' in change) continue
+		const delivered: ItemDelivery = { sessionId, src: item.src, at, ...(change.messageId ? { messageId: change.messageId } : {}), via: change.via }
+		changed.push({ ...item, delivered })
+	}
+	for (const item of changed) {
+		db.items.set(item.id, item)
+		broadcast({ type: 'item', item })
+	}
+	if (changed.length) save()
+	return changed
+}
+
+const DELIVERY_VIA = new Set<ItemDelivery['via']>(['submit', 'prompt', 'tool'])
+const MESSAGE_ID_MAX = 128
+
+/** The body of POST /api/canvases/:cid/sessions/:sid/delivered. */
+function deliveryChange(body: Record<string, unknown> | null): DeliveryChange {
+	if (body?.clear === true) return { clear: true }
+	const itemIds = idList(body?.itemIds, 'itemIds')
+	const via = (body?.via ?? 'prompt') as ItemDelivery['via']
+	if (!itemIds.length || !DELIVERY_VIA.has(via)) throw new HttpError(400, 'send {"itemIds": [...], "messageId"?, "via": "submit"|"prompt"|"tool"} or {"clear": true}')
+	const messageId = typeof body?.messageId === 'string' && body.messageId.trim() ? body.messageId.trim().slice(0, MESSAGE_ID_MAX) : undefined
+	return { itemIds, via, ...(messageId ? { messageId } : {}) }
 }
 
 /** Moves an item to the trash. Without `keepSession`, a session left empty is trashed too. */
@@ -1327,6 +1376,7 @@ function resolveAnnotations(canvas: Canvas, list: Annotation[], filter: Annotati
 				...(item.pageUrl ? { pageUrl: item.pageUrl } : {}),
 				link: `${WEB_BASE}/c/${canvas.id}#item=${encodeURIComponent(item.id)}`,
 				...(item.sourceItemId ? { sourceItemId: item.sourceItemId, sourceTime: item.sourceTime } : {}),
+				...(item.origin ? { origin: item.origin, ...(item.addedBy ? { addedBy: item.addedBy } : {}) } : {}),
 			},
 			anchor: { x: round4(x), y: round4(y), px: Math.round(x * item.width), py: Math.round(y * item.height) },
 			strokes,
@@ -1499,7 +1549,7 @@ function rasterStrokes(lines: [number, number][][], imageW: number, imageH: numb
  * The strokes are rasterised here, in plain TypeScript, into an RGBA patch that ffmpeg overlays (it
  * already reads and writes every format we accept): no browser, native module or SVG renderer needed.
  */
-async function markedImage(canvasId: string, annotationId: string): Promise<Response> {
+async function markedImageBytes(canvasId: string, annotationId: string, opts: { max?: number } = {}): Promise<Uint8Array> {
 	if (!HAS_FFMPEG) throw new HttpError(501, 'marking images needs ffmpeg on the canvas server')
 	// Annotations an agent has read are in the trash, but the image it was handed still works.
 	const canvas = getCanvas(canvasId)
@@ -1516,12 +1566,25 @@ async function markedImage(canvasId: string, annotationId: string): Promise<Resp
 	if (!a || !raw) throw new HttpError(404, `no annotation ${annotationId} on this canvas`)
 	const item = getItem(a.item.id)
 	if (item.kind === 'html') throw new HttpError(400, 'HTML items have no image to mark; use the strokes\' and anchor\'s pixel coordinates on the page')
-	const src = item.kind === 'video' ? item.thumb : item.src
+	const src = item.src
 	if (!src) throw new HttpError(409, 'this link has no screenshot to mark')
 	if (/^https?:/.test(src)) throw new HttpError(400, 'this item\'s media is not stored on the canvas server')
-	const input = join(MEDIA_DIR, basename(src))
+	const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+	// A video is marked on its first frame at full size (its poster is that frame, at 512 px).
+	const frameFile = item.kind === 'video' ? join(DATA_DIR, `.mark-${stamp}-frame.png`) : null
+	if (frameFile) await run(['ffmpeg', '-y', '-v', 'error', '-i', join(MEDIA_DIR, basename(src)), '-frames:v', '1', frameFile])
+	const input = frameFile ?? join(MEDIA_DIR, basename(src))
+	try {
+		return await drawMarks(input, item.id, a, raw, all, stamp, opts.max)
+	} finally {
+		if (frameFile) await rm(frameFile, { force: true })
+	}
+}
+
+/** The marked image: `raw`'s strokes (or a ring) and its number drawn on `input`, optionally scaled to fit `max` px. */
+async function drawMarks(input: string, itemId: string, a: AnnotationView, raw: Annotation, all: AnnotationView[], stamp: string, max?: number): Promise<Uint8Array> {
 	const size = await probe(input)
-	const number = all.filter((v) => v.item.id === item.id).findIndex((v) => v.id === a.id) + 1
+	const number = all.filter((v) => v.item.id === itemId).findIndex((v) => v.id === a.id) + 1
 	const short = Math.min(size.width, size.height)
 	const width = Math.max(3, Math.round(short / 180))
 	let lines: [number, number][][] = raw.strokes.map((flat) => {
@@ -1539,7 +1602,6 @@ async function markedImage(canvasId: string, annotationId: string): Promise<Resp
 	const color = hexColor(a.color)
 	const patch = rasterStrokes(lines, size.width, size.height, width, color)
 	if (!patch) throw new HttpError(400, 'this annotation is drawn outside its image')
-	const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 	const patchFile = join(DATA_DIR, `.mark-${stamp}.rgba`)
 	const output = join(DATA_DIR, `.mark-${stamp}.png`)
 	try {
@@ -1557,13 +1619,81 @@ async function markedImage(canvasId: string, annotationId: string): Promise<Resp
 		await run([
 			'ffmpeg', '-y', '-v', 'error', '-i', input,
 			'-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${patch.w}x${patch.h}`, '-i', patchFile,
-			'-filter_complex', `[0:v][1:v]overlay=${patch.left}:${patch.top}:format=auto${text}`,
+			'-filter_complex', `[0:v][1:v]overlay=${patch.left}:${patch.top}:format=auto${text}${max ? `,${fitFilter(max)}` : ''}`,
 			'-frames:v', '1', output,
 		])
-		const bytes = await Bun.file(output).arrayBuffer()
-		return new Response(bytes, { headers: { 'content-type': 'image/png', 'cache-control': 'no-store' } })
+		return new Uint8Array(await Bun.file(output).arrayBuffer())
 	} finally {
 		await rm(patchFile, { force: true })
+		await rm(output, { force: true })
+	}
+}
+
+/** ffmpeg's scale filter that fits a picture inside max×max px (never enlarging it). */
+const fitFilter = (max: number) => `scale='min(${max},iw)':'min(${max},ih)':force_original_aspect_ratio=decrease`
+
+/** A "?max=" size limit in px (64-8000), or undefined for none. */
+function sizeLimit(value: string | null): number | undefined {
+	if (value === null || value === '') return undefined
+	const n = Math.round(Number(value))
+	if (!Number.isFinite(n) || n < 64 || n > 8000) throw new HttpError(400, '"max" must be a size in px from 64 to 8000')
+	return n
+}
+
+const SHEET_FRAMES = 6
+const SHEET_TILE_W = 640
+
+/**
+ * A video's contact sheet: SHEET_FRAMES frames at evenly spaced times, 3×2 tiles SHEET_TILE_W px
+ * wide (each stamped with its time when a font is found), as a JPEG. For handing a video to a
+ * model, which can't take the video itself.
+ */
+async function contactSheet(item: Item): Promise<{ bytes: Uint8Array; times: number[] }> {
+	if (item.kind !== 'video') throw new HttpError(400, 'only videos have a contact sheet')
+	if (!HAS_FFMPEG) throw new HttpError(501, 'contact sheets need ffmpeg on the canvas server')
+	if (!item.src.startsWith('/media/')) throw new HttpError(400, 'this item\'s media is not stored on the canvas server')
+	const input = join(MEDIA_DIR, basename(item.src))
+	const times = sheetTimes(item.duration)
+	const font = await findMarkFont()
+	const output = join(DATA_DIR, `.sheet-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`)
+	const tiles = times.map((t, i) => {
+		const label = font
+			? `,drawtext=fontfile='${font.replace(/'/g, '')}':text='${t.toFixed(1)} s':fontsize=22:fontcolor=white:box=1:boxcolor=0x000000AA:boxborderw=6:x=10:y=h-th-12`
+			: ''
+		return `[${i}:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=${SHEET_TILE_W}:-2,setsar=1${label}[t${i}]`
+	})
+	const filter = `${tiles.join(';')};[t0][t1][t2]hstack=3[r0];[t3][t4][t5]hstack=3[r1];[r0][r1]vstack=2`
+	try {
+		await run([
+			'ffmpeg', '-y', '-v', 'error',
+			...times.flatMap((t) => ['-ss', String(t), '-i', input]),
+			'-filter_complex', filter, '-frames:v', '1', '-q:v', '4', output,
+		])
+		return { bytes: new Uint8Array(await Bun.file(output).arrayBuffer()), times }
+	} finally {
+		await rm(output, { force: true })
+	}
+}
+
+/** The times (seconds) a contact sheet shows: the middles of SHEET_FRAMES equal parts of the video. */
+function sheetTimes(duration: number | undefined): number[] {
+	const d = duration && duration > 0 ? duration : 0
+	return Array.from({ length: SHEET_FRAMES }, (_, i) => Math.round(((d * (i + 0.5)) / SHEET_FRAMES) * 100) / 100)
+}
+
+/** A stored image as image content for an agent: as it is, or scaled to fit `max` px when it's bigger. */
+async function imageForAgent(item: Item, src: string, max: number): Promise<{ data: Uint8Array; mimeType: string }> {
+	const path = join(MEDIA_DIR, basename(src))
+	const file = Bun.file(path)
+	if (!(await file.exists())) throw new HttpError(404, 'the image file is missing')
+	const big = src === item.src && Math.max(item.width, item.height) > max
+	if (!big || !HAS_FFMPEG) return { data: new Uint8Array(await file.arrayBuffer()), mimeType: file.type.split(';')[0] || 'image/webp' }
+	const png = extname(path).toLowerCase() === '.png'
+	const output = join(DATA_DIR, `.fit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${png ? 'png' : 'jpg'}`)
+	try {
+		await run(['ffmpeg', '-y', '-v', 'error', '-i', path, '-frames:v', '1', '-vf', fitFilter(max), ...(png ? [] : ['-q:v', '3']), output])
+		return { data: new Uint8Array(await Bun.file(output).arrayBuffer()), mimeType: png ? 'image/png' : 'image/jpeg' }
+	} finally {
 		await rm(output, { force: true })
 	}
 }
@@ -1658,9 +1788,17 @@ const API_INDEX = {
 			'Optional "sessionTitle" (your OpenCode session\'s title): your frame\'s title until a browser paired with your ' +
 			'OpenCode reports the session\'s own (see "frames"). Multipart uploads may also send "createdAt" ' +
 			'(ms; orders the item in its group), and "sourceItemId" + "sourceTime" (a frame extracted from that video item, ' +
-			'at that many seconds; kept on the item). Creates the session if needed. Iterating on something already ' +
+			'at that many seconds; kept on the item), and "addedBy" (browsers: a person dragged or pasted it onto the frame; ' +
+			'the item gets "origin": "person" and "addedBy", see "person items"). Creates the session if needed. Iterating on something already ' +
 			'posted? Replace it with PATCH /api/items/:itemId instead (post again only to show both versions side by side).',
 		'GET /api/items/:itemId': 'One item',
+		'GET /api/items/:itemId/sheet':
+			'A video\'s contact sheet: 6 frames at evenly spaced times (the middles of 6 equal parts), 3×2 tiles 640 px wide, ' +
+			'each stamped with its time, as a JPEG (the times, in seconds, also in the x-sheet-times header)',
+		'POST /api/canvases/:cid/sessions/:sessionId/delivered':
+			'Record what the session has of the person items in its frame (see "person items"): {"itemIds": [...], "messageId"?, ' +
+			'"via": "submit"|"prompt"|"tool"} sets "delivered" on them (as of their current file); {"clear": true} clears it on ' +
+			'all of the session\'s items (it compacted). Returns {"items"}: those changed',
 		'PATCH /api/items/:itemId':
 			'Change an item\'s "group", "title", "caption" (null clears) or "name", and/or replace its file in place: send a ' +
 			'new file exactly as when posting (JSON {"path"}, {"url"} or {"html", "width", "height"}, or multipart "file" with ' +
@@ -1708,7 +1846,8 @@ const API_INDEX = {
 			'they\'re consumed like a read with ?sessionId=. Body: {"ids": [...], "sessionId"}',
 		'GET /api/canvases/:cid/annotations/:id/image':
 			'The annotated image (or a video\'s poster frame) as a PNG with the annotation\'s pencil strokes drawn on it ' +
-			'(a ring round the spot for a text-only note) and its number on that item: look at it to see what was circled',
+			'(a ring round the spot for a text-only note) and its number on that item: look at it to see what was circled. ' +
+			'Videos are marked on their first frame at full size. ?max=<px> scales it to fit that size',
 		'GET /api/canvases/:cid/selection':
 			'What each person on the canvas has selected, resolved: {"users": [{"user", "selection", "items" (full items ' +
 			'with absolute "url"/"thumbUrl"), "sessions" (with "itemCount"), "notes", "missing"}]}. Use this to answer ' +
@@ -1740,6 +1879,14 @@ const API_INDEX = {
 		'Every item has a "name": its file name. On upload it is the original file name (the path\'s basename, the ' +
 		'URL\'s last path segment or the multipart file name); inline {"html"} items get "<title or id>.html". Send ' +
 		'"name" to choose it yourself.',
+	'person items':
+		'People can drag or paste media of their own (images, videos, HTML files) onto a session\'s frame: those items have ' +
+		'"origin": "person" and "addedBy" (who). They are references people give the session, not its output: don\'t ' +
+		'replace them (PATCH with a file makes an item the session\'s own, clearing origin). "delivered": {"sessionId", "src", ' +
+		'"at", "messageId", "via"} says when the session last got its media; it no longer counts when the item\'s src or ' +
+		'session differ, or the session compacted since. The canvas sends the ones the session doesn\'t have along with ' +
+		'Submit annotations and prompts from the frame; an agent viewing one (MCP get_item with includeImage, list_annotations) ' +
+		'counts too.',
 	html:
 		'HTML items are for diagrams, charts, SVG drawings and annotated explanations. Send {"html", "width", ' +
 		'"height"} (or a .html/.htm file by path, url or multipart, with "width"/"height" as fields). width/height ' +
@@ -2038,7 +2185,11 @@ async function handle(req: Request): Promise<Response> {
 	}
 
 	m = /^\/api\/canvases\/([^/]+)\/annotations\/([^/]+)\/image$/.exec(p)
-	if (m && method === 'GET') return markedImage(decodeURIComponent(m[1]), decodeURIComponent(m[2]))
+	if (m && method === 'GET') {
+		const max = sizeLimit(url.searchParams.get('max'))
+		const bytes = await markedImageBytes(decodeURIComponent(m[1]), decodeURIComponent(m[2]), { max })
+		return new Response(bytes as Uint8Array<ArrayBuffer>, { headers: { 'content-type': 'image/png', 'cache-control': 'no-store' } })
+	}
 
 	m = /^\/api\/canvases\/([^/]+)\/(presence|notes|selection)$/.exec(p)
 	if (m && method === 'GET') {
@@ -2063,6 +2214,15 @@ async function handle(req: Request): Promise<Response> {
 		const sessionId = decodeURIComponent(m[2])
 		links.unlink(canvas.id, sessionId)
 		return json({ ok: true })
+	}
+
+	// What a session has of the person items in its frame (see markDelivered).
+	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/delivered$/.exec(p)
+	if (m && method === 'POST') {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		const session = getSession(canvas.id, decodeURIComponent(m[2]))
+		const changed = markDelivered(canvas.id, session.id, deliveryChange((await req.json().catch(() => null)) as Record<string, unknown> | null))
+		return json({ items: changed })
 	}
 
 	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/status$/.exec(p)
@@ -2140,6 +2300,7 @@ async function handle(req: Request): Promise<Response> {
 				createdAt: timeField(form.get('createdAt')),
 				sessionTitle: textField(form.get('sessionTitle'))?.slice(0, TITLE_MAX),
 				...sourceFields(canvasId, form.get('sourceItemId'), form.get('sourceTime')),
+				addedBy: textField(form.get('addedBy'))?.slice(0, ADDED_BY_MAX),
 			}
 			const source = file ? { data: file, filename: file instanceof File ? file.name : undefined } : null
 			if (page) {
@@ -2149,6 +2310,12 @@ async function handle(req: Request): Promise<Response> {
 			return json(await addItem(canvasId, sessionId, source!, meta), 201)
 		}
 		return json(await addItemFromJson(canvasId, sessionId, (await req.json().catch(() => null)) as ItemJson | null), 201)
+	}
+
+	m = /^\/api\/items\/([^/]+)\/sheet$/.exec(p)
+	if (m && method === 'GET') {
+		const { bytes, times } = await contactSheet(getItem(decodeURIComponent(m[1])))
+		return new Response(bytes as Uint8Array<ArrayBuffer>, { headers: { 'content-type': 'image/jpeg', 'cache-control': 'no-store', 'x-sheet-times': times.join(',') } })
 	}
 
 	m = /^\/api\/items\/([^/]+)$/.exec(p)
@@ -2222,6 +2389,9 @@ const mcp = createCanvasMcp({
 	restore,
 	placeNote: (canvasId, sessionId, body) => attention.place(getCanvas(canvasId).id, sessionId, body),
 	mediaFile: (src) => Bun.file(join(MEDIA_DIR, basename(src))),
+	markedImage: (canvasId, annotationId, max) => markedImageBytes(canvasId, annotationId, { max }),
+	imageForAgent: (item, src, max) => imageForAgent(item, src, max),
+	markDelivered: (canvasId, sessionId, itemIds) => markDelivered(canvasId, sessionId, { itemIds, via: 'tool' }),
 	mediaOrigin: MEDIA_ORIGIN,
 	webBase: WEB_BASE,
 })

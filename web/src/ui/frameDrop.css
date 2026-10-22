@@ -1,0 +1,35 @@
+/* Dragging files over the canvas (multiplayer/FrameDrop.ts): the frame they'd go into, and what dropping does. */
+.frame-drop {
+	position: absolute;
+	left: 0;
+	top: 0;
+	pointer-events: none;
+	z-index: 4;
+	border: 2px solid var(--session);
+	border-radius: 14px;
+	background: color-mix(in srgb, var(--session) 8%, transparent);
+	box-shadow: 0 0 0 4px color-mix(in srgb, var(--session) 18%, transparent);
+	will-change: transform;
+}
+
+.frame-drop-label {
+	position: absolute;
+	left: 0;
+	top: 0;
+	pointer-events: none;
+	z-index: 5;
+	padding: 5px 10px;
+	border-radius: 8px;
+	background: var(--panel);
+	border: 1px solid var(--border-strong);
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+	color: var(--text);
+	font-size: 12px;
+	font-weight: 500;
+	white-space: nowrap;
+	will-change: transform;
+}
+
+.frame-drop-label.none {
+	color: var(--text-dim);
+}

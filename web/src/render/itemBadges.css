@@ -1,0 +1,54 @@
+/* Who added a person item, and whether its session has it (render/ItemBadges.ts) */
+.item-badges {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	overflow: hidden;
+}
+
+.item-badge {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	padding: 2px 7px 2px 6px;
+	border-radius: 999px;
+	background: rgb(var(--canvas-rgb) / 0.72);
+	border: 1px solid var(--border);
+	backdrop-filter: blur(6px);
+	color: var(--text-soft);
+	font-size: 11px;
+	font-weight: 500;
+	line-height: 1.3;
+	white-space: nowrap;
+	overflow: hidden;
+	/* for its tooltip; presses on it don't reach the canvas */
+	pointer-events: auto;
+	will-change: transform;
+}
+
+.item-badge .who {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* not sent yet: a hollow ring */
+.item-badge .mark {
+	flex: none;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	box-shadow: inset 0 0 0 1.5px var(--text-muted);
+}
+
+/* the session has it: a filled dot */
+.item-badge.sent .mark {
+	background: var(--text-soft);
+	box-shadow: none;
+}
+
+.item-badge.sent {
+	color: var(--text-muted);
+}

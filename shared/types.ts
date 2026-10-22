@@ -118,6 +118,30 @@ export interface Item {
 	snapshotAt?: number
 	/** When it was posted, or its file last replaced (PATCH with a new file): orders it in its group, newest first */
 	createdAt: number
+	/**
+	 * 'person': someone dragged or pasted it onto the frame (a reference for the session, not its
+	 * output). Absent: the session posted it (MCP/API) or it was seeded from its output.
+	 */
+	origin?: 'person'
+	/** person items: who added it (their name on the canvas) */
+	addedBy?: string
+	/**
+	 * person items: when its media was last given to its session. It no longer counts (it's sent
+	 * again) when src or sessionId differ from the item's, or the session compacted since `at`.
+	 */
+	delivered?: ItemDelivery
+}
+
+/** How a person-added item reached its session (see Item.delivered). */
+export interface ItemDelivery {
+	sessionId: string
+	/** the item's src when it was sent: a replaced file is new to the session */
+	src: string
+	at: number
+	/** the OpenCode message it went with */
+	messageId?: string
+	/** submit: with Submit annotations; prompt: with a prompt from the frame; tool: the agent looked at it (get_item, list_annotations) */
+	via: 'submit' | 'prompt' | 'tool'
 }
 
 /** A session as the API presents it to agents: its groups, in order, each with its items. */
@@ -210,6 +234,9 @@ export interface AnnotationView {
 		/** a frame extracted from a video: the video item and the time in it (seconds) */
 		sourceItemId?: string
 		sourceTime?: number
+		/** 'person': someone dragged it onto the frame (a reference: don't replace it), see Item.origin */
+		origin?: 'person'
+		addedBy?: string
 	}
 	/** where its note sits (a text-only note's spot, else beside the drawing): normalized (0..1) and in pixels of the original image (px = x × width) */
 	anchor: { x: number; y: number; px: number; py: number }

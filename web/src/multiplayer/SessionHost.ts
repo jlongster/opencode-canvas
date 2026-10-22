@@ -32,7 +32,7 @@ import { askCount, askText, listAsks, parseForm, parsePermission, type Ask } fro
 import { onOpenCodeEvents, type OpenCodeEvent } from '../opencode/events'
 import { errorText, ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { react, type Atom } from '../state/signals'
-import { reportStatus } from '../sync/client'
+import { markDelivered, reportStatus } from '../sync/client'
 import type { AskingInfo, PresenceState, SubagentInfo } from './Presence'
 
 const NAME_MAX = 40
@@ -300,6 +300,11 @@ class SessionRuntime {
 		switch (ev.type) {
 			case 'session.execution.started':
 				return this.setBusy(true)
+			// What it was given before is gone from its context: the media people added to its frame
+			// goes again with the next prompt (see Item.delivered).
+			case 'session.compaction.ended':
+				void markDelivered(this.canvasId, this.record.sessionId, { clear: true }).catch(() => {})
+				return
 			case 'session.status': {
 				const status = (data.status as { type?: unknown } | undefined)?.type
 				if (status === 'busy' || status === 'retry') this.setBusy(true)

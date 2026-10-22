@@ -323,12 +323,26 @@ curl -s -X POST $API/canvases/$CID/sessions/$SID/notes -H 'content-type: applica
 ## Reading the user's annotations
 
 **Feedback usually arrives as a prompt from the canvas**: the user presses "Submit annotations" on
-your frame and you get one message starting "Feedback from the canvas on your posted items",
-listing each annotated item (title, id, size), each note (or "(drawing, no text)") with the
-drawing's bounding box in original-image pixels, and the marked images attached in order. Update
-those items in place with `update_item` (same ids) unless a note explicitly asks for something new.
-Submitted annotations are already consumed; `list_annotations` (below) still returns ones the user
-hasn't submitted yet.
+your frame and you get one message starting "Feedback from the canvas", listing each annotated
+item (title, id, size), each note (or "(drawing, no text)") with the drawing's bounding box in
+original-image pixels, and the images attached in order (the text says which attachment is
+which: "Attachment N"; marked images are scaled to fit 1600 px, coordinates stay in the
+original's pixels). Update the items you posted in place with `update_item` (same ids) unless a
+note explicitly asks for something new. Submitted annotations are already consumed;
+`list_annotations` (below) still returns ones the user hasn't submitted yet.
+
+### Media people drag onto your frame
+
+People can drag or paste their own images, videos and HTML files onto your frame. Those items
+have `"origin": "person"` and `"addedBy"` (who added it): **references for you, not your
+output. Don't `update_item` them**; post what you make from them as new items. The canvas hands
+them to you once: with the next Submit annotations ("added by Kit (dragged onto your frame), not
+posted by you", with "Attachment N: the original, scaled to …" before the marked images; a video
+comes as a contact sheet of 6 frames plus its URL) or the next prompt from the frame (a
+"[Canvas items attached …]" block after the message). Items already sent say "you already have
+its original"; `get_item {itemId, includeImage: true, fullSize: true}` looks again. After your
+session compacts, they're sent again with the next prompt. `delivered` on an item says when your
+session got it.
 
 The user gives feedback by **drawing on items** with the pencil: freehand strokes (circling,
 underlining, crossing out, arrows) on an image (or video or HTML item), each with an optional
@@ -345,8 +359,10 @@ items), or `GET $API/canvases/$CID/annotations?sessionId=$SID` (or `?itemId=`). 
 - `anchor`: where the note sits (beside the drawing, or a text-only note's spot): `x`/`y`
   normalized to the item (0..1) and `px`/`py` in pixels.
 
-**Look at `markedImageUrl`** (MCP results; over HTTP `GET $API/canvases/$CID/annotations/<id>/image`):
-the image (or a video's poster frame) with the strokes drawn on it in the author's colour and the
+**Look at the marked images**: `list_annotations` returns the first 8 as image content (each
+after a line naming its annotation; `includeImages: false` leaves them out), and `markedImageUrl`
+(over HTTP `GET $API/canvases/$CID/annotations/<id>/image`, `?max=<px>` to scale it) is the same at
+full size: the image (or a video's first frame) with the strokes drawn on it in the author's colour and the
 annotation's number beside them (a ring round the spot for a text-only note). Fetch it to see what
 was circled before acting on the text; the strokes and bbox tell you where, precisely.
 
@@ -377,8 +393,8 @@ your frame until a paired browser reports your session).
   metadata (`null` clears title, caption, group).
 - `delete_item`, `restore`: soft-delete, undo deletes (and bring back consumed annotations with `annotationIds`).
 - `list_canvases`, `create_canvas`, `get_canvas` (sessions, groups, items, notes, annotations), `find_items`, `list_notes`.
-- `list_annotations {canvas, sessionId?, itemId?, keep?}`: the user's pencil drawings (strokes and bbox in image pixels, optional text, `markedImageUrl` to look at); reading consumes them unless `keep: true` (see above).
-- `get_item {itemId, includeImage?, fullSize?}`: see an image or a page's screenshot (or an HTML item's source).
+- `list_annotations {canvas, sessionId?, itemId?, keep?, includeImages?}`: the user's pencil drawings (strokes and bbox in image pixels, optional text, the marked images as image content and `markedImageUrl`); reading consumes them unless `keep: true` (see above).
+- `get_item {itemId, includeImage?, fullSize?}`: see an image or a page's screenshot (fullSize: the original, scaled to fit 2000 px), or an HTML item's source. Items show `origin: "person"` and `addedBy` when someone dragged them onto the frame (see "Media people drag onto your frame").
 - `get_selection`: what people on the canvas have selected ("look at this"); `get_presence`: who's there.
 
 Users can also prompt your session from its frame on the canvas (its prompt button, or C over

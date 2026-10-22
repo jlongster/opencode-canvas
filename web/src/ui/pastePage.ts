@@ -43,7 +43,7 @@ function editable(el: EventTarget | Element | null): boolean {
 }
 
 /** Selects the new item and brings it into view once it's on the canvas (it arrives with the live event). */
-function showWhenLaidOut(editor: Editor, id: string, tries = 40) {
+export function showWhenLaidOut(editor: Editor, id: string, tries = 40) {
 	if (editor.layout.get().items.has(id)) {
 		editor.select([id])
 		editor.zoomToItem(id)

@@ -1,5 +1,5 @@
 import * as Y from 'yjs'
-import type { AnnotationView } from '../../../shared/types'
+import type { AnnotationView, Item } from '../../../shared/types'
 import { sessionColor } from '../../../shared/sessionColor'
 import { url as withBase } from '../base'
 import type { Editor } from '../editor/Editor'
@@ -7,7 +7,8 @@ import type { Box } from '../editor/geometry'
 import { LAYOUT, type SectionLayout } from '../editor/layout'
 import { ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { react } from '../state/signals'
-import { consumeAnnotations, peekAnnotations } from '../sync/client'
+import { consumeAnnotations, markDelivered, peekAnnotations } from '../sync/client'
+import { attachable, FILES_MAX, inContext, itemAttachment, lastCompaction, MAX_EDGE, toDataUrl } from './itemAttachments'
 import { findSession, type SessionControl } from './SessionControl'
 import type { Presence } from './Presence'
 import '../ui/submitAnnotations.css'
@@ -17,6 +18,8 @@ const MARGIN = 10
 /** Page px from the top of a frame's header to the middle of its title line (see .section-label: 4px padding, 48px line). */
 const TITLE_MID = 28
 const HEADER = `Feedback from the canvas on your posted items. By default, update the annotated items in place with update_item (keep their ids); only post new items if a note explicitly asks for something new.`
+/** the header when any annotated item was added by a person (a reference, not the session's output) */
+const HEADER_PERSON = `Feedback from the canvas. Items you posted: update them in place with update_item (keep their ids) unless a note asks for something new. Items marked "added by": references people gave you — don't replace them; post what you make as new items.`
 
 /** Where a session's prompt goes from this browser: a paired OpenCode that has it (null: none does). */
 type Route = { state: 'looking' } | { state: 'found'; serverKey: string } | { state: 'none' }
@@ -158,7 +161,10 @@ export class SubmitAnnotations {
 	private render(sessionId: string, p: Pill) {
 		const route = this.routes.get(sessionId) ?? { state: 'looking' }
 		const n = p.ids.length
-		const text = p.sending ? 'Sending…' : p.error ? `Retry submit (${n})` : `Submit annotations (${n})`
+		const fresh = this.freshItems(p.ids)
+		const k = fresh.filter(attachable).length
+		const plus = k ? ` · +${k} image${k === 1 ? '' : 's'}` : ''
+		const text = p.sending ? 'Sending…' : p.error ? `Retry submit (${n})${plus}` : `Submit annotations (${n})${plus}`
 		const disabled = p.sending || route.state !== 'found'
 		const title = p.sending
 			? 'Sending the annotations to this session…'
@@ -168,7 +174,8 @@ export class SubmitAnnotations {
 					? 'Looking for the OpenCode that has this session…'
 					: p.error
 						? `Couldn't send: ${p.error}. Click to try again.`
-						: `Send ${n === 1 ? 'this annotation' : `these ${n} annotations`} to the session as a prompt, with the marked images`
+						: `Send${n === 1 ? 's this annotation' : `s these ${n} annotations`} with their marked images` +
+							(k ? `, plus the originals of ${k === 1 ? '1 image' : `${k} images`} the session hasn't seen yet (added by ${[...new Set(fresh.map((i) => i.addedBy || 'someone'))].join(', ')})` : '')
 		const key = `${text}|${disabled}|${title}|${!!p.error}`
 		if (key === p.shown) return
 		p.shown = key
@@ -179,6 +186,21 @@ export class SubmitAnnotations {
 		p.el.title = title
 		p.el.classList.toggle('error', !!p.error && !p.sending)
 		p.el.classList.toggle('sending', p.sending)
+	}
+
+	/** The person items these annotations are on that the session doesn't have yet. */
+	private freshItems(annotationIds: string[]): Item[] {
+		const items = this.editor.items.peek()
+		const seen = new Set<string>()
+		const fresh: Item[] = []
+		for (const id of annotationIds) {
+			const itemId = String(this.map.get(id)?.get('itemId') ?? '')
+			const item = items[itemId]
+			if (!item || seen.has(itemId)) continue
+			seen.add(itemId)
+			if (!inContext(item)) fresh.push(item)
+		}
+		return fresh
 	}
 
 	/** A frame's title text (see SectionLabels in Renderer.ts). */
@@ -254,18 +276,31 @@ export class SubmitAnnotations {
 			const all = await peekAnnotations(this.canvasId, sessionId)
 			const views = all.filter((a) => ids.includes(a.id))
 			if (!views.length) throw new Error('those annotations are gone')
-			const { text, files } = await this.compose(views)
-			await withServer(route.serverKey, async (c) => {
+			const compactedAt = await lastCompaction(route.serverKey, sessionId)
+			const { text, files, fresh } = await this.compose(views, compactedAt)
+			const messageId = await withServer(route.serverKey, async (c) => {
 				const active = await c.session.active({ signal: AbortSignal.timeout(10_000) }).catch(() => ({}))
 				const busy = sessionId in active
-				await c.session.prompt({
+				const res = await c.session.prompt({
 					sessionID: sessionId,
 					text,
 					files,
-					metadata: { source: 'canvas', kind: 'annotations', canvasId: this.canvasId, annotationIds: views.map((v) => v.id) },
+					metadata: {
+						source: 'canvas',
+						kind: 'annotations',
+						canvasId: this.canvasId,
+						annotationIds: views.map((v) => v.id),
+						...(fresh.length ? { canvasItems: fresh.map((i) => ({ id: i.id, src: i.src })) } : {}),
+					},
 					...(busy ? { delivery: 'steer' as const } : {}),
 				})
+				return res.id
 			})
+			if (fresh.length) {
+				await markDelivered(this.canvasId, sessionId, { itemIds: fresh.map((i) => i.id), messageId, via: 'submit' }).catch((e: Error) =>
+					console.warn(`couldn't record what was sent: ${e.message}`),
+				)
+			}
 			await consumeAnnotations(this.canvasId, views.map((v) => v.id), sessionId).catch((e: Error) => {
 				this.editor.deletions.notify(`Sent, but couldn't clear them from the canvas: ${e.message}`)
 				throw null
@@ -284,47 +319,75 @@ export class SubmitAnnotations {
 		}
 	}
 
-	/** The prompt: the header, then each item's annotations (note, where, marked image attached in order). */
-	private async compose(views: AnnotationView[]) {
+	/**
+	 * The prompt: the header, then each item's annotations (note, where, marked image attached in
+	 * order). Items people added that the session doesn't have yet (`fresh`) go too: the original
+	 * (scaled to fit MAX_EDGE; a video's contact sheet) before its marked images.
+	 */
+	private async compose(views: AnnotationView[], compactedAt: number) {
 		const from = this.presence.me.peek().name.trim()
-		const lines = [HEADER, '', `From ${from || 'someone'} on the canvas "${this.canvasTitle()}" (${withBase(`/c/${this.canvasId}`)}).`]
-		const files: { uri: string; name: string }[] = []
+		const person = views.some((v) => v.item.origin === 'person')
+		const lines = [person ? HEADER_PERSON : HEADER, '', `From ${from || 'someone'} on the canvas "${this.canvasTitle()}" (${withBase(`/c/${this.canvasId}`)}).`]
+		const files: { uri: string; name: string; description?: string }[] = []
+		const fresh: Item[] = []
+		const items = this.editor.items.peek()
 		const byItem = new Map<string, AnnotationView[]>()
 		for (const v of views) byItem.set(v.item.id, [...(byItem.get(v.item.id) ?? []), v])
 		for (const list of byItem.values()) {
 			const item = list[0].item
 			const html = item.kind === 'html'
-			lines.push('', `## ${item.title || item.name} (item ${item.id}, ${item.kind}, ${item.width}×${item.height}${html ? ' CSS px' : ' px'})`)
+			const added = item.origin === 'person' ? ` — added by ${item.addedBy || 'someone'} (dragged onto your frame), not posted by you` : ''
+			lines.push('', `## ${item.title || item.name} (item ${item.id}, ${item.kind}, ${item.width}×${item.height}${html ? ' CSS px' : ' px'})${added}`)
 			if (html) lines.push(`Canvas link: ${item.link}`)
 			if (item.kind === 'page' && item.pageUrl) lines.push(item.url ? `A screenshot of the web page ${item.pageUrl}` : `A link card for the web page ${item.pageUrl}`)
+			if (item.sourceItemId) lines.push(`A frame of video item ${item.sourceItemId} at ${item.sourceTime ?? 0} s.`)
+			const full = items[item.id]
+			if (item.origin === 'person' && full) {
+				if (inContext(full, compactedAt)) {
+					lines.push(`You already have its original (sent earlier); get_item {itemId: "${item.id}", includeImage: true, fullSize: true} to look again.`)
+				} else if (html) {
+					lines.push(`Call get_item ${item.id} to read its HTML.`)
+					fresh.push(full)
+				} else if (files.length < FILES_MAX) {
+					const att = await itemAttachment(full).catch((e: Error) => (console.warn(e.message), null))
+					if (att) {
+						files.push({ uri: att.uri, name: att.name, description: att.description })
+						fresh.push(full)
+						const n = files.length
+						if (att.sheetTimes) {
+							lines.push(
+								`Attachment ${n}: a contact sheet of 6 frames at t=${att.sheetTimes.join(', ')} s (left to right, top row first). ` +
+									`Marks are drawn on its first frame. The video: ${item.url ?? ''} (curl or ffmpeg it for more).`,
+							)
+						} else if (att.width !== item.width) {
+							lines.push(`Attachment ${n}: the original, scaled to ${att.width}×${att.height} (×${Math.round((att.width / item.width) * 100) / 100}). Coordinates below are in the original's pixels.`)
+						} else lines.push(`Attachment ${n}: the original (${att.width}×${att.height}).`)
+					}
+				} else lines.push(`Its original isn't attached (too many files): get_item {itemId: "${item.id}", includeImage: true, fullSize: true} to see it.`)
+			}
 			for (const [i, v] of list.entries()) {
 				const note = v.text.trim() ? `"${v.text.trim()}"` : '(drawing, no text)'
 				const where = v.bbox
 					? `drawing's bounding box x=${v.bbox.x}, y=${v.bbox.y}, ${v.bbox.width}×${v.bbox.height}${html ? ' in page pixels' : ' px in the original image'}`
 					: `a note on the spot x=${v.anchor.px}, y=${v.anchor.py}${html ? ' in page pixels' : ' px in the original image'}`
 				let image = ''
-				if (!html) {
-					const uri = await dataUrl(withBase(`/api/canvases/${encodeURIComponent(this.canvasId)}/annotations/${encodeURIComponent(v.id)}/image`)).catch(() => null)
+				if (!html && files.length < FILES_MAX) {
+					const src = withBase(`/api/canvases/${encodeURIComponent(this.canvasId)}/annotations/${encodeURIComponent(v.id)}/image?max=${MAX_EDGE}`)
+					const uri = await dataUrl(src).catch(() => null)
 					if (uri) {
-						files.push({ uri, name: `annotation-${files.length + 1}.png` })
-						image = ` — marked image ${files.length} attached`
+						files.push({ uri, name: `canvas-${item.id}-annotation-${i + 1}.png`, description: `Annotation ${i + 1} drawn on canvas item ${item.id}` })
+						image = person ? ` — attachment ${files.length} shows it drawn on the image` : ` — marked image ${files.length} attached`
 					}
-				}
+				} else if (!html) image = ' — marked image not attached (too many files)'
 				lines.push(`${i + 1}. ${note} — ${where}${image}`)
 			}
 		}
-		return { text: lines.join('\n'), files }
+		return { text: lines.join('\n'), files, fresh }
 	}
 }
 
 async function dataUrl(src: string): Promise<string> {
 	const res = await fetch(src)
 	if (!res.ok) throw new Error(`HTTP ${res.status}`)
-	const blob = await res.blob()
-	return new Promise((resolve, reject) => {
-		const reader = new FileReader()
-		reader.onload = () => resolve(String(reader.result))
-		reader.onerror = () => reject(reader.error)
-		reader.readAsDataURL(blob)
-	})
+	return toDataUrl(await res.blob())
 }

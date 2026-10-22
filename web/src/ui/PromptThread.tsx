@@ -3,6 +3,8 @@ import { sessionColor } from '../../../shared/sessionColor'
 import type { Editor } from '../editor/Editor'
 import { onOpenCodeEvents } from '../opencode/events'
 import type { LastExchange, PromptAttachment, SessionControl, TalkBlock } from '../multiplayer/SessionControl'
+import { pendingItems } from '../multiplayer/itemAttachments'
+import { url as withBase } from '../base'
 import { AskBubbles, AskWaiting, useAsking, useSessionAsks } from './AskBubbles'
 import { placeAtFrame, useFrameAnchor, type FrameAnchor } from './frameAnchor'
 import { markdownToHtml } from './markdown'
@@ -117,6 +119,14 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 	const [size, setSize] = useState<{ w: number; h: number } | null>(null)
 	const [inputLines, setInputLines] = useState(1)
 	const [, setTick] = useState(0)
+	/** media people dragged onto the frame that the session doesn't have yet: goes with the next prompt unless removed here */
+	const frameKey = useValue(
+		() => pendingItems(sessions.editor.items.get(), sessionId).map((i) => `${i.id}:${i.src}`).join(','),
+		[sessions, sessionId],
+	)
+	const frameItems = useMemo(() => pendingItems(sessions.editor.items.peek(), sessionId), [frameKey])
+	const [skipped, setSkipped] = useState<Set<string>>(() => new Set())
+	const included = frameItems.filter((i) => !skipped.has(i.id))
 	/** what its session waits on us to answer (ours only), as last read from OpenCode */
 	const { asks, loading: asksLoading, actions: askActions } = useSessionAsks(sessions, sessionId, owner, asking)
 	const expandedRef = useRef(expanded)
@@ -346,17 +356,18 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 
 	const send = async (queue = false) => {
 		const prompt = text.trim()
-		if ((!prompt && !attachments.length) || sending || !owner) return
+		if ((!prompt && !attachments.length && !included.length) || sending || !owner) return
 		const msg: LocalMessage = { id: `local-${++localIds}`, text: prompt, images: attachments.map((a) => a.dataUrl), status: 'sending', steer: thinking }
 		if (!thinking) staleChat.current = live
 		setLocal((l) => [...l.filter((m) => m.status !== 'failed'), msg])
 		setSending(true)
 		setError(null)
 		try {
-			const { steered } = await sessions.send(sessionId, prompt, attachments, { queue: queue && thinking })
+			const { steered } = await sessions.send(sessionId, prompt, attachments, { queue: queue && thinking, frameItems: included })
 			setLocal((l) => l.map((m) => (m.id === msg.id ? { ...m, status: 'sent', steer: steered } : m)))
 			setText('')
 			setAttachments([])
+			setSkipped(new Set())
 			if (steered) showFlash(queue && thinking ? 'Queued for when it’s done' : 'Steered')
 		} catch (e) {
 			// Kept in the input too, to retry or change.
@@ -443,7 +454,7 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 	/** the ⋯ and × go on the stack's right, or its left with no room there */
 	const ctlSide = left + w + 40 > vw ? 'left' : 'right'
 
-	const hasContent = !!text.trim() || attachments.length > 0
+	const hasContent = !!text.trim() || attachments.length > 0 || included.length > 0
 	const empty = !lastPrompt && !reply && !thinking
 	const ink = readableOn(color)
 	const busyLine = `${stopping ? 'Stopping' : 'Working'} ${mmss(Date.now() - turnStart)}${activity ? ` · ${activity}` : ''}`
@@ -599,6 +610,29 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 								}
 							}}
 						>
+							{included.length > 0 && (
+								<div className="pt-frame-items">
+									<span className="pt-frame-label" title="Added to the frame by people, not sent to the session yet: they go with this prompt">
+										From the frame
+									</span>
+									<div className="pt-atts">
+										{included.map((item) => (
+											<div key={item.id} className="pt-th" title={`${item.name}${item.addedBy ? `, added by ${item.addedBy}` : ''}: goes with this prompt`}>
+												{item.kind === 'html' ? <span className="pt-th-doc">HTML</span> : <img src={withBase(item.thumb)} alt={item.name} />}
+												<button
+													className="pt-th-x"
+													title={`Don’t send ${item.name} with this prompt (it stays on the frame, still to send)`}
+													disabled={sending}
+													onPointerDown={keepFocus}
+													onClick={() => setSkipped((prev) => new Set([...prev, item.id]))}
+												>
+													<XIcon />
+												</button>
+											</div>
+										))}
+									</div>
+								</div>
+							)}
 							{attachments.length > 0 && (
 								<div className="pt-atts">
 									{attachments.map((a) => (

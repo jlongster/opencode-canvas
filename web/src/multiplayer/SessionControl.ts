@@ -1,4 +1,4 @@
-import type { SessionLink } from '../../../shared/types'
+import type { Item, SessionLink } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import type { Vec } from '../editor/geometry'
 import { frameTitleBox } from '../editor/layout'
@@ -7,7 +7,8 @@ import { answerQuestion, dismissQuestion, listAsks, replyPermission, type Ask, t
 import { ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { populateSession } from '../opencode/populate'
 import { atom, computed, react, type Atom } from '../state/signals'
-import { addSessionFrame, linkSession, unlinkSession } from '../sync/client'
+import { addSessionFrame, linkSession, markDelivered, unlinkSession } from '../sync/client'
+import { FILES_MAX, inContext, itemAttachment, itemReference, lastCompaction, type ItemAttachment } from './itemAttachments'
 import type { Peer, Presence } from './Presence'
 import { runsHere, SessionHost, sessionName } from './SessionHost'
 
@@ -43,6 +44,8 @@ export interface TurnInfo {
 }
 
 const PROMPT_MAX = 20_000
+/** what send() puts after the prompt about the frame's items it attached (threadPrompt takes it off again) */
+const ITEMS_BLOCK = '\n\n[Canvas items attached'
 const EXCHANGE_SCAN = 40
 const EXCHANGE_PROMPTS_MAX = 3
 const FIND_SESSION_MS = 8_000
@@ -145,7 +148,7 @@ export class SessionControl {
 	}
 
 	/** The session whose frame (title included) contains a page point, or is nearest within FRAME_REACH screen px of it. */
-	private sessionAt(point: Vec): string | null {
+	sessionAt(point: Vec): string | null {
 		const z = this.editor.getZoom()
 		const reach = FRAME_REACH / z
 		let nearest: { id: string; d: number } | null = null
@@ -158,7 +161,7 @@ export class SessionControl {
 	}
 
 	/** The one session the selection is in (a frame, its items or groups), if it's in one. */
-	private selectedSession(): string | null {
+	selectedSession(): string | null {
 		const items = this.editor.items.peek()
 		const ids = new Set<string>()
 		for (const key of this.editor.selectedIds.peek()) {
@@ -311,10 +314,17 @@ export class SessionControl {
 	 * Prompts the session, straight from this browser; whoever runs it shares the reply. Attached
 	 * images go along as data: URLs (they never touch the canvas server). While the session is
 	 * running, the prompt steers it: OpenCode adds it to the turn in progress (as its TUI does when
-	 * you type while it works); with `queue` it waits for the turn to finish instead. Resolves to
-	 * whether it went to a running session.
+	 * you type while it works); with `queue` it waits for the turn to finish instead. `frameItems`:
+	 * person items in its frame it doesn't have yet (the prompt box's "from the frame" chips), sent
+	 * after the images (see itemAttachments.ts) and recorded as delivered. Resolves to whether it
+	 * went to a running session.
 	 */
-	async send(sessionId: string, text: string, attachments: PromptAttachment[] = [], opts: { queue?: boolean } = {}): Promise<{ steered: boolean }> {
+	async send(
+		sessionId: string,
+		text: string,
+		attachments: PromptAttachment[] = [],
+		opts: { queue?: boolean; frameItems?: Item[] } = {},
+	): Promise<{ steered: boolean }> {
 		const r = this.record(sessionId)
 		if (!r) throw new Error('that session isn\'t linked to OpenCode here')
 		const block = this.talkBlock(r.sessionId)
@@ -322,22 +332,56 @@ export class SessionControl {
 		if (block) throw new Error(`its OpenCode isn't paired in this browser`)
 		const prompt = text.trim()
 		if (prompt.length > PROMPT_MAX) throw new Error(`that's longer than ${PROMPT_MAX} characters`)
-		if (!prompt && !attachments.length) throw new Error('say something or attach an image')
+		if (!prompt && !attachments.length && !opts.frameItems?.length) throw new Error('say something or attach an image')
 		const from = this.presence.me.peek().name.trim().slice(0, 60)
 		const title = this.canvasTitle()
-		const images = attachments.length === 1 ? 'an image' : `${attachments.length} images`
+		const count = attachments.length + (opts.frameItems?.length ?? 0)
+		const images = count === 1 ? 'an image' : `${count} images`
 		const body = prompt || `(sent ${images})`
+		const items = opts.frameItems?.length ? await this.frameFiles(r.serverKey, r.sessionId, opts.frameItems, attachments.length) : null
+		const files = [...attachments.map((a) => ({ uri: a.dataUrl, name: a.name })), ...(items?.files ?? [])]
+		const full = (from ? `${from} (on the canvas "${title}"): ${body}` : body) + (items?.text ?? '')
 		return withServer(r.serverKey, async (c) => {
 			const active = await c.session.active({ signal: AbortSignal.timeout(10_000) }).catch(() => ({}))
-			await c.session.prompt({
+			const res = await c.session.prompt({
 				sessionID: r.sessionId,
-				text: from ? `${from} (on the canvas "${title}"): ${body}` : body,
-				...(attachments.length ? { files: attachments.map((a) => ({ uri: a.dataUrl, name: a.name })) } : {}),
-				metadata: { source: 'canvas', canvasId: this.canvasId, ...(from ? { from } : {}) },
+				text: full,
+				...(files.length ? { files } : {}),
+				metadata: {
+					source: 'canvas',
+					canvasId: this.canvasId,
+					...(from ? { from } : {}),
+					...(items?.sent.length ? { canvasItems: items.sent.map((i) => ({ id: i.id, src: i.src })) } : {}),
+				},
 				delivery: opts.queue ? 'queue' : 'steer',
 			})
+			if (items?.sent.length) {
+				void markDelivered(this.canvasId, r.sessionId, { itemIds: items.sent.map((i) => i.id), messageId: res.id, via: 'prompt' }).catch((e: Error) =>
+					console.warn(`couldn't record what was sent: ${e.message}`),
+				)
+			}
 			return { steered: r.sessionId in active }
 		})
+	}
+
+	/** The frame's items a prompt takes along (those the session still lacks): their files, and the text that says which is which. */
+	private async frameFiles(serverKey: string, sessionId: string, frameItems: Item[], before: number) {
+		const compactedAt = await lastCompaction(serverKey, sessionId)
+		const current = this.editor.items.peek()
+		const wanted = frameItems.map((i) => current[i.id] ?? i).filter((i) => i.sessionId === sessionId && !inContext(i, compactedAt))
+		const files: { uri: string; name: string; description: string }[] = []
+		const lines: string[] = []
+		const sent: Item[] = []
+		for (const item of wanted) {
+			let att: ItemAttachment | null = null
+			if (item.kind !== 'html' && before + files.length < FILES_MAX) att = await itemAttachment(item).catch((e: Error) => (console.warn(e.message), null))
+			if (att) files.push({ uri: att.uri, name: att.name, description: att.description })
+			lines.push(`- ${itemReference(item, att, att ? before + files.length : null)}`)
+			if (att || item.kind === 'html') sent.push(item)
+		}
+		if (!lines.length) return null
+		const text = `${ITEMS_BLOCK} — added to your frame by people, not posted by you: references to work from, don't replace them with update_item]\n${lines.join('\n')}`
+		return { files, text, sent }
 	}
 
 	/**
@@ -476,19 +520,22 @@ interface RawMessage {
 	text?: string
 	time?: { created?: number; completed?: number }
 	metadata?: Record<string, unknown>
-	files?: { data?: string; mime?: string; source?: { type?: string; uri?: string } }[]
+	files?: { name?: string; data?: string; mime?: string; source?: { type?: string; uri?: string } }[]
 	content?: { type: string; text?: string }[]
 }
 
 /** A user message as the thread shows it: without what send() put round it, and its images as data: URLs. */
 function threadPrompt(m: RawMessage): ThreadPrompt {
 	let text = m.text ?? ''
+	const block = m.metadata?.source === 'canvas' ? text.indexOf(ITEMS_BLOCK) : -1
+	if (block >= 0) text = text.slice(0, block)
 	const from = m.metadata?.source === 'canvas' && typeof m.metadata.from === 'string' ? m.metadata.from : ''
 	if (from && text.startsWith(`${from} (on the canvas "`)) {
 		const end = text.indexOf('"): ', from.length)
 		if (end >= 0) text = text.slice(end + 4)
 	}
 	const images = (m.files ?? [])
+		.filter((f) => !f.name?.startsWith('canvas-'))
 		.map((f) => {
 			const uri = f.source?.type === 'uri' ? (f.source.uri ?? '') : ''
 			if (/^data:image\//.test(uri)) return uri

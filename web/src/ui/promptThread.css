@@ -356,6 +356,30 @@ img.pt-th.sm {
 	margin: 4px 0 8px;
 }
 
+/* Media people dragged onto the frame that the session hasn't had yet: goes with this prompt. */
+.pt-frame-items {
+	margin-top: 4px;
+}
+
+.pt-frame-label {
+	font-size: 11px;
+	color: var(--text-dim);
+}
+
+.pt-frame-items .pt-atts {
+	margin-top: 3px;
+}
+
+.pt-th-doc {
+	display: grid;
+	place-items: center;
+	width: 100%;
+	height: 100%;
+	font-size: 9px;
+	font-weight: 600;
+	color: var(--text-muted);
+}
+
 .pt-ta {
 	position: relative;
 }

@@ -9,6 +9,7 @@ import { VideoPool } from './VideoPool'
 import { EXTRACT_ICON, VideoControls } from './VideoControls'
 import { LinkHover, loadHtml, makeNonce, parseLinkMessage, withLinkReporter, type FrameTransform } from './HtmlLinks'
 import { EXTERNAL_ICON, PageBadges, pageDomain } from './PageBadges'
+import { ItemBadges } from './ItemBadges'
 import { linkCardUrl } from './linkCard'
 import { url as withBase } from '../base'
 import { sessionColor } from '../../../shared/sessionColor'
@@ -122,6 +123,7 @@ export class Renderer {
 	private linkHover: LinkHover
 	private openButton: HtmlOpenButton
 	private pageBadges: PageBadges
+	private itemBadges: ItemBadges
 
 	/** the texture each item was last drawn with, by item id (see pickTexture) */
 	private drawnTextures = new Map<string, string>()
@@ -253,6 +255,7 @@ export class Renderer {
 		this.titles = new ItemTitles(overlay)
 		this.videoControls = new VideoControls(overlay, this.videos, editor, !!options.readOnly)
 		this.pageBadges = new PageBadges(overlay, (item) => openPage(item))
+		this.itemBadges = new ItemBadges(overlay)
 		// HTML items open in the side drawer; pages open the real page in a new tab.
 		const open = (id: string) => {
 			const item = editor.items.peek()[id]
@@ -566,6 +569,7 @@ export class Renderer {
 		this.titles.update(items, this.displayedItems, cull, editor)
 		this.videoControls.update(items, this.displayedItems, viewBounds)
 		this.pageBadges.update(items, this.displayedItems, viewBounds, editor)
+		this.itemBadges.update(items, this.displayedItems, viewBounds, editor)
 		const showDownload = hovered && editor.isShiftDown.get()
 		this.actions.update(showDownload ? items[hovered] : undefined, showDownload ? this.displayedItems.get(hovered) : undefined, editor)
 		// Without shift, a hovered HTML item gets just the button that opens it in the drawer (a page: in a new tab).
@@ -797,6 +801,7 @@ export class Renderer {
 		this.actions.destroy()
 		this.openButton.destroy()
 		this.pageBadges.destroy()
+		this.itemBadges.destroy()
 		this.videoControls.destroy()
 		this.titles.destroy()
 		this.html.destroy()

@@ -1,4 +1,4 @@
-import type { AnnotationView, Canvas, CanvasData, CanvasSummary, Item, OpenCodeSessionInfo, ServerEvent, SessionLink } from '../../../shared/types'
+import type { AnnotationView, Canvas, CanvasData, CanvasSummary, Item, ItemDelivery, OpenCodeSessionInfo, ServerEvent, SessionLink } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { API_BASE, BASE, url as withBase, wsUrl } from '../base'
 
@@ -87,16 +87,28 @@ export function uploadItem(
 		/** a frame extracted from a video: that video item, and the time in it (seconds) */
 		sourceItemId?: string
 		sourceTime?: number
+		/** a person dragged or pasted it onto the frame: their name (the item becomes a person item, see Item.origin) */
+		addedBy?: string
 	},
 ) {
 	const form = new FormData()
 	form.set('file', data, meta.filename)
-	for (const key of ['group', 'title', 'caption', 'createdAt', 'sessionTitle', 'sourceItemId', 'sourceTime'] as const) {
+	for (const key of ['group', 'title', 'caption', 'createdAt', 'sessionTitle', 'sourceItemId', 'sourceTime', 'addedBy'] as const) {
 		const value = meta[key]
 		if (value !== undefined && value !== '') form.set(key, String(value))
 	}
 	return request<Item>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/items`, { method: 'POST', body: form })
 }
+
+/**
+ * Records that the session now has these person items' media (sent with message `messageId`), or
+ * with clear, that it has none of them any more (it compacted). See Item.delivered.
+ */
+export const markDelivered = (
+	canvasId: string,
+	sessionId: string,
+	body: { itemIds: string[]; messageId?: string; via: ItemDelivery['via'] } | { clear: true },
+) => request<{ items: Item[] }>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/delivered`, json('POST', body))
 
 /** Posts a link to a web page as a page item (without a screenshot: a link card). */
 export const postPage = (canvasId: string, sessionId: string, page: string, meta: { sessionTitle?: string; group?: string } = {}) =>

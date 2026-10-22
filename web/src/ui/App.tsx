@@ -16,6 +16,7 @@ import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedAnnotations } from '../multiplayer/SharedAnnotations'
 import { SubmitAnnotations } from '../multiplayer/SubmitAnnotations'
+import { FrameDrop } from '../multiplayer/FrameDrop'
 import { SharedNotes } from '../multiplayer/SharedNotes'
 import { AttentionTray } from './Attention'
 import { FrameAsks } from './FrameAsks'
@@ -204,7 +205,8 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					)
 					if (link.role === 'edit') {
 						const submit = new SubmitAnnotations(overlayRef.current!, editor, p, control, c.id, () => canvasTitle)
-						disposers.push(() => submit.destroy(), listenForPastedPages(editor, c.id))
+						const drop = new FrameDrop(container, overlayRef.current!, editor, p, control, c.id)
+						disposers.push(() => submit.destroy(), () => drop.destroy(), listenForPastedPages(editor, c.id))
 					}
 					setPresence(p)
 					setSessions(control)

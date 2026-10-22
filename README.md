@@ -46,6 +46,14 @@ On a canvas you can then:
   `restore` brings them back within an hour). **Submit annotations (N)** on a session's frame
   sends them all to that session as one prompt (notes, pixel boxes, marked images attached),
   through your paired OpenCode, asking it to update those items in place.
+- **Give a session your own media**: drop (or paste, pointing at it) images, videos or HTML files
+  onto a session's frame and they become items there, marked with who added them. A small badge
+  says whether the session has them yet: a hollow ring until they're sent, a filled dot once it
+  has them. They go along with your next **Submit annotations** (the pill says `· +N images`: the
+  originals, scaled to fit 1600 px, before the marked images; a video as a contact sheet of 6
+  frames) or your next prompt from the frame (shown as "From the frame" chips you can remove), and
+  again after the session compacts. The session is told they're references from you, not its own
+  output, so it doesn't overwrite them. Dropping files anywhere else on the canvas does nothing.
 - **Put a web page on it**: paste a link (Cmd/Ctrl+V of an `http(s)` URL, anywhere on an edit link
   outside a text field) and a link card for it lands in the canvas's **Pasted links** frame.
   Page items show a screenshot when the poster sent one (with the site's domain in a corner), else
@@ -127,7 +135,7 @@ ln -s "$PWD/skill/canvas" ~/.config/opencode/skills/canvas
 (`update_item` replaces an item's image, video or HTML in place: same id, place and comments, moved
 to the top of its group, swapped live on open canvases; `sessionTitle` is optional, see above), post links to web pages (`post_item` with
 `page`, its URL, plus a screenshot as `path`; `url` is for media files), see what people have selected, read sticky notes and annotations (pencil drawings with optional notes,
-with the strokes in image pixels and a marked image: `list_annotations`, which consumes them unless `keep: true`), and `say` / `highlight` to place a sticky
+with the strokes in image pixels and the marked images returned as images: `list_annotations`, which consumes them unless `keep: true`; items people dragged in show `origin: "person"` and `addedBy`), and `say` / `highlight` to place a sticky
 note where they want you to look (you acknowledge it to remove it). It's only a tool provider: agents using it don't appear on the
 canvas themselves. In your OpenCode config:
 

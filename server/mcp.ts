@@ -67,6 +67,12 @@ export interface CanvasMcpDeps {
 	placeNote(canvasId: string, sessionId: string, body: Record<string, unknown>): Promise<{ note: Note; waiting: number }>
 	/** a /media/… path as a file */
 	mediaFile(src: string): BunFile
+	/** an annotation's marked image (see GET /api/canvases/:cid/annotations/:id/image) as PNG bytes, fit in max px */
+	markedImage(canvasId: string, annotationId: string, max?: number): Promise<Uint8Array>
+	/** one of an item's stored images (src or thumb), scaled to fit max px when the original is bigger */
+	imageForAgent(item: Item, src: string, max: number): Promise<{ data: Uint8Array; mimeType: string }>
+	/** records that the session has seen these person items (their current file); others are ignored */
+	markDelivered(canvasId: string, sessionId: string, itemIds: string[]): Item[]
 	/** absolute base for /media/… URLs in results */
 	mediaOrigin: string
 	/** where people open canvases in a browser, for links in results */
@@ -74,6 +80,13 @@ export interface CanvasMcpDeps {
 }
 
 const HTML_TEXT_MAX = 200_000
+/** list_annotations returns at most this many marked images as image content */
+const ANNOTATION_IMAGES_MAX = 8
+const ANNOTATION_IMAGE_PX = 1280
+/** get_item fullSize sends originals at most this big (models scale bigger ones down anyway) */
+const FULL_SIZE_PX = 2000
+/** what OpenCode puts in every MCP tool call's _meta: the calling session */
+const OPENCODE_SESSION_META = 'ai.opencode/sessionID'
 const CANVAS_ID = /^[A-Za-z0-9]{10}$/
 const VIEW_KEY = /^[A-Za-z0-9]{16}$/
 const OPENCODE_SESSION = /^ses_[A-Za-z0-9]{26}$/
@@ -119,7 +132,23 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				: {}),
 			...(item.kind === 'video' ? { thumbUrl: mediaUrl(item.thumb) } : {}),
 			...(item.duration !== undefined ? { duration: item.duration } : {}),
+			...(item.origin ? { origin: item.origin, ...(item.addedBy ? { addedBy: item.addedBy } : {}) } : {}),
 		}
+	}
+
+	/** The OpenCode session making a tool call, from the _meta OpenCode sends with it (undefined from other clients). */
+	const callerSession = (extra: Extra): string | undefined => {
+		const id = extra._meta?.[OPENCODE_SESSION_META]
+		return typeof id === 'string' && OPENCODE_SESSION.test(id) ? id : undefined
+	}
+
+	/** The caller saw these items' images: person items in its own frame count as delivered to it. */
+	function sawItems(extra: Extra, items: { id: string; canvasId: string; sessionId: string; origin?: 'person' }[]) {
+		const caller = callerSession(extra)
+		if (!caller) return
+		const byCanvas = new Map<string, string[]>()
+		for (const i of items) if (i.origin === 'person' && i.sessionId === caller) byCanvas.set(i.canvasId, [...(byCanvas.get(i.canvasId) ?? []), i.id])
+		for (const [canvasId, ids] of byCanvas) deps.markDelivered(canvasId, caller, ids)
 	}
 
 	const itemDetail = (item: Item) => ({
@@ -160,7 +189,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 		return given
 	}
 
-	type Extra = { sessionId?: string; requestInfo?: { headers: Record<string, string | string[] | undefined> } }
+	type Extra = { sessionId?: string; requestInfo?: { headers: Record<string, string | string[] | undefined> }; _meta?: Record<string, unknown> }
 
 	function closeSession(id: string, s: McpSession) {
 		if (sessions.get(id) === s) sessions.delete(id)
@@ -283,7 +312,9 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'frame is titled after your OpenCode session; sessionTitle is an optional fallback). The user gives feedback on a specific spot of an image with ' +
 					'annotations: check list_annotations (filter by your sessionId) for feedback on what you posted: freehand ' +
 					'drawings with optional text (strokes and bbox in pixels of the original image; look at markedImageUrl to ' +
-					'see what was circled). Reading annotations consumes them: they disappear from ' +
+					'see what was circled; list_annotations also returns those marked images as image content). People can also drag media of their own ' +
+					'into your frame (items with origin "person" and addedBy: who added it): those are references they give you, not your output, so ' +
+					'don\'t update_item them; post what you make from them as new items. Reading annotations consumes them: they disappear from ' +
 					'the canvas once you\'ve read them (pass keep: true to peek; restore brings them back). To show a new version of something you posted, replace ' +
 					'it in place with update_item (path, url, html or page) rather than posting it again: it keeps its place and comments. ' +
 					'To post a link (a website, a dev server, a running deployment), post_item with page (its URL) and include a ' +
@@ -505,8 +536,11 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'seconds when it is a frame extracted from a video), strokes (each stroke a list of [x, y] pixel points in the ' +
 					'original image; [] for a text-only note), bbox (the drawing\'s bounding box in pixels: what it marks) and ' +
 					'anchor (where the note sits, or a text-only note\'s spot: x/y normalized 0..1, px/py in pixels). Filter by ' +
-					'sessionId (yours, for feedback on what you posted) or itemId. markedImageUrl is the image with the strokes ' +
-					'and the annotation\'s number drawn on it: fetch it to see what was circled. Reading consumes them: the ' +
+					'sessionId (yours, for feedback on what you posted) or itemId. The item\'s origin "person" (with addedBy) means someone ' +
+					'dragged it into the frame: a reference to work from, not something you posted, so don\'t update_item it. ' +
+					`Unless includeImages is false, the first ${ANNOTATION_IMAGES_MAX} marked images (the image with the strokes and the ` +
+					'annotation\'s number drawn on it, scaled to fit 1280 px) follow as image content, each after a line naming its ' +
+					'annotation; markedImageUrl is the same image at full size. Reading consumes them: the ' +
 					'annotations returned are taken off the canvas (people see them fly into your frame) and come back with ' +
 					'consumed: true, so act on them now; they wait in the trash for an hour (restore with annotationIds brings ' +
 					'them back). Pass keep: true to just peek.',
@@ -515,13 +549,37 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					sessionId: z.string().optional().describe('Only annotations on this session\'s items (pass yours)'),
 					itemId: z.string().optional().describe('Only annotations on this item'),
 					keep: z.boolean().optional().describe('Leave them on the canvas instead of consuming them (default false)'),
+					includeImages: z
+						.boolean()
+						.optional()
+						.describe(`Return the marked images as image content (default true; the first ${ANNOTATION_IMAGES_MAX})`),
 				},
 			},
-			tool(async ({ canvas, sessionId, itemId, keep }: { canvas: string; sessionId?: string; itemId?: string; keep?: boolean }) => {
+			tool(async (
+				{ canvas, sessionId, itemId, keep, includeImages }: { canvas: string; sessionId?: string; itemId?: string; keep?: boolean; includeImages?: boolean },
+				extra,
+			) => {
 				const id = canvasId(canvas)
 				const sid = sessionId?.trim() || undefined
 				const list = await deps.annotations(id, { sessionId: sid, itemId: itemId?.trim() || undefined, keep: !!keep, readerSessionId: sid })
-				return ok(list.map((a) => ({ ...a, ...(a.item.kind !== 'html' ? { markedImageUrl: `${deps.mediaOrigin}/api/canvases/${id}/annotations/${a.id}/image` } : {}) })))
+				const result = ok(list.map((a) => ({ ...a, ...(a.item.kind !== 'html' ? { markedImageUrl: `${deps.mediaOrigin}/api/canvases/${id}/annotations/${a.id}/image` } : {}) })))
+				if (includeImages === false) return result
+				const marked = list.filter((a) => a.item.kind !== 'html' && (a.item.kind !== 'page' || a.item.url))
+				const seen: AnnotationView['item'][] = []
+				for (const a of marked.slice(0, ANNOTATION_IMAGES_MAX)) {
+					const bytes = await deps.markedImage(id, a.id, ANNOTATION_IMAGE_PX).catch(() => null)
+					if (!bytes) continue
+					result.content.push(
+						{ type: 'text', text: `annotation ${a.id} on item ${a.item.id}${a.text.trim() ? ` ("${a.text.trim().slice(0, 80)}")` : ''}:` },
+						{ type: 'image', mimeType: 'image/png', data: Buffer.from(bytes).toString('base64') },
+					)
+					seen.push(a.item)
+				}
+				if (marked.length > ANNOTATION_IMAGES_MAX) {
+					result.content.push({ type: 'text', text: `${marked.length - ANNOTATION_IMAGES_MAX} more marked images not shown: get_item with includeImage to see their items` })
+				}
+				sawItems(extra, seen.map((i) => ({ id: i.id, canvasId: id, sessionId: i.sessionId, origin: i.origin })))
+				return result
 			}),
 		)
 
@@ -550,14 +608,18 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				description:
 					'One item with its absolute media url. With includeImage, images (video poster frames, page screenshots) are returned as image ' +
 					'content so you can see them; HTML items always include their HTML source. Page items (kind "page") have pageUrl ' +
-					'(the web page), screenshot (whether one was posted) and, with one, url (the screenshot).',
+					'(the web page), screenshot (whether one was posted) and, with one, url (the screenshot). origin "person" (with addedBy) ' +
+					'means someone dragged it into the frame: a reference for you, not your output, so don\'t update_item it.',
 				inputSchema: {
 					itemId: z.string().describe('Item id'),
 					includeImage: z.boolean().optional().describe('Return the image itself (images, videos and page screenshots)'),
-					fullSize: z.boolean().optional().describe('With includeImage: send the original image instead of the 512px thumbnail'),
+					fullSize: z
+						.boolean()
+						.optional()
+						.describe(`With includeImage: send the original image (scaled to fit ${FULL_SIZE_PX} px) instead of the 512px thumbnail`),
 				},
 			},
-			tool(async ({ itemId, includeImage, fullSize }: { itemId: string; includeImage?: boolean; fullSize?: boolean }) => {
+			tool(async ({ itemId, includeImage, fullSize }: { itemId: string; includeImage?: boolean; fullSize?: boolean }, extra) => {
 				const item = deps.getItem(itemId)
 				const result: CallToolResult = { content: [{ type: 'text', text: JSON.stringify(itemDetail(item)) }] }
 				if (item.kind === 'html') {
@@ -569,10 +631,9 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 				} else if (includeImage && !item.thumb) {
 					result.content.push({ type: 'text', text: 'this link has no screenshot (it shows as a link card); update_item with path adds one' })
 				} else if (includeImage) {
-					const file = deps.mediaFile((item.kind === 'image' || item.kind === 'page') && fullSize ? item.src : item.thumb)
-					if (!(await file.exists())) throw new ToolError('the image file is missing')
-					const mimeType = file.type.split(';')[0] || 'image/webp'
-					result.content.push({ type: 'image', data: Buffer.from(await file.arrayBuffer()).toString('base64'), mimeType })
+					const { data, mimeType } = await deps.imageForAgent(item, (item.kind === 'image' || item.kind === 'page') && fullSize ? item.src : item.thumb, FULL_SIZE_PX)
+					result.content.push({ type: 'image', data: Buffer.from(data).toString('base64'), mimeType })
+					sawItems(extra, [item])
 				}
 				return result
 			}),

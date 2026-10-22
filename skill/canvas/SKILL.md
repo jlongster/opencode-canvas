@@ -9,8 +9,8 @@ description: >
   Also use to post HTML (diagrams, flowcharts, charts, annotated explanations, SVG drawings) to
   tell the user things visually, to post links to web pages (page, with a screenshot when you
   have one), to point the user at what to look at (say / highlight place a sticky note where you
-  want them to look), and to create, list, rename, delete or restore canvases, sessions, groups
-  and items.
+  want them to look), and to create, list, rename, delete or restore canvases, groups and
+  items, and to delete or restore session frames.
 ---
 
 # Canvas API
@@ -49,19 +49,20 @@ Videos and recordings too, as soon as the file is written. A new version of some
 on the canvas replaces that item in place (see "Updating an item" below) unless both versions
 should be seen side by side.
 
-## Session id and title: send both with every post
+## Session id with every post (title optional)
 
 The session id is your exact OpenCode session id, `$OPENCODE_SESSION_ID` (`ses_` + 26
 characters). The server rejects anything else, including your id with a suffix. **Never make
 extra sessions to organise work: use groups.** Subagents have their own id, so they get their
 own frame.
 
-Your frame is titled after your OpenCode session, but the canvas server can't ask OpenCode:
-**you** send the title. Read it once, then send it as `sessionTitle` with **every** post
-(JSON field, multipart `--form-string sessionTitle=…`, or the MCP `sessionTitle` param).
-`sessionTitle` keeps your frame named after your session; it follows renames (the frame takes
-whatever title you send, so re-read it if your session may have been renamed). Without it the
-frame shows "Untitled session".
+Your frame **is** your OpenCode session: the user's browser, paired with your OpenCode, titles it
+after the session and follows renames live (the canvas server never talks to OpenCode). So you
+don't have to name it. `sessionTitle` (JSON field, multipart `--form-string sessionTitle=…`, or
+the MCP `sessionTitle` param) is an optional fallback, shown only until a paired browser has
+reported your session; it never replaces the title from OpenCode. Sending it is still nice on a
+canvas nobody has opened with a pairing yet (otherwise the frame shows "Untitled session" until
+then):
 
 ```bash
 BASE=${CANVAS_URL:-http://localhost:4545}
@@ -76,9 +77,8 @@ hand-written JSON body the title must be JSON-escaped.
 
 ## Conventions
 
-- **Send `sessionTitle`** with every post (see above). The frame title is always the session's
-  title; don't rename frames to anything else (`PUT $API/canvases/$CID/sessions/$SID {"title"}`
-  exists, but the next `sessionTitle` puts the session's title back).
+- **Frames can't be renamed** on the canvas: the frame title is always the session's title in
+  OpenCode (rename the session there and the frame follows). `sessionTitle` is only a fallback.
 - **Group related outputs**: one group per variant, approach, or before/after pair.
 - **Always set an item title**: short, shown small above the image (`"Panel focused"`, `"v3"`).
 - **Caption for detail**: prompt, settings, what changed. Shown on hover.
@@ -96,11 +96,11 @@ All bodies are JSON. Paths below are relative to `$API`.
 | `PATCH` / `DELETE` | `/canvases/$CID` | Rename `{"title"}` / delete everything on it (permanent) |
 | `GET` | `/view/<viewKey>` | Same as `GET /canvases/$CID`, looked up by view key |
 | `GET` | `/canvases/$CID/sessions` | Every session with `groups: [{name, items}]` in frame order (`"hidden": true` on frames people hid) |
-| `PUT` | `/canvases/$CID/sessions/$SID` | Create or rename your session: `{"title"}` (replaces any title) |
+| `PUT` | `/canvases/$CID/sessions/$SID` | Give your session a frame (if it has none): `{"title"?}` (a fallback title, see above) |
 | `GET` / `DELETE` | `/canvases/$CID/sessions/$SID` | Your session with its groups / delete it |
 | `PATCH` | `/canvases/$CID/sessions/$SID` | Hide or show a frame for everyone: `{"hidden": true\|false}` (only when the user asks) |
 | `GET` / `PUT` | `/canvases/$CID/order` | The frames' order `{"sessionIds"}` / rearrange them (only when the user asks) |
-| `POST` | `/canvases/$CID/sessions/$SID/items` | Add an image/video/HTML: `{"path"}` or `{"url"}`, or multipart `file`, or `{"html", "width", "height"}`, or a link to a web page `{"page", "path"?}` (path/url/file: its screenshot); plus `sessionTitle` (always) and optional `group`, `title`, `caption`, `name` |
+| `POST` | `/canvases/$CID/sessions/$SID/items` | Add an image/video/HTML: `{"path"}` or `{"url"}`, or multipart `file`, or `{"html", "width", "height"}`, or a link to a web page `{"page", "path"?}` (path/url/file: its screenshot); plus optional `sessionTitle` (fallback), `group`, `title`, `caption`, `name` |
 | `GET` / `PATCH` / `DELETE` | `/items/<itemId>` | Get / change `group`, `title`, `caption` (`null` clears), `name`, and/or **replace its file** (same `{"path"}`, `{"url"}`, `{"html"}` or multipart `file` as posting; see "Updating an item") / delete (`{"sessionDeleted": true}` if it was the session's last item) |
 | `PATCH` / `DELETE` | `/canvases/$CID/sessions/$SID/groups/<name>` | Rename a group `{"name"}` (`null` ungroups) / delete it and its items |
 | `POST` | `/canvases/$CID/restore` | Undo deletes: `{"itemIds": [...], "sessionIds": [...], "annotationIds": [...]}` (any of them; annotationIds: annotations consumed by reading them) → `{sessions, items, annotations}` restored |
@@ -218,7 +218,7 @@ canvas, post its URL as **`page`**, not `url` (`url` downloads a media file). **
 with your browser tooling. The canvas never fetches the URL itself, so any address works
 (localhost, Tailscale, private networks). Without a screenshot it shows as a link card.
 
-- MCP `post_item {canvas, sessionId, sessionTitle, page: "http://…", path?: "/abs/screenshot.png"}`
+- MCP `post_item {canvas, sessionId, sessionTitle?, page: "http://…", path?: "/abs/screenshot.png"}`
   (`path`, or `url`, is the screenshot, an image); over HTTP, JSON `{"page", "path"?}` or `{"page", "url"?}`
   to the items route, or multipart `page` + `file` (plus the usual `sessionTitle`, `group`,
   `title`, `caption`).
@@ -280,7 +280,7 @@ stays on the canvas until the user acknowledges it ("✓ Got it"), which removes
 arrows step the user through them in order. Nothing interrupts anyone.
 
 - **say**: a Markdown message, on a note at the top of your frame (`say` makes your frame if you
-  haven't posted yet, named after `sessionTitle`). Several notes stack neatly above the frame,
+  haven't posted yet). Several notes stack neatly above the frame,
   oldest first.
 - **highlight**: a note right next to something, with your optional Markdown message on it.
   Targets: an item id, a group as `<sessionId>/<group name>`, a frame `frame:<sessionId>` (the
@@ -299,7 +299,7 @@ note for every post: use one when there's something worth a look or a question.
 
 Over HTTP: `POST $API/canvases/$CID/sessions/$SID/notes` with
 `{"kind": "say", "text"}` or `{"kind": "highlight", "target", "point"? | "region"? | "at"?, "text"}`,
-plus `"sessionTitle"` → `{noteId, waiting, note}`. `GET` the same path lists your notes that are
+plus `"sessionTitle"`? (fallback) → `{noteId, waiting, note}`. `GET` the same path lists your notes that are
 still waiting; `DELETE $API/canvases/$CID/notes/<noteId>` removes one (as acknowledging does).
 
 ```bash
@@ -364,11 +364,12 @@ back. `get_canvas` lists annotations too (with their bbox), without consuming th
 The same server speaks MCP (Streamable HTTP) at `<base>/mcp`, usually configured in OpenCode as
 the `canvas` MCP server. It only provides tools: you don't appear on the canvas yourself (say and
 highlight place sticky notes). Tools take a canvas id or URL; the ones that act for your session
-take `sessionId` (`$OPENCODE_SESSION_ID`) and `sessionTitle`.
+take `sessionId` (`$OPENCODE_SESSION_ID`) and an optional `sessionTitle` (a fallback title for
+your frame until a paired browser reports your session).
 
-- `post_item {canvas, sessionId, sessionTitle, path | url | html | page (+ path as its screenshot), width?, height?, group?, title?, caption?, name?}`:
-  post into your frame (`path` must be absolute, on the canvas server's machine). **Always pass `sessionTitle`.**
-- `say {canvas, sessionId, sessionTitle, text}` and `highlight {canvas, sessionId, sessionTitle, target, point? | region? | at?, text?}`:
+- `post_item {canvas, sessionId, sessionTitle?, path | url | html | page (+ path as its screenshot), width?, height?, group?, title?, caption?, name?}`:
+  post into your frame (`path` must be absolute, on the canvas server's machine).
+- `say {canvas, sessionId, sessionTitle?, text}` and `highlight {canvas, sessionId, sessionTitle?, target, point? | region? | at?, text?}`:
   place a sticky note from your session where you want the user to look (see above); the user
   acknowledges it to remove it. Return the note's `noteId` and how many of yours are `waiting`.
 - `update_item {itemId, path | url | html | page, width?, height?, name?, title?, caption?, group?}`: replace an

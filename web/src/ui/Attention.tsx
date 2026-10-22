@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { Attention, Caller } from '../multiplayer/Attention'
 import type { AskingInfo } from '../multiplayer/Presence'
 import type { AgentNoteInfo } from '../multiplayer/SharedNotes'
-import { framesPanelOpen } from './FramesPanel'
+import { sessionsPopover } from './Sessions'
 import { useValue } from './useValue'
 
 /**
@@ -13,7 +13,7 @@ import { useValue } from './useValue'
  */
 export function AttentionTray({ attention }: { attention: Attention }) {
 	const callers = useValue(() => attention.callers.get(), [attention])
-	// hidden frames can't be shown: their rows open the frames list instead
+	// hidden frames can't be shown: on edit links their rows open Sessions, where they can be shown again
 	const hidden = useValue(() => callers.filter((c) => attention.editor.isSessionHidden(c.sessionId)).map((c) => c.sessionId).join(' '), [attention, callers])
 	const [open, setOpen] = useState(false)
 	useEffect(() => {
@@ -67,10 +67,19 @@ function CallerRow({ attention, caller: c, hidden }: { attention: Attention; cal
 		<div className={`attention-row${c.asking ? ' asking' : ''}`} style={{ ['--agent-color' as string]: c.color }}>
 			<button
 				className="attention-row-open"
-				title={hidden ? 'Its frame is hidden: show it from the frames list' : c.asking ? 'Show what it asks' : 'Show its next note'}
+				title={
+					hidden
+						? attention.sessions.canEdit
+							? 'Its frame is hidden: show it again from Sessions'
+							: 'Its frame is hidden on this canvas'
+						: c.asking
+							? 'Show what it asks'
+							: 'Show its next note'
+				}
 				onClick={() => {
-					if (hidden) framesPanelOpen.set(true)
-					else if (c.asking) attention.answer(c.sessionId)
+					if (hidden) {
+						if (attention.sessions.canEdit) sessionsPopover.set({ focus: c.sessionId })
+					} else if (c.asking) attention.answer(c.sessionId)
 					else attention.step(1, c.sessionId)
 				}}
 			>

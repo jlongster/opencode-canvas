@@ -2,9 +2,10 @@ import { mkdir, rename, rm } from 'node:fs/promises'
 import { existsSync, statSync } from 'node:fs'
 import { basename, extname, join, resolve } from 'node:path'
 import * as Y from 'yjs'
+import { frameTitle } from '../shared/sessionTitle'
 import type {
-	Annotation, AnnotationView, Canvas, CanvasData, CanvasSummary, Item, MediaKind, Note, NoteAnchor, PresenceEntry, ResolvedSelection, ServerEvent, Session,
-	SessionLink, SessionView,
+	Annotation, AnnotationView, Canvas, CanvasData, CanvasSummary, Item, MediaKind, Note, NoteAnchor, OpenCodeSessionInfo, PresenceEntry, ResolvedSelection,
+	ServerEvent, Session, SessionLink, SessionView,
 } from '../shared/types'
 import { computeLayout, orderSessions } from '../web/src/editor/layout'
 import { AttentionError, createAttention, noteFrom } from './attention'
@@ -97,10 +98,16 @@ const trashCanvas = (entry: TrashEntry) =>
 if (existsSync(INDEX_FILE)) {
 	const stored = (await Bun.file(INDEX_FILE).json()) as StoredIndex
 	for (const c of stored.canvases) db.canvases.set(c.id, c)
-	for (const s of stored.sessions) db.sessions.set(sessionKey(s.canvasId, s.id), s)
+	for (const s of stored.sessions) db.sessions.set(sessionKey(s.canvasId, s.id), storedSession(s))
 	for (const i of stored.items) db.items.set(i.id, withName(i))
 	for (const t of stored.trash ?? []) trash.set(trashKey(t), t.kind === 'item' ? { ...t, item: withName(t.item) } : t)
 	storedLinks = stored.links ?? []
+}
+
+/** Sessions saved before frames followed OpenCode keep their title as the posted one, until OpenCode reports theirs. */
+function storedSession(s: Session): Session {
+	if (s.postedTitle !== undefined || s.opencode || !s.title) return s
+	return { ...s, postedTitle: s.title }
 }
 
 /** Items saved before they had names get one: their title (or id) plus the file's extension. */
@@ -163,8 +170,8 @@ const attention = createAttention({
 		return item ? { width: item.width, height: item.height } : null
 	},
 	nameSession: (canvasId, sessionId, title, create) => {
-		// The frame follows the session's title (renames included), when it has a frame.
-		if (create || db.sessions.has(sessionKey(canvasId, sessionId))) ensureSession(canvasId, sessionId, title)
+		// The agent's title is a fallback, shown until a paired browser reports the session from OpenCode.
+		if (create || db.sessions.has(sessionKey(canvasId, sessionId))) ensureSession(canvasId, sessionId, { postedTitle: title })
 	},
 	sessionTitle: (canvasId, sessionId) => db.sessions.get(sessionKey(canvasId, sessionId))?.title ?? '',
 	roughPosition: (canvasId, sessionId, anchor) => roughNotePosition(canvasId, sessionId, anchor),
@@ -560,7 +567,7 @@ interface ItemOptions {
 	height?: number
 	/** defaults to now; seeded items get the time they were output, which orders them in their group */
 	createdAt?: number
-	/** the OpenCode session's title: the session's frame is named after it (following renames) */
+	/** the OpenCode session's title as the poster knows it: the frame's title until a paired browser reports the session's own */
 	sessionTitle?: string
 	/** a frame extracted from a video (see Item.sourceItemId) */
 	sourceItemId?: string
@@ -637,7 +644,7 @@ async function addItem(canvasId: string, sessionId: string, source: MediaSource,
 		await removeItemFiles(media)
 		throw e
 	}
-	ensureSession(canvasId, sessionId, opts.sessionTitle || undefined)
+	ensureSession(canvasId, sessionId, { postedTitle: opts.sessionTitle })
 	const filename = 'data' in source ? source.filename : undefined
 	const name =
 		opts.name ??
@@ -840,7 +847,7 @@ async function addPageItem(
 		await removeItemFiles(media)
 		throw e
 	}
-	ensureSession(canvasId, sessionId, opts.sessionTitle || undefined)
+	ensureSession(canvasId, sessionId, { postedTitle: opts.sessionTitle })
 	const item: Item = {
 		id,
 		canvasId,
@@ -900,20 +907,74 @@ function sizeField(value: unknown, name: string): number | undefined {
 }
 
 /**
- * Gets a session, creating it if needed. `title` renames it: PUT /sessions/:sid, and a post's
- * `sessionTitle`, which keeps the frame named after its OpenCode session as that is renamed.
+ * Gets a session's frame, making it if needed. `postedTitle` (a post's `sessionTitle`, or PUT
+ * /sessions/:sid's title) is only a fallback: the frame shows its OpenCode session's title once a
+ * paired browser has reported it (see mirrorSessions). `serverKey` says which OpenCode it's on,
+ * when that isn't known yet.
  */
-function ensureSession(canvasId: string, id: string, title?: string): Session {
+function ensureSession(canvasId: string, id: string, opts: { postedTitle?: string; serverKey?: string } = {}): Session {
 	const key = sessionKey(canvasId, id)
-	const existing = db.sessions.get(key)
-	if (existing && (title === undefined || existing.title === title)) return existing
-	const session: Session = existing
-		? { ...existing, title: title! }
-		: { id, canvasId, title: title ?? '', createdAt: Date.now() }
-	db.sessions.set(key, session)
+	const existing = db.sessions.get(key) ?? { id, canvasId, title: '', createdAt: Date.now() }
+	const postedTitle = opts.postedTitle?.trim() || existing.postedTitle
+	const serverKey = existing.serverKey ?? opts.serverKey
+	const next = withTitle({ ...existing, ...(postedTitle ? { postedTitle } : {}), ...(serverKey ? { serverKey } : {}) })
+	if (db.sessions.has(key) && JSON.stringify(next) === JSON.stringify(existing)) return existing
+	return commitSession(next)
+}
+
+/** A session with its title worked out again from what OpenCode said and what it was posted with. */
+const withTitle = (s: Session): Session => ({ ...s, title: frameTitle(s.postedTitle, s.opencode) })
+
+function commitSession(session: Session): Session {
+	db.sessions.set(sessionKey(session.canvasId, session.id), session)
 	save()
 	broadcast({ type: 'session', session })
 	return session
+}
+
+const SERVER_KEY = /^[A-Za-z0-9_-]{1,64}$/
+const AGENT_MAX = 64
+const DIRECTORY_MAX = 1000
+
+/** One entry of PUT /api/canvases/:cid/opencode: a session as its OpenCode reported it to a paired browser. */
+function mirrorEntry(value: unknown): { sessionId: string; serverKey: string; info: OpenCodeSessionInfo } {
+	const v = (value ?? {}) as Record<string, unknown>
+	const bad = (what: string): never => {
+		throw new HttpError(400, `each session needs ${what}`)
+	}
+	const sessionId = typeof v.sessionId === 'string' && SESSION_ID.test(v.sessionId) ? v.sessionId : bad('"sessionId" (an OpenCode session id)')
+	const serverKey = typeof v.serverKey === 'string' && SERVER_KEY.test(v.serverKey) ? v.serverKey : bad('"serverKey" (the OpenCode it lives on)')
+	if (typeof v.title !== 'string') bad('"title" (a string, "" for none)')
+	const text = (key: string, max: number) => (typeof v[key] === 'string' && v[key] ? { [key]: (v[key] as string).slice(0, max) } : {})
+	const time = (key: string) => (typeof v[key] === 'number' && Number.isFinite(v[key]) ? { [key]: v[key] as number } : {})
+	const info: OpenCodeSessionInfo = {
+		title: (v.title as string).trim().replace(/\s+/g, ' ').slice(0, TITLE_MAX),
+		...(typeof v.parentId === 'string' && SESSION_ID.test(v.parentId) ? { parentId: v.parentId } : {}),
+		...text('agent', AGENT_MAX),
+		...text('directory', DIRECTORY_MAX),
+		...time('createdAt'),
+		...time('updatedAt'),
+		...(v.deleted === true ? { deleted: true } : {}),
+	}
+	return { sessionId, serverKey, info }
+}
+
+/**
+ * What paired browsers report about the canvas's sessions from OpenCode (their titles, renames
+ * included, and whether they were deleted), saved on the frames and broadcast, so everyone sees the
+ * same, even without a pairing. Only sessions with a frame here are updated: this never makes one.
+ */
+function mirrorSessions(canvasId: string, entries: ReturnType<typeof mirrorEntry>[]): string[] {
+	const updated: string[] = []
+	for (const { sessionId, serverKey, info } of entries) {
+		const existing = db.sessions.get(sessionKey(canvasId, sessionId))
+		if (!existing) continue
+		const next = withTitle({ ...existing, serverKey, opencode: info })
+		if (JSON.stringify(next) === JSON.stringify(existing)) continue
+		commitSession(next)
+		updated.push(sessionId)
+	}
+	return updated
 }
 
 async function removeItemFiles(item: Pick<Item, 'src' | 'thumb'>) {
@@ -971,9 +1032,10 @@ function restoreSession(canvasId: string, sessionId: string, restored: { session
 	trash.delete(key)
 	// The session may have been recreated since (by posting to it again): then only its items come back.
 	if (!db.sessions.has(sessionKey(canvasId, sessionId))) {
-		db.sessions.set(sessionKey(canvasId, sessionId), entry.session)
-		broadcast({ type: 'session', session: entry.session })
-		restored.sessions.push(entry.session)
+		const session = storedSession(entry.session)
+		db.sessions.set(sessionKey(canvasId, sessionId), session)
+		broadcast({ type: 'session', session })
+		restored.sessions.push(session)
 	}
 	save()
 	for (const id of entry.itemIds) restoreItem(canvasId, id, restored)
@@ -1544,7 +1606,13 @@ const API_INDEX = {
 		'get_item, post_item, update_item, delete_item, restore, plus say and highlight, which place a sticky note ' +
 		'where you want people to look (they acknowledge it to remove it). OpenCode config: ' +
 		`{"mcp": {"canvas": {"type": "remote", "url": "http://localhost:${PORT}/mcp"}}}. Pass your $OPENCODE_SESSION_ID ` +
-		'as "sessionId" and your session\'s title as "sessionTitle" to post_item, say and highlight.',
+		'as "sessionId" to post_item, say and highlight ("sessionTitle" is optional, see "frames").',
+	frames:
+		'Each frame is an OpenCode session. Its title, renames included, comes from OpenCode through the browsers ' +
+		'paired with it (this server never talks to OpenCode): they report it, and whether the session was deleted, to ' +
+		'PUT /api/canvases/:cid/opencode, and everyone sees that. A post\'s "sessionTitle" is only a fallback, shown ' +
+		'until a paired browser has reported the session; it never replaces the title from OpenCode. A session OpenCode ' +
+		'deleted keeps its frame and items, marked as ended ("opencode": {"deleted": true}).',
 	endpoints: {
 		'GET /api/canvases': 'All canvases, newest first, with session/item counts and preview thumbnails',
 		'POST /api/canvases': 'Create a canvas. Body: {"title"} (optional). Returns it, with its id and viewKey',
@@ -1559,11 +1627,19 @@ const API_INDEX = {
 		'GET /api/canvases/:cid/sessions':
 			'The canvas\'s sessions, each with its groups and their items, in frame order (left to right; hidden ones ' +
 			'included where they\'d be, with "hidden": true)',
-		'GET /api/canvases/:cid/sessions/:sessionId': 'One session with its groups and items',
-		'PUT /api/canvases/:cid/sessions/:sessionId': 'Create or rename a session. Body: {"title"}',
+		'GET /api/canvases/:cid/sessions/:sessionId':
+			'One session with its groups and items. "title" is what its frame shows; "opencode" is what its OpenCode last said ' +
+			'about it (title, parentId, agent, directory, times, deleted), "postedTitle" the fallback it was posted with',
+		'PUT /api/canvases/:cid/sessions/:sessionId':
+			'Give a session a frame (if it has none). Body: {"title"?, "serverKey"?}: title is a fallback, shown until a paired ' +
+			'browser reports the session from OpenCode (see "frames")',
 		'PATCH /api/canvases/:cid/sessions/:sessionId':
-			'Hide or show a session\'s frame for everyone: {"hidden": true|false} (and/or {"title"} to rename). A hidden ' +
-			'frame isn\'t drawn but keeps its items and still takes posts; posting doesn\'t unhide it',
+			'Hide or show a session\'s frame for everyone: {"hidden": true|false}. A hidden frame isn\'t drawn but keeps its ' +
+			'items and still takes posts; posting doesn\'t unhide it. Frames can\'t be renamed: rename the session in OpenCode',
+		'PUT /api/canvases/:cid/opencode':
+			'Paired browsers report the canvas\'s sessions as OpenCode has them: {"sessions": [{"sessionId", "serverKey", ' +
+			'"title", "parentId"?, "agent"?, "directory"?, "createdAt"?, "updatedAt"?, "deleted"?}]}. Saved on the frames ' +
+			'(sessions without one are ignored) and broadcast. Returns {"updated": [sessionId, …]}',
 		'GET /api/canvases/:cid/order': 'The frames\' order, left to right: {"sessionIds"} (hidden sessions included)',
 		'PUT /api/canvases/:cid/order':
 			'Arrange the frames. Body: {"sessionIds": [...]} left to right; sessions left out follow, oldest first, and new ' +
@@ -1574,9 +1650,8 @@ const API_INDEX = {
 			'Add an image, video or HTML page. JSON {"path"} (file on this machine) or {"url"}, or multipart "file"; ' +
 			'or JSON {"html": "<html source>"} for an HTML item, or {"page": "<URL>"} for a link to a web page, with its ' +
 			'screenshot as "path"/"url" (or multipart "page" + "file") whenever you can (see "pages"). Plus optional "group", "title", "caption", "name". ' +
-			'Send "sessionTitle" (your OpenCode session\'s title, from `opencode api get /api/session/$OPENCODE_SESSION_ID` ' +
-			'→ .data.title) with every post, JSON or multipart: it keeps the session\'s frame named after your session, ' +
-			'following renames. Multipart uploads may also send "createdAt" ' +
+			'Optional "sessionTitle" (your OpenCode session\'s title): your frame\'s title until a browser paired with your ' +
+			'OpenCode reports the session\'s own (see "frames"). Multipart uploads may also send "createdAt" ' +
 			'(ms; orders the item in its group), and "sourceItemId" + "sourceTime" (a frame extracted from that video item, ' +
 			'at that many seconds; kept on the item). Creates the session if needed. Iterating on something already ' +
 			'posted? Replace it with PATCH /api/items/:itemId instead (post again only to show both versions side by side).',
@@ -1634,13 +1709,12 @@ const API_INDEX = {
 			'with absolute "url"/"thumbUrl"), "sessions" (with "itemCount"), "notes", "missing"}]}. Use this to answer ' +
 			'"what have I selected?"',
 		'GET /api/canvases/:cid/links':
-			'Which OpenCode session each linked frame talks to: [{"sessionId", "serverKey", "title", "color", "ownerId", "online", "busy"}]. ' +
+			'Which browser runs each linked frame\'s session: [{"sessionId", "serverKey", "color", "ownerId", "online", "busy"}]. ' +
 			'The canvas server never talks to OpenCode: the owner\'s browser does (people prompt the session from its frame), shares its ' +
 			'streaming reply through the room while its tab is open ("online"), and reports whether the session is working ("busy")',
 		'POST /api/canvases/:cid/links':
 			'Link an OpenCode session to this browser. Body: {"sessionId", "serverKey" (non-secret id of its OpenCode), "ownerId" ' +
-			'(the owner browser\'s random id), "title"?}. 409 if another browser linked it',
-		'PATCH /api/canvases/:cid/links/:sessionId': 'Rename a link. Body: {"title"}',
+			'(the owner browser\'s random id)}. 409 if another browser linked it',
 		'DELETE /api/canvases/:cid/links/:sessionId': 'Unlink a session',
 		'PUT /api/canvases/:cid/sessions/:sessionId/status':
 			'The owner\'s browser reports whether a linked session is working: {"busy": true|false, "ownerId"}. Everyone looking sees ' +
@@ -1654,7 +1728,7 @@ const API_INDEX = {
 			'"<sessionId>/<group name>", "frame:<sessionId>" or "note:<noteId>". Point at what you mean: on an item pass "point": {"x", "y"} or ' +
 			'"region": {"x", "y", "w", "h"} in the item\'s image pixels (same units as annotation px/py and the item\'s width/height): the note ' +
 			'sits beside the spot without covering it, with a pointer to it; omit them only to mean the whole item. On a frame, group or note, ' +
-			'"at": {"x", "y"} (canvas page coordinates) points at a spot. Plus "sessionTitle" (names your session\'s frame after your session). ' +
+			'"at": {"x", "y"} (canvas page coordinates) points at a spot. Plus "sessionTitle"? (a fallback title for your frame, see "frames"). ' +
 			'Returns {"noteId", "waiting" (your notes not yet acknowledged on this canvas), "note"}. Fire-and-forget: you aren\'t told when it\'s acknowledged',
 	},
 	items:
@@ -1884,28 +1958,32 @@ async function handle(req: Request): Promise<Response> {
 		const id = decodeURIComponent(m[2])
 		if (method === 'GET') return json(sessionView(getSession(canvas.id, id)))
 		if (method === 'PUT') {
-			const body = (await req.json().catch(() => ({}))) as { title?: unknown }
+			const body = (await req.json().catch(() => ({}))) as { title?: unknown; serverKey?: unknown }
 			const existed = db.sessions.has(sessionKey(canvas.id, id))
-			const session = ensureSession(canvas.id, assertSessionId(id), textField(body?.title))
+			const serverKey = typeof body?.serverKey === 'string' && SERVER_KEY.test(body.serverKey) ? body.serverKey : undefined
+			const session = ensureSession(canvas.id, assertSessionId(id), { postedTitle: textField(body?.title)?.slice(0, TITLE_MAX), serverKey })
 			return json(sessionView(session), existed ? 200 : 201)
 		}
 		if (method === 'PATCH') {
 			const body = (await req.json().catch(() => ({}))) as { title?: unknown; hidden?: unknown }
-			if (body?.hidden !== undefined && typeof body.hidden !== 'boolean') throw new HttpError(400, '"hidden" must be true or false')
-			if (body?.hidden === undefined && body?.title === undefined) throw new HttpError(400, 'send {"hidden": true|false} and/or {"title"}')
-			let session = getSession(canvas.id, id)
-			const title = textField(body.title)
-			if (title !== undefined) session = ensureSession(canvas.id, id, title)
-			if (typeof body.hidden === 'boolean') {
-				const hidden = body.hidden
-				session = setSessionHidden(session, hidden)
-			}
-			return json(sessionView(session))
+			if (body?.title !== undefined) throw new HttpError(400, 'frames are titled after their OpenCode session: rename the session in OpenCode')
+			if (typeof body?.hidden !== 'boolean') throw new HttpError(400, 'send {"hidden": true|false}')
+			return json(sessionView(setSessionHidden(getSession(canvas.id, id), body.hidden)))
 		}
 		if (method === 'DELETE') {
 			deleteSession(getSession(canvas.id, id))
 			return json({ ok: true })
 		}
+	}
+
+	// Paired browsers mirror what OpenCode says about the canvas's sessions (see mirrorSessions).
+	m = /^\/api\/canvases\/([^/]+)\/opencode$/.exec(p)
+	if (m && method === 'PUT') {
+		const canvas = getCanvas(decodeURIComponent(m[1]))
+		const body = (await req.json().catch(() => null)) as { sessions?: unknown } | null
+		if (!Array.isArray(body?.sessions)) throw new HttpError(400, 'send {"sessions": [{"sessionId", "serverKey", "title", …}]}')
+		if (body.sessions.length > 500) throw new HttpError(400, 'at most 500 sessions at a time')
+		return json({ updated: mirrorSessions(canvas.id, body.sessions.map(mirrorEntry)) })
 	}
 
 	m = /^\/api\/canvases\/([^/]+)\/order$/.exec(p)
@@ -1981,10 +2059,6 @@ async function handle(req: Request): Promise<Response> {
 		const sessionId = decodeURIComponent(m[2])
 		links.unlink(canvas.id, sessionId)
 		return json({ ok: true })
-	}
-	if (m && method === 'PATCH') {
-		const canvas = getCanvas(decodeURIComponent(m[1]))
-		return json(links.update(canvas.id, decodeURIComponent(m[2]), (await req.json().catch(() => null)) as Record<string, unknown> | null))
 	}
 
 	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/status$/.exec(p)

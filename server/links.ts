@@ -34,17 +34,10 @@ export interface LinkDeps {
 const SESSION_ID = /^ses_[A-Za-z0-9]{26}$/
 const SERVER_KEY = /^[A-Za-z0-9_-]{1,64}$/
 const OWNER_ID = /^[A-Za-z0-9_-]{8,64}$/
-const TITLE_MAX = 200
 /** a busy status not refreshed for this long is dropped (the owner's tab refreshes it every 20s) */
 const STATUS_TTL_MS = 60_000
 
 const key = (canvasId: string, sessionId: string) => `${canvasId}/${sessionId}`
-
-function titleField(value: unknown): string | undefined {
-	if (value === undefined || value === null) return undefined
-	if (typeof value !== 'string') throw new LinkError(400, '"title" must be a string')
-	return value.trim().replace(/\s+/g, ' ').slice(0, TITLE_MAX)
-}
 
 /** Stored records keep only what a link is; anything else (older fields) is dropped. */
 function clean(r: Partial<SessionLink> | null): SessionLink | null {
@@ -53,7 +46,6 @@ function clean(r: Partial<SessionLink> | null): SessionLink | null {
 		canvasId: r.canvasId,
 		sessionId: r.sessionId,
 		serverKey: typeof r.serverKey === 'string' ? r.serverKey : '',
-		title: typeof r.title === 'string' ? r.title : '',
 		color: typeof r.color === 'string' ? r.color : sessionColor(r.sessionId),
 		createdAt: Number(r.createdAt) || Date.now(),
 		ownerId: typeof r.ownerId === 'string' ? r.ownerId : '',
@@ -108,7 +100,7 @@ export function createLinks(deps: LinkDeps, stored: unknown[]) {
 		/** Whether the session is working right now (as its owner's tab last said). */
 		isBusy: (canvasId: string, sessionId: string) => busy.has(key(canvasId, sessionId)),
 
-		/** Links a session to this browser: {"sessionId", "serverKey", "ownerId", "title"?}. */
+		/** Links a session to this browser: {"sessionId", "serverKey", "ownerId"}. */
 		link(canvasId: string, body: Record<string, unknown> | null): SessionLink {
 			const { sessionId, serverKey, ownerId } = body ?? {}
 			if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) {
@@ -123,16 +115,8 @@ export function createLinks(deps: LinkDeps, stored: unknown[]) {
 			if (!deps.canvasExists(canvasId)) throw new LinkError(404, `no canvas ${canvasId}`)
 			const existing = records.get(key(canvasId, sessionId))
 			if (existing && existing.ownerId !== ownerId) throw new LinkError(409, 'that session is already linked by another browser')
-			if (existing) return put({ ...existing, serverKey, title: titleField(body?.title) || existing.title })
-			return put({ canvasId, sessionId, serverKey, title: titleField(body?.title) ?? '', color: sessionColor(sessionId), createdAt: Date.now(), ownerId })
-		},
-
-		/** Renames the link (its session's title changed). */
-		update(canvasId: string, sessionId: string, body: Record<string, unknown> | null): SessionLink {
-			const r = get(canvasId, sessionId)
-			const title = titleField(body?.title)
-			if (title === undefined) throw new LinkError(400, 'send {"title"}')
-			return title === r.title ? r : put({ ...r, title })
+			if (existing) return existing.serverKey === serverKey ? existing : put({ ...existing, serverKey })
+			return put({ canvasId, sessionId, serverKey, color: sessionColor(sessionId), createdAt: Date.now(), ownerId })
 		},
 
 		/** The owner's tab reports whether the session is working: {"busy", "ownerId"}. */

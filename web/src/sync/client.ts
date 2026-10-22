@@ -1,4 +1,4 @@
-import type { AnnotationView, Canvas, CanvasData, CanvasSummary, Item, ServerEvent, SessionLink } from '../../../shared/types'
+import type { AnnotationView, Canvas, CanvasData, CanvasSummary, Item, OpenCodeSessionInfo, ServerEvent, SessionLink } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import { API_BASE, BASE, url as withBase, wsUrl } from '../base'
 
@@ -38,9 +38,16 @@ export const deleteCanvas = (id: string) =>
 export const deleteSession = (canvasId: string, id: string) =>
 	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
-/** Renames a session's frame for everyone (creating the session if there's none). */
-export const renameSession = (canvasId: string, id: string, title: string) =>
-	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(id)}`, json('PUT', { title }))
+/**
+ * Gives a session a frame (if it has none). `title` is only a fallback, shown until a paired browser
+ * reports the session from OpenCode; `serverKey` is the OpenCode it's on.
+ */
+export const addSessionFrame = (canvasId: string, id: string, meta: { title?: string; serverKey?: string }) =>
+	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(id)}`, json('PUT', meta))
+
+/** What OpenCode says about the canvas's sessions, for everyone looking (see opencode/live.ts). Sessions without a frame are ignored. */
+export const mirrorSessions = (canvasId: string, sessions: ({ sessionId: string; serverKey: string } & OpenCodeSessionInfo)[]) =>
+	request<{ updated: string[] }>(`/api/canvases/${encodeURIComponent(canvasId)}/opencode`, json('PUT', { sessions }))
 
 /** Hides or shows a session's frame for everyone. */
 export const setSessionHidden = (canvasId: string, id: string, hidden: boolean) =>
@@ -65,7 +72,7 @@ export const peekAnnotations = (canvasId: string, sessionId: string) =>
 export const consumeAnnotations = (canvasId: string, ids: string[], sessionId: string) =>
 	request<AnnotationView[]>(`/api/canvases/${encodeURIComponent(canvasId)}/annotations/consume`, json('POST', { ids, sessionId }))
 
-/** Uploads media as an item (multipart). createdAt orders it in its group; sessionTitle names a session this creates. */
+/** Uploads media as an item (multipart). createdAt orders it in its group; sessionTitle is its frame's fallback title. */
 export function uploadItem(
 	canvasId: string,
 	sessionId: string,
@@ -101,12 +108,9 @@ const linksPath = (canvasId: string, sessionId?: string) =>
 	`/api/canvases/${encodeURIComponent(canvasId)}/links${sessionId ? `/${encodeURIComponent(sessionId)}` : ''}`
 
 /** Links an OpenCode session to this browser (409 if another browser linked it). */
-export const linkSession = (canvasId: string, link: { sessionId: string; serverKey: string; ownerId: string; title: string }) =>
+export const linkSession = (canvasId: string, link: { sessionId: string; serverKey: string; ownerId: string }) =>
 	request<SessionLink>(linksPath(canvasId), json('POST', link))
 export const unlinkSession = (canvasId: string, sessionId: string) => request<unknown>(linksPath(canvasId, sessionId), { method: 'DELETE' })
-/** Renames the link (its session's title changed). */
-export const updateLink = (canvasId: string, sessionId: string, changes: { title: string }) =>
-	request<SessionLink>(linksPath(canvasId, sessionId), json('PATCH', changes))
 /** Says whether our linked session is working, for everyone looking (still sent if the tab is closing). */
 export const reportStatus = (canvasId: string, sessionId: string, status: { busy: boolean; ownerId: string }) =>
 	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/status`, {

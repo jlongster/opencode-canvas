@@ -23,9 +23,9 @@ export interface AttentionDeps {
 	resolveTarget(canvasId: string, target: string): Promise<string>
 	/** an item target's original pixel size (null for frames, groups and notes) */
 	itemSize(target: string): { width: number; height: number } | null
-	/** names the session's frame after its OpenCode session; with `create`, gives it a frame if it has none */
+	/** gives the session's frame the agent's title as its fallback; with `create`, gives it a frame if it has none */
 	nameSession(canvasId: string, sessionId: string, title: string | undefined, create: boolean): void
-	/** the session's frame title, for the note's author when no title is sent */
+	/** the session's frame title (OpenCode's, or the fallback), for the note's author */
 	sessionTitle(canvasId: string, sessionId: string): string
 	/** about where a note with this anchor lands on the page now (browsers place it exactly), for its stored x/y */
 	roughPosition(canvasId: string, sessionId: string, anchor: NoteAnchor): { x: number; y: number }
@@ -175,7 +175,8 @@ export function createAttention(deps: AttentionDeps) {
 			// A say goes at the top of the session's frame, so it gets one if it has none yet.
 			deps.nameSession(canvasId, sessionId, title || undefined, kind === 'say')
 			const { x, y } = deps.roughPosition(canvasId, sessionId, anchor)
-			const author = title || deps.sessionTitle(canvasId, sessionId)
+			// (browsers label it with the frame's live title anyway; this is for the notes API)
+			const author = deps.sessionTitle(canvasId, sessionId) || title || ''
 			const id = crypto.randomUUID().slice(0, 12)
 			const note = await deps.changeDoc(canvasId, (doc) => {
 				const map = new Y.Map<unknown>()

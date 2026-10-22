@@ -11,7 +11,7 @@ import {
 import { listenForPastedPages } from './pastePage'
 import { Attention } from '../multiplayer/Attention'
 import { SessionControl } from '../multiplayer/SessionControl'
-import { FrameTitles } from '../opencode/frameTitles'
+import { FrameSessions } from '../opencode/live'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedAnnotations } from '../multiplayer/SharedAnnotations'
@@ -19,17 +19,19 @@ import { SubmitAnnotations } from '../multiplayer/SubmitAnnotations'
 import { SharedNotes } from '../multiplayer/SharedNotes'
 import { AttentionTray } from './Attention'
 import { FrameAsks } from './FrameAsks'
-import { SessionsButton } from './Sessions'
+import { EndedFrameMarks, SessionsButton, sessionsPopover } from './Sessions'
 import { SessionPrompt } from './PromptThread'
 import { CursorChat } from './CursorChat'
 import { DeepLink } from './deepLink'
-import { FramesStatus, HiddenLinkToast } from './FramesPanel'
+import { HiddenLinkToast } from './HiddenLinkToast'
 import { HtmlDrawer } from './HtmlDrawer'
 import { NotFound } from './NotFound'
 import { SeedPicker } from './SeedPicker'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
 import { API_BASE } from '../base'
+// hiding frames (their title's eye), the hidden-link toast, the attention bar's hidden rows
+import './frames.css'
 
 /** The last used select/hand tool is remembered across reloads; the note and annotate tools never are. */
 const TOOL_KEY = 'canvas.tool'
@@ -182,16 +184,20 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					// What sessions want people to look at: their sticky notes (and what they ask), for the bar at the top.
 					const calls = new Attention(editor, control, notes)
 					const cursors = new PeerCursors(overlayRef.current!, editor, p)
+					// Every frame is an OpenCode session: what its OpenCode says about it, live (edit links tell everyone).
+					const frameSessions = new FrameSessions(editor, c.id, link.role === 'edit')
 					editor.frameChrome = {
 						status: (sessionId) => ({
 							color: sessionColor(sessionId),
 							canPrompt: control.canOpen(sessionId),
 							prompting: control.prompting.get() === sessionId,
+							ended: !!editor.sessions.get()[sessionId]?.opencode?.deleted,
 						}),
 						prompt: (sessionId) => control.toggle(sessionId),
 					}
 					disposers.push(
 						() => (editor.frameChrome = null),
+						() => frameSessions.destroy(),
 						() => cursors.destroy(),
 						() => control.destroy(),
 						() => notes.destroy(),
@@ -199,9 +205,8 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 						() => p.destroy(),
 					)
 					if (link.role === 'edit') {
-						const frameTitles = new FrameTitles(editor, c.id)
 						const submit = new SubmitAnnotations(overlayRef.current!, editor, p, control, c.id, () => canvasTitle)
-						disposers.push(() => frameTitles.destroy(), () => submit.destroy(), listenForPastedPages(editor, c.id))
+						disposers.push(() => submit.destroy(), listenForPastedPages(editor, c.id))
 					}
 					setPresence(p)
 					setSessions(control)
@@ -268,9 +273,9 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					<Toolbar editor={editor} canvas={role === 'edit' ? canvas : null} sessions={sessions?.canPrompt ? sessions : null} />
 				</div>
 			</div>
-			<FramesStatus editor={editor} canEdit={role === 'edit'} />
 			<UndoToast editor={editor} />
 			<HiddenLinkToast editor={editor} canEdit={role === 'edit'} />
+			<EndedFrameMarks editor={editor} />
 			{canvas && <EmptyState editor={editor} canvas={canvas} role={role} topStack={topStack} />}
 			{(rendererError || error) && (
 				<div className="error">
@@ -411,7 +416,11 @@ function Toolbar({ editor, canvas, sessions }: { editor: Editor; canvas: Canvas 
 	const zoom = useValue(() => Math.round(editor.camera.get().z * 100))
 	const hasSelection = useValue(() => editor.selectedIds.get().length > 0)
 	const [sharing, setSharing] = useState(false)
-	const [adding, setAdding] = useState(false)
+	const adding = useValue(() => sessionsPopover.get() !== null)
+	useEffect(() => {
+		if (adding) setSharing(false)
+	}, [adding])
+	useEffect(() => () => sessionsPopover.set(null), [])
 
 	return (
 		<div className="toolbar" onPointerDown={(e) => e.stopPropagation()}>
@@ -429,23 +438,13 @@ function Toolbar({ editor, canvas, sessions }: { editor: Editor; canvas: Canvas 
 			{canvas && <div className="sep" />}
 			{canvas && (
 				<>
-					{sessions && (
-						<SessionsButton
-							editor={editor}
-							sessions={sessions}
-							open={adding}
-							setOpen={(open) => {
-								setAdding(open)
-								if (open) setSharing(false)
-							}}
-						/>
-					)}
+					{sessions && <SessionsButton editor={editor} sessions={sessions} />}
 					<button
 						title="Links to this canvas"
 						aria-pressed={sharing}
 						onClick={() => {
 							setSharing(!sharing)
-							setAdding(false)
+							sessionsPopover.set(null)
 						}}
 					>
 						Share

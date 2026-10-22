@@ -263,8 +263,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 		.string()
 		.optional()
 		.describe(
-			'Your OpenCode session\'s title (e.g. from `opencode api get /api/session/$OPENCODE_SESSION_ID` → .data.title). ' +
-				'Keeps your frame named after your session, following renames; pass it every time.',
+			'Optional: your OpenCode session\'s title. Only a fallback: your frame shows it until a browser paired with your ' +
+				'OpenCode reports the session, whose live title (renames included) always wins.',
 		)
 
 	function buildServer() {
@@ -279,8 +279,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'say at the top of your frame, highlight right next to what you point at. Notes stay until the user acknowledges ' +
 					'them, which removes them; the user steps through them from the bar at the top. Point at what you mean: pass highlight ' +
 					'a point {x,y} or region {x,y,w,h} in the item\'s image pixels (same units as annotation px/py and get_item\'s ' +
-					'width/height): the note sits beside it with a pointer to it; omit them only to mean the whole item. Pass sessionId and sessionTitle (your OpenCode session\'s ' +
-					'title) on every post_item, say and highlight. The user gives feedback on a specific spot of an image with ' +
+					'width/height): the note sits beside it with a pointer to it; omit them only to mean the whole item. Pass sessionId on every post_item, say and highlight (your ' +
+					'frame is titled after your OpenCode session; sessionTitle is an optional fallback). The user gives feedback on a specific spot of an image with ' +
 					'annotations: check list_annotations (filter by your sessionId) for feedback on what you posted: freehand ' +
 					'drawings with optional text (strokes and bbox in pixels of the original image; look at markedImageUrl to ' +
 					'see what was circled). Reading annotations consumes them: they disappear from ' +
@@ -315,7 +315,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'Everything on one canvas: its sessions (one frame per OpenCode session) in frame order, left to right, each ' +
 					'with its groups and their items (id, name, title, kind, size, media url), plus its sticky notes and annotations ' +
 					'(pencil drawings and notes on items; see list_annotations). People can hide frames ("hidden": true): a ' +
-					'hidden frame isn\'t shown on the canvas but still takes posts (posting doesn\'t unhide it).',
+					'hidden frame isn\'t shown on the canvas but still takes posts (posting doesn\'t unhide it). Frames are titled ' +
+					'after their OpenCode session; "ended": true means OpenCode deleted the session (its frame and items stay).',
 				inputSchema: { canvas: canvasArg },
 			},
 			tool(async ({ canvas }: { canvas: string }) => {
@@ -330,6 +331,7 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 						id: s.id,
 						title: s.title,
 						...(s.hidden ? { hidden: true } : {}),
+						...(s.opencode?.deleted ? { ended: true } : {}),
 						groups: s.groups.map((g) => ({ name: g.name, items: g.items.map((i) => itemSummary(i)) })),
 					})),
 					notes: notes.map(noteSummary),
@@ -587,8 +589,8 @@ export function createCanvasMcp(deps: CanvasMcpDeps) {
 					'whenever you can: take one with your browser tooling. The canvas never fetches the URL itself, so any address works ' +
 					'(localhost, Tailscale, private networks); without a screenshot it shows as a link card (title, or the host, and the URL). ' +
 					'People open the real page from it. Use group to organise items ' +
-					'within the session. Pass sessionTitle (your OpenCode session\'s title) on every post: it keeps your ' +
-					'frame named after your session and follows renames. Posting to a frame people hid ' +
+					'within the session. Your frame is titled after your OpenCode session (sessionTitle is only a fallback ' +
+					'until a paired browser reports it). Posting to a frame people hid ' +
 					'works but doesn\'t unhide it. For a new version of something you already posted, replace that item with ' +
 					'update_item instead.',
 				inputSchema: {

@@ -24,7 +24,8 @@ On a canvas you can then:
   reply, and the input. While a session works, a band of embers crawls round its frame, for
   everyone on the canvas, and resolves into a bright rim when it's done. Questions and permission
   requests it asks show at its frame as soon as it asks (a chip at the screen's edge points to it
-  when it's off screen). **Sessions** in the toolbar adds an OpenCode session's frame to the canvas.
+  when it's off screen). **Sessions** (top right) lists the sessions of every paired OpenCode in
+  one list, most recently active first: pick one to add its frame, or to go to it.
 - Let agents **post** to it, over MCP or HTTP (below), replace what they posted with new versions in
   place, and point you at things: `say` and `highlight` place a sticky note from the session (its
   colour and title) where it wants you to look. A `say` goes at the top of the session's frame; a
@@ -49,9 +50,9 @@ On a canvas you can then:
   Page items show a screenshot when the poster sent one (with the site's domain in a corner), else
   a link card; **Open** opens the real page in a new tab. Agents post them too (`page` below), with
   a screenshot. The canvas never fetches the page itself.
-- **Arrange frames**: drag a frame by its title to move it, or hide it with the eye on its title.
-  The frame count at the bottom left opens a list of every frame, hidden ones included, to show,
-  hide and reorder them. The arrangement is shared with everyone on the canvas.
+- **Arrange frames**: drag a frame by its title to move it, or hide it with the eye on its title;
+  **Sessions** lists the hidden ones, to show them again. The arrangement is shared with everyone
+  on the canvas.
 
 ## Options
 
@@ -86,6 +87,15 @@ Your browser is the only thing that talks to OpenCode; the canvas server never d
   canvas must be allowed once: `opencode service set cors <site origin>` (this replaces the list of
   extra sites, comma separated).
 
+Each frame **is** an OpenCode session. Your browser, paired with the OpenCode it's on, titles the
+frame after the session when the canvas loads and follows it live: rename the session in any
+OpenCode client and the frame (and its notes, and the Sessions list) follow within a moment; a
+session deleted in OpenCode keeps its frame and items, marked as ended. Your browser also tells the
+canvas server, which passes it on, so everyone sees the same titles, paired or not (and so do you
+when no paired tab is open). The canvas keeps only its own state for each session: its items,
+groups, notes, order and whether it's hidden. The title an agent posts with (`sessionTitle`) is
+just a fallback until then.
+
 Prompting a session from its frame links it to your browser: while one of your tabs has the canvas
 open, it talks to that session's OpenCode and tells everyone whether it's working (the busy band)
 and shares its replies. Only you can prompt it; others see it work and reply.
@@ -114,7 +124,7 @@ ln -s "$PWD/skill/canvas" ~/.config/opencode/skills/canvas
 **The MCP server**: the canvas server is an MCP server (Streamable HTTP) at
 `http://localhost:4545/mcp`, with tools to list and create canvases, post, update and delete items
 (`update_item` replaces an item's image, video or HTML in place: same id, place and comments, moved
-to the top of its group, swapped live on open canvases), post links to web pages (`post_item` with
+to the top of its group, swapped live on open canvases; `sessionTitle` is optional, see above), post links to web pages (`post_item` with
 `page`, its URL, plus a screenshot as `path`; `url` is for media files), see what people have selected, read sticky notes and annotations (pencil drawings with optional notes,
 with the strokes in image pixels and a marked image: `list_annotations`, which consumes them unless `keep: true`), and `say` / `highlight` to place a sticky
 note where they want you to look (you acknowledge it to remove it). It's only a tool provider: agents using it don't appear on the

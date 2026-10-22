@@ -6,7 +6,7 @@ import { parseSelectionId } from '../editor/selection'
 import { answerQuestion, dismissQuestion, listAsks, replyPermission, type Ask, type AskValue, type PermissionAsk, type QuestionAsk } from '../opencode/asks'
 import { ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { atom, computed, react, type Atom } from '../state/signals'
-import { linkSession, renameSession, unlinkSession } from '../sync/client'
+import { addSessionFrame, linkSession, unlinkSession } from '../sync/client'
 import type { Peer, Presence } from './Presence'
 import { runsHere, SessionHost, sessionName } from './SessionHost'
 
@@ -101,7 +101,7 @@ export class SessionControl {
 	) {
 		this.busy = busy
 		let seen: string | null = null
-		this.host = new SessionHost(canvasId, records, (id) => this.editor.sessions.peek()[id]?.title)
+		this.host = new SessionHost(canvasId, records, this.editor.sessions)
 		this.disposers.push(
 			react(() => {
 				const busy = this.busy.get()
@@ -198,12 +198,11 @@ export class SessionControl {
 		return this.records.peek().find((r) => r.sessionId === sessionId)
 	}
 
-	/** A session's name: its frame's title, else its link's, else a short id (reactive). */
+	/** A session's name: its frame's title (its OpenCode session's, see opencode/live.ts), else a short id (reactive). */
 	label(sessionId: string) {
 		const title = this.editor.sessions.get()[sessionId]?.title.trim()
 		if (title && title !== sessionId) return title
-		const r = this.records.get().find((x) => x.sessionId === sessionId)
-		return sessionName({ sessionId, title: r?.title ?? '' })
+		return sessionName(sessionId, '')
 	}
 
 	/** Puts a session's questions away here until what it asks changes (`key`: what it asks now). */
@@ -249,7 +248,7 @@ export class SessionControl {
 		try {
 			const found = await findSession(sessionId)
 			if (!found) return fail(pairings.peek().length ? 'No OpenCode paired in this browser has this session.' : 'Pair the OpenCode it runs on (Sessions, top right) to prompt it from here.')
-			this.put(await linkSession(this.canvasId, { sessionId, serverKey: found.serverKey, ownerId, title: found.title }))
+			this.put(await linkSession(this.canvasId, { sessionId, serverKey: found.serverKey, ownerId }))
 		} catch (e) {
 			// Someone linked it meanwhile: theirs.
 			if ((e as { status?: number }).status === 409) return fail('Another browser linked it meanwhile.')
@@ -265,10 +264,10 @@ export class SessionControl {
 	 */
 	async add(sessionId: string, found: { serverKey: string; title: string }): Promise<string | null> {
 		if (!this.canEdit) return null
-		if (!this.editor.sessions.peek()[sessionId]) await renameSession(this.canvasId, sessionId, found.title)
+		if (!this.editor.sessions.peek()[sessionId]) await addSessionFrame(this.canvasId, sessionId, { title: found.title, serverKey: found.serverKey })
 		if (!this.record(sessionId)) {
 			try {
-				this.put(await linkSession(this.canvasId, { sessionId, serverKey: found.serverKey, ownerId, title: found.title }))
+				this.put(await linkSession(this.canvasId, { sessionId, serverKey: found.serverKey, ownerId }))
 			} catch (e) {
 				if ((e as { status?: number }).status !== 409) throw e
 			}

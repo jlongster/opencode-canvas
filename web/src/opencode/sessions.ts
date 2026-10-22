@@ -5,18 +5,21 @@ const SESSIONS_LIMIT = 50
 /** a server that hasn't listed its sessions by then counts as failed (it can be retried) */
 const LIST_TIMEOUT_MS = 8_000
 
-const listeners = new Set<(key: string, sessions: OpenCodeSessionSummary[]) => void>()
+type Listener = (key: string, sessions: OpenCodeSessionSummary[], startedAt: number) => void
 
-/** Calls `fn` with every server's sessions each time they're listed (by anyone in this tab). */
-export function onSessionsListed(fn: (key: string, sessions: OpenCodeSessionSummary[]) => void): () => void {
+const listeners = new Set<Listener>()
+
+/** Calls `fn` with every server's sessions each time they're listed (by anyone in this tab), and when the listing started (performance.now()). */
+export function onSessionsListed(fn: Listener): () => void {
 	listeners.add(fn)
 	return () => listeners.delete(fn)
 }
 
 /** One server's recent top-level sessions (no subagents) across all its projects, newest first; fails if it doesn't answer within LIST_TIMEOUT_MS. */
 export function listServerSessions(key: string): Promise<OpenCodeSessionSummary[]> {
+	const startedAt = performance.now()
 	return listSessions(key).then((sessions) => {
-		for (const fn of listeners) fn(key, sessions)
+		for (const fn of listeners) fn(key, sessions, startedAt)
 		return sessions
 	})
 }

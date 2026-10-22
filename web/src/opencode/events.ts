@@ -2,6 +2,8 @@ import { clientFor, errorText, isUnauthorized, pairing } from './pairings'
 
 export interface OpenCodeEvent {
 	type: string
+	/** when it happened (ms) */
+	created?: number
 	data?: Record<string, unknown>
 }
 

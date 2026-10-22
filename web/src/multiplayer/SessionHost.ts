@@ -26,13 +26,13 @@
  */
 import { WebsocketProvider } from 'y-websocket'
 import * as Y from 'yjs'
-import type { SessionLink } from '../../../shared/types'
+import type { Session, SessionLink } from '../../../shared/types'
 import { wsUrl } from '../base'
 import { askCount, askText, listAsks, parseForm, parsePermission, type Ask } from '../opencode/asks'
 import { onOpenCodeEvents, type OpenCodeEvent } from '../opencode/events'
 import { errorText, ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { react, type Atom } from '../state/signals'
-import { renameSession, reportStatus, updateLink } from '../sync/client'
+import { reportStatus } from '../sync/client'
 import type { AskingInfo, PresenceState, SubagentInfo } from './Presence'
 
 const NAME_MAX = 40
@@ -51,10 +51,11 @@ const SUBAGENTS_MAX = 8
 const SUBAGENT_TITLE_MAX = 80
 const CHILDREN_LIMIT = 50
 
-export function sessionName(r: Pick<SessionLink, 'title' | 'sessionId'>) {
-	const title = r.title.trim()
-	if (!title) return `ses_…${r.sessionId.slice(-6)}`
-	return title.length > NAME_MAX ? title.slice(0, NAME_MAX - 1) + '…' : title
+/** A session's name for its live state in the room: its frame's title (OpenCode's), else a short id. */
+export function sessionName(sessionId: string, title: string) {
+	const t = title.trim()
+	if (!t || t === sessionId) return `ses_…${sessionId.slice(-6)}`
+	return t.length > NAME_MAX ? t.slice(0, NAME_MAX - 1) + '…' : t
 }
 
 /** Long replies keep their end: "…" plus the latest CHAT_MAX - 1 characters. */
@@ -93,13 +94,18 @@ export class SessionHost {
 	constructor(
 		private canvasId: string,
 		private records: Atom<SessionLink[]>,
-		/** the title of the session's frame on this canvas, undefined when it has none */
-		private frameTitle: (sessionId: string) => string | undefined,
+		/** the canvas's frames as shown, titled after their OpenCode sessions (see opencode/live.ts) */
+		private frames: Atom<Record<string, Session>>,
 	) {
 		this.disposers.push(
 			react(() => {
 				pairings.get()
 				this.sync(this.records.get())
+			}),
+			// A renamed session's live state takes its new name.
+			react(() => {
+				const frames = this.frames.get()
+				for (const [sessionId, run] of this.running) run.runtime?.setName(frames[sessionId]?.title ?? '')
 			}),
 		)
 	}
@@ -127,7 +133,7 @@ export class SessionHost {
 				if (run.stop.signal.aborted) return resolve()
 				const record = this.records.peek().find((r) => r.sessionId === sessionId)
 				if (!record) return resolve()
-				run.runtime = new SessionRuntime(this.canvasId, record, this.frameTitle)
+				run.runtime = new SessionRuntime(this.canvasId, record, this.frames.peek()[sessionId]?.title ?? '')
 				run.stop.signal.addEventListener('abort', () => {
 					run.runtime?.destroy()
 					run.runtime = null
@@ -201,23 +207,20 @@ class SessionRuntime {
 	constructor(
 		private canvasId: string,
 		private record: SessionLink,
-		private frameTitle: (sessionId: string) => string | undefined,
+		/** its frame's title */
+		private title: string,
 	) {
 		// Read-only: it never writes the canvas's document, it only shares live state.
 		this.provider = new WebsocketProvider(wsUrl('/api/rooms'), `canvas-${record.canvasId}`, this.doc, { disableBc: true, params: { view: '1' } })
 		this.publish()
 		this.unwatch = onOpenCodeEvents(record.serverKey, {
 			onEvent: (ev) => this.onEvent(ev),
-			onConnect: () => {
-				void this.reconcile()
-				void this.refreshTitle()
-			},
+			onConnect: () => void this.reconcile(),
 		})
 		this.reconcileTimer = window.setInterval(() => void this.reconcile(), RECONCILE_MS)
 		window.addEventListener('pagehide', this.onPageHide)
 		window.addEventListener('pageshow', this.onPageShow)
 		void this.reconcile()
-		void this.refreshTitle()
 	}
 
 	/** The tab is going away mid-turn: nobody will keep its busy status fresh, so it ends now (until it's back). */
@@ -230,9 +233,15 @@ class SessionRuntime {
 	}
 
 	setRecord(record: SessionLink) {
-		const changed = record.title !== this.record.title || record.color !== this.record.color
+		const changed = record.color !== this.record.color
 		this.record = record
 		if (changed) this.publish()
+	}
+
+	setName(title: string) {
+		if (title === this.title) return
+		this.title = title
+		this.publish()
 	}
 
 	destroy() {
@@ -256,7 +265,7 @@ class SessionRuntime {
 		if (this.destroyed) return
 		const r = this.record
 		const state: PresenceState = {
-			user: { name: sessionName(r), color: r.color, agent: true, sessionId: r.sessionId, serverKey: r.serverKey },
+			user: { name: sessionName(r.sessionId, this.title), color: r.color, agent: true, sessionId: r.sessionId, serverKey: r.serverKey },
 			cursor: null,
 			selection: [],
 			view: null,
@@ -289,8 +298,6 @@ class SessionRuntime {
 		if (data && typeof data.sessionID === 'string' && data.sessionID !== this.record.sessionId) return this.onFamilyEvent(ev.type, data.sessionID, data)
 		if (data?.sessionID !== this.record.sessionId) return
 		switch (ev.type) {
-			case 'session.renamed':
-				return void this.refreshTitle(typeof data.title === 'string' ? data.title : undefined)
 			case 'session.execution.started':
 				return this.setBusy(true)
 			case 'session.status': {
@@ -395,7 +402,6 @@ class SessionRuntime {
 		this.chat = chat ? capChat(chat) : null
 		this.chatSent = true
 		this.publish()
-		void this.refreshTitle()
 	}
 
 	/** Questions and permission requests coming and going (true when it was one, ours or not). */
@@ -569,24 +575,5 @@ class SessionRuntime {
 			}
 		}
 		this.publishSubagents()
-	}
-
-	/**
-	 * Sessions get their title after the first turn, and can be renamed: keep the link's title, and
-	 * its session's frame's title (when it has a frame here), in step.
-	 */
-	private async refreshTitle(known?: string) {
-		const { canvasId, sessionId, serverKey } = this.record
-		let title = known?.trim() || ''
-		if (!title) {
-			const s = await withServer(serverKey, (c) => c.session.get({ sessionID: sessionId })).catch(() => null)
-			title = s?.title?.trim() || ''
-		}
-		if (!title || this.destroyed) return
-		const frame = this.frameTitle(sessionId)
-		if (frame !== undefined && frame !== title) void renameSession(canvasId, sessionId, title).catch(() => {})
-		if (title === this.record.title) return
-		this.setRecord({ ...this.record, title })
-		await updateLink(canvasId, sessionId, { title }).catch(() => {})
 	}
 }

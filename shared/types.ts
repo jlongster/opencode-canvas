@@ -45,11 +45,29 @@ export interface CanvasData {
 	links: SessionLink[]
 }
 
-/** Sessions belong to a canvas; the same OpenCode session id may appear in several canvases. */
+/**
+ * A session's frame on a canvas. Each frame is an OpenCode session (the same session may have a
+ * frame on several canvases): its title and the rest come from OpenCode, through the browsers
+ * paired with it (see `opencode`). The canvas keeps only what's its own: which sessions it shows
+ * and how (hidden, the order, the items and notes in them).
+ */
 export interface Session {
 	id: string
 	canvasId: string
+	/**
+	 * What the frame is titled: the OpenCode session's title (`opencode.title`) once a paired browser
+	 * has reported it, else the title it was posted with (`postedTitle`), else "".
+	 */
 	title: string
+	/**
+	 * The title an agent posted with (`sessionTitle`), or a frame was made with: shown only until a
+	 * paired browser reports the session from OpenCode, whose title always wins.
+	 */
+	postedTitle?: string
+	/** The OpenCode server it lives on (a pairing's non-secret key), once a paired browser found it there. */
+	serverKey?: string
+	/** The session as its OpenCode last reported it, mirrored here by a paired browser for everyone. */
+	opencode?: OpenCodeSessionInfo
 	createdAt: number
 	/**
 	 * Hidden from the canvas (PATCH /api/canvases/:cid/sessions/:sid): not laid out or drawn, for
@@ -223,6 +241,23 @@ export interface PresenceEntry {
 	thinking?: boolean
 }
 
+/**
+ * What OpenCode says about a session, as a paired browser read it (web/src/opencode/live.ts) and
+ * mirrored it onto the canvas's frames (PUT /api/canvases/:cid/opencode).
+ */
+export interface OpenCodeSessionInfo {
+	/** "" while it has none */
+	title: string
+	/** a subagent's parent session */
+	parentId?: string
+	agent?: string
+	directory?: string
+	createdAt?: number
+	updatedAt?: number
+	/** OpenCode deleted it: its frame and items stay, marked as ended */
+	deleted?: boolean
+}
+
 /** One OpenCode session, as the browser lists it from a paired OpenCode (see web/src/opencode). */
 export interface OpenCodeSessionSummary {
 	id: string
@@ -259,7 +294,6 @@ export interface SessionLink {
 	sessionId: string
 	/** non-secret id of the OpenCode server the session lives on (a hash of its URL) */
 	serverKey: string
-	title: string
 	color: string
 	createdAt: number
 	/** random id kept in the owner browser's localStorage; only that browser can prompt it */

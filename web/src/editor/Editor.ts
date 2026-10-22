@@ -1,4 +1,5 @@
-import type { Item, Session } from '../../../shared/types'
+import { frameTitle } from '../../../shared/sessionTitle'
+import type { Item, OpenCodeSessionInfo, Session } from '../../../shared/types'
 import { atom, computed, getGlobalEpoch, react, transact } from '../state/signals'
 import { Box, clamp, easeInOutCubic, lerp, Vec } from './geometry'
 import { Deletions } from './Deletions'
@@ -72,6 +73,26 @@ export interface FrameStatus {
 	canPrompt: boolean
 	/** its prompt is open */
 	prompting: boolean
+	/** OpenCode deleted its session: the frame stays, marked as ended */
+	ended: boolean
+}
+
+/** What OpenCode says about a frame's session, as this tab read it from the server it's on (see opencode/live.ts). */
+export interface LiveSession extends OpenCodeSessionInfo {
+	serverKey: string
+}
+
+const shownWithLive = new WeakMap<Session, { info: LiveSession; shown: Session }>()
+
+/** A frame's record with what this tab's OpenCode says about its session (the same object while neither changes). */
+function withLive(record: Session, info: LiveSession): Session {
+	const hit = shownWithLive.get(record)
+	if (hit?.info === info) return hit.shown
+	const { serverKey, ...opencode } = info
+	// (an untitled OpenCode session falls back to what the canvas server shows)
+	const shown: Session = { ...record, serverKey, opencode, title: frameTitle(record.postedTitle || record.title, opencode) }
+	shownWithLive.set(record, { info, shown })
+	return shown
 }
 
 /**
@@ -137,6 +158,17 @@ export class Inputs {
  */
 export class Editor {
 	// --- records ---
+	/** The canvas's session frames as the canvas server has them (its mirror of what OpenCode says included). */
+	readonly sessionRecords = atom<Record<string, Session>>('sessionRecords', {})
+	/**
+	 * What OpenCode says about the frames' sessions, as this tab read it from its paired servers (see
+	 * opencode/live.ts and setLiveSessions): newer than the canvas server's mirror, so it wins.
+	 */
+	readonly liveSessions = atom<Record<string, LiveSession>>('liveSessions', {})
+	/**
+	 * The frames as shown: each record with what OpenCode says about its session here (its title,
+	 * renames included). Kept in step with sessionRecords and liveSessions by the methods that set them.
+	 */
 	readonly sessions = atom<Record<string, Session>>('sessions', {})
 	readonly items = atom<Record<string, Item>>('items', {})
 	/** The canvas's arranged frame order (Canvas.sessionOrder). */
@@ -267,7 +299,8 @@ export class Editor {
 
 	loadSnapshot(sessions: Session[], items: Item[]) {
 		transact(() => {
-			this.sessions.set(Object.fromEntries(sessions.map((s) => [s.id, s])))
+			this.sessionRecords.set(Object.fromEntries(sessions.map((s) => [s.id, s])))
+			this.showSessions()
 			this.items.set(Object.fromEntries(items.map((i) => [i.id, i])))
 			this.pruneSelection(['item', 'frame'])
 		})
@@ -275,9 +308,33 @@ export class Editor {
 
 	putSession(session: Session) {
 		transact(() => {
-			this.sessions.update((s) => ({ ...s, [session.id]: session }))
+			this.sessionRecords.update((s) => ({ ...s, [session.id]: session }))
+			this.showSessions()
 			if (session.hidden) this.pruneSelection(['item', 'frame'])
 		})
+	}
+
+	/** What this tab's paired OpenCode servers say about the frames' sessions, by session id (see opencode/live.ts). */
+	setLiveSessions(live: Record<string, LiveSession>) {
+		transact(() => {
+			this.liveSessions.set(live)
+			this.showSessions()
+		})
+	}
+
+	/** Brings `sessions` up to date: each record with what OpenCode says about it here, unchanged objects kept. */
+	private showSessions() {
+		const records = this.sessionRecords.peek()
+		const live = this.liveSessions.peek()
+		const prev = this.sessions.peek()
+		const next: Record<string, Session> = {}
+		let same = Object.keys(prev).length === Object.keys(records).length
+		for (const [id, record] of Object.entries(records)) {
+			const info = live[id]
+			next[id] = info ? withLive(record, info) : record
+			if (prev[id] !== next[id]) same = false
+		}
+		if (!same) this.sessions.set(next)
 	}
 
 	setSessionOrder(order: string[] | undefined) {
@@ -290,7 +347,8 @@ export class Editor {
 
 	deleteSession(id: string) {
 		transact(() => {
-			this.sessions.update(({ [id]: _, ...rest }) => rest)
+			this.sessionRecords.update(({ [id]: _, ...rest }) => rest)
+			this.showSessions()
 			this.items.update((items) => Object.fromEntries(Object.entries(items).filter(([, i]) => i.sessionId !== id)))
 			this.pruneSelection(['item', 'frame'])
 		})
@@ -341,14 +399,14 @@ export class Editor {
 
 	/** Hides or shows a frame for everyone (edit links), straight away here. */
 	setFrameHidden(sessionId: string, hidden: boolean) {
-		const session = this.sessions.peek()[sessionId]
+		const session = this.sessionRecords.peek()[sessionId]
 		if (!this.frames || !session || !!session.hidden === hidden) return
 		const { hidden: _, hiddenAt: __, ...rest } = session
 		this.putSession(hidden ? { ...rest, hidden: true, hiddenAt: Date.now() } : rest)
 		if (!hidden && this.hiddenLink.peek()?.sessionId === sessionId) this.hiddenLink.set(null)
 		this.frames.setHidden(sessionId, hidden).catch((e) => {
 			console.error('could not change whether the frame is hidden', e)
-			const now = this.sessions.peek()[sessionId]
+			const now = this.sessionRecords.peek()[sessionId]
 			if (now) this.putSession({ ...now, hidden: session.hidden, hiddenAt: session.hiddenAt })
 		})
 	}

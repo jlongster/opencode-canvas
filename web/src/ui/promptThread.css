@@ -1,12 +1,12 @@
 /* A session's prompt at its frame (PromptThread.tsx) and the questions at its frame (FrameAsks.tsx): separate bubbles, one line each until opened. */
 
 .pt {
-	--surf: #151518;
-	--line: rgba(255, 255, 255, 0.08);
-	--line2: rgba(255, 255, 255, 0.13);
-	--tx: #e7e7ea;
-	--mut: #9a9aa3;
-	--dim: #64646d;
+	--surf: var(--panel);
+	--line: var(--border);
+	--line2: var(--border-strong);
+	--tx: var(--text);
+	--mut: var(--text-muted);
+	--dim: var(--text-dim);
 	--shadow:
 		0 10px 24px -8px rgba(0, 0, 0, 0.55),
 		0 2px 6px rgba(0, 0, 0, 0.3);
@@ -219,8 +219,8 @@
 	width: 44px;
 	height: 44px;
 	border-radius: 6px;
-	border: 1px solid rgba(255, 255, 255, 0.1);
-	background: #1c1c20;
+	border: 1px solid var(--border);
+	background: var(--raised);
 }
 
 .pt-th img,
@@ -245,7 +245,7 @@ img.pt-th.sm {
 	width: 16px;
 	height: 16px;
 	border-radius: 50%;
-	background: #2a2a2f;
+	background: var(--raised-2);
 	border: 1px solid var(--line2);
 	display: grid;
 	place-items: center;
@@ -550,7 +550,7 @@ img.pt-th.sm {
 	display: grid;
 	place-items: center;
 	border-radius: 13px;
-	background: color-mix(in srgb, #151518 82%, var(--c));
+	background: color-mix(in srgb, var(--panel) 82%, var(--c));
 	color: var(--tx);
 	font-size: 12px;
 	pointer-events: none;
@@ -873,7 +873,7 @@ img.pt-th.sm {
 	display: grid;
 	place-items: center;
 	color: var(--mut);
-	background: #222226;
+	background: var(--raised);
 	border: 1px solid var(--line2);
 	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
 	transition:
@@ -884,7 +884,7 @@ img.pt-th.sm {
 .pt .pt-fb:hover,
 .pt .pt-fb[aria-expanded='true'] {
 	color: var(--tx);
-	background: #2e2e33;
+	background: var(--raised-2);
 }
 
 .pt .pt-fb:focus-visible {
@@ -905,7 +905,7 @@ img.pt-th.sm {
 	display: flex;
 	flex-direction: column;
 	padding: 4px;
-	background: #222226;
+	background: var(--raised);
 	border: 1px solid var(--line2);
 	border-radius: 8px;
 	box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);

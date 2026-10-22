@@ -24,7 +24,7 @@
 	height: 18px;
 	padding: 0 6px;
 	border-radius: 5px;
-	background: rgba(12, 12, 14, 0.62);
+	background: rgb(var(--canvas-rgb) / 0.62);
 	color: rgba(255, 255, 255, 0.92);
 	font-size: 11px;
 	font-weight: 600;
@@ -47,7 +47,7 @@
 	display: grid;
 	place-items: center;
 	border-radius: 50%;
-	background: rgba(12, 12, 14, 0.42);
+	background: rgb(var(--canvas-rgb) / 0.42);
 	color: rgba(255, 255, 255, 0.82);
 	backdrop-filter: blur(4px);
 }
@@ -72,7 +72,7 @@
 	height: 34px;
 	padding: 0 5px;
 	border-radius: 9px;
-	background: rgba(14, 14, 17, 0.72);
+	background: rgb(var(--canvas-rgb) / 0.72);
 	color: rgba(255, 255, 255, 0.9);
 	font-size: 11.5px;
 	font-variant-numeric: tabular-nums;

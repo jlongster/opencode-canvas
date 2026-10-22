@@ -53,8 +53,9 @@ function drawCard(width: number, height: number, title: string, url: string): st
 	const cy = height / 2
 
 	const bg = c.createLinearGradient(0, 0, 0, height)
-	bg.addColorStop(0, '#1d1e24')
-	bg.addColorStop(1, '#141519')
+	// a little lighter than its frame at the top, a little darker at the bottom (see THEME.frame)
+	bg.addColorStop(0, '#2a2b32')
+	bg.addColorStop(1, '#1e1f24')
 	c.fillStyle = bg
 	c.fillRect(0, 0, width, height)
 	const glow = c.createRadialGradient(cx, cy - 70 * u, 0, cx, cy - 70 * u, 320 * u)

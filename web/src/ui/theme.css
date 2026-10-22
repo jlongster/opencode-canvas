@@ -1,0 +1,38 @@
+/*
+ * The app's dark theme: one neutral scale, each surface about 4 L* above the one under it, and the
+ * text and border colours that go on it. The renderer draws the canvas and frames with the same
+ * values (see web/src/theme.ts, keep the two in step).
+ *
+ * Each surface also comes as "r g b" (--*-rgb), for translucent versions: rgb(var(--panel-rgb) / 0.9).
+ */
+:root {
+	/* the canvas, behind everything (L* 9) */
+	--canvas-rgb: 26 26 29;
+	/* a session's frame on the canvas (L* 14) */
+	--frame-rgb: 35 35 39;
+	/* toolbars, popovers, the attention bar, prompt bubbles (L* 18) */
+	--panel-rgb: 43 43 48;
+	/* things on a panel: menus, thumbnails, hovered chips, dragged rows (L* 22) */
+	--raised-rgb: 52 52 58;
+	/* the top step: pressed or open things on a raised surface (L* 26) */
+	--raised-2-rgb: 61 61 67;
+
+	--canvas: rgb(var(--canvas-rgb));
+	--frame: rgb(var(--frame-rgb));
+	--panel: rgb(var(--panel-rgb));
+	--raised: rgb(var(--raised-rgb));
+	--raised-2: rgb(var(--raised-2-rgb));
+
+	/* hairlines on any surface */
+	--border: rgb(255 255 255 / 0.09);
+	--border-strong: rgb(255 255 255 / 0.14);
+
+	/* text, strongest first; --text-dim is the quietest that still reads (AA) on a panel */
+	--text-strong: #f4f4f5;
+	--text: #e4e4e7;
+	--text-soft: #d4d4d8;
+	--text-muted: #ababb3;
+	--text-dim: #93939c;
+	/* not text: grips, idle dots, disabled marks */
+	--text-faint: #5f5f68;
+}

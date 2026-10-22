@@ -37,8 +37,8 @@
 	min-width: min(360px, 100vw);
 	display: flex;
 	flex-direction: column;
-	background: #111113;
-	border-left: 1px solid rgba(255, 255, 255, 0.1);
+	background: var(--canvas);
+	border-left: 1px solid var(--border);
 	box-shadow: -18px 0 48px rgba(0, 0, 0, 0.45);
 	outline: none;
 	animation: html-drawer-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
@@ -130,9 +130,9 @@
 	gap: 12px;
 	min-height: 52px;
 	padding: calc(8px + var(--safe-top, 0px)) calc(10px + var(--safe-right, 0px)) 8px 16px;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-	background: #18181b;
-	color: #f4f4f5;
+	border-bottom: 1px solid var(--border);
+	background: var(--frame);
+	color: var(--text-strong);
 }
 
 .html-drawer-titles {
@@ -157,7 +157,7 @@
 	gap: 6px;
 	min-width: 0;
 	overflow: hidden;
-	color: #a1a1aa;
+	color: var(--text-muted);
 	font-size: 12px;
 	white-space: nowrap;
 }
@@ -179,7 +179,7 @@
 }
 
 .html-drawer-group {
-	color: #71717a;
+	color: var(--text-dim);
 }
 
 .html-drawer-steps,
@@ -192,7 +192,7 @@
 
 .html-drawer-steps span {
 	min-width: 44px;
-	color: #a1a1aa;
+	color: var(--text-muted);
 	font-size: 12px;
 	font-variant-numeric: tabular-nums;
 	text-align: center;
@@ -208,7 +208,7 @@
 	border: 0;
 	border-radius: 8px;
 	background: transparent;
-	color: #d4d4d8;
+	color: var(--text-soft);
 	cursor: pointer;
 	transition: background 120ms, color 120ms;
 }
@@ -272,7 +272,7 @@
 	height: 26px;
 	padding: 0 9px;
 	border-radius: 6px;
-	color: #a1a1aa;
+	color: var(--text-muted);
 	font: inherit;
 	font-size: 12px;
 	white-space: nowrap;
@@ -280,5 +280,5 @@
 
 .html-drawer-head .html-drawer-mode button[aria-pressed='true'] {
 	background: rgba(255, 255, 255, 0.12);
-	color: #f4f4f5;
+	color: var(--text-strong);
 }

@@ -1,11 +1,11 @@
 /* Annotations: pencil strokes and note cards at a constant screen size (not scaled with the camera), above notes. */
 .annotation-layer {
-	--ann-bg: #1c1c1f;
-	--ann-border: rgba(255, 255, 255, 0.08);
-	--ann-border-strong: rgba(255, 255, 255, 0.16);
-	--ann-text: #ececee;
-	--ann-muted: #8e8e96;
-	--ann-faint: #66666e;
+	--ann-bg: var(--panel);
+	--ann-border: var(--border);
+	--ann-border-strong: var(--border-strong);
+	--ann-text: var(--text);
+	--ann-muted: var(--text-muted);
+	--ann-faint: var(--text-dim);
 	position: absolute;
 	inset: 0;
 	pointer-events: none;
@@ -50,7 +50,7 @@
 
 /* A text-only note's spot. */
 .annotation-ring {
-	fill: rgba(17, 17, 19, 0.45);
+	fill: rgb(var(--canvas-rgb) / 0.45);
 	stroke: var(--author);
 	stroke-width: 1.5;
 }
@@ -61,7 +61,7 @@
 
 .annotation-g.hover .annotation-ring,
 .annotation-g.active .annotation-ring {
-	fill: rgba(17, 17, 19, 0.7);
+	fill: rgb(var(--canvas-rgb) / 0.7);
 }
 
 /* The number chip: a drawing without a note, or any note collapsed at low zoom (the same number agents see). */
@@ -90,7 +90,7 @@
 .annotation-badge:hover,
 .annotation-badge.active {
 	border-color: var(--author);
-	background: #232327;
+	background: var(--raised);
 }
 
 .annotation-card {
@@ -142,7 +142,7 @@
 .annotation-author {
 	overflow: hidden;
 	text-overflow: ellipsis;
-	color: #b4b4bb;
+	color: var(--text-muted);
 	font-weight: 500;
 }
 

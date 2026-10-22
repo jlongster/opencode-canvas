@@ -19,11 +19,11 @@
 .frames-status .counts:hover,
 .frames-status .counts[aria-expanded='true'] {
 	background: rgba(255, 255, 255, 0.07);
-	color: #e4e4e7;
+	color: var(--text);
 }
 
 .frames-caret {
-	color: #71717a;
+	color: var(--text-dim);
 	transition: transform 120ms;
 }
 
@@ -40,11 +40,11 @@
 	width: min(340px, calc(100vw - 24px));
 	max-height: min(420px, 60vh);
 	padding: 6px;
-	border: 1px solid rgba(255, 255, 255, 0.08);
+	border: 1px solid var(--border);
 	border-radius: 12px;
-	background: rgba(28, 28, 32, 0.97);
+	background: rgb(var(--panel-rgb) / 0.97);
 	box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
-	color: #e4e4e7;
+	color: var(--text);
 	font: 13px system-ui, sans-serif;
 	pointer-events: auto;
 	animation: toast-in-up 140ms ease-out;
@@ -63,18 +63,18 @@
 	justify-content: space-between;
 	padding: 4px 8px 6px;
 	font-weight: 600;
-	color: #a1a1aa;
+	color: var(--text-muted);
 	font-size: 12px;
 }
 
 .frames-panel-hint {
 	font-weight: 400;
-	color: #71717a;
+	color: var(--text-dim);
 }
 
 .frames-empty {
 	padding: 8px;
-	color: #71717a;
+	color: var(--text-dim);
 }
 
 .frames-list {
@@ -114,13 +114,13 @@
 
 .frames-row.lifted {
 	z-index: 1;
-	background: rgba(48, 48, 54, 0.98);
+	background: rgb(var(--raised-rgb) / 0.98);
 	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
 }
 
 .frames-grip {
 	display: inline-flex;
-	color: #52525b;
+	color: var(--text-faint);
 	cursor: grab;
 }
 
@@ -129,7 +129,7 @@
 }
 
 .frames-row:hover .frames-grip {
-	color: #a1a1aa;
+	color: var(--text-muted);
 }
 
 .frames-dot {
@@ -149,7 +149,7 @@
 }
 
 .frames-title.untitled {
-	color: #a1a1aa;
+	color: var(--text-muted);
 }
 
 .frames-new {
@@ -164,7 +164,7 @@
 	flex: none;
 	min-width: 2ch;
 	text-align: right;
-	color: #71717a;
+	color: var(--text-dim);
 	font-variant-numeric: tabular-nums;
 }
 
@@ -178,14 +178,14 @@
 	border: 0;
 	border-radius: 6px;
 	background: transparent;
-	color: #a1a1aa;
+	color: var(--text-muted);
 	cursor: pointer;
 	transition: background 120ms, color 120ms;
 }
 
 .frames-eye:hover {
 	background: rgba(255, 255, 255, 0.08);
-	color: #f4f4f5;
+	color: var(--text-strong);
 }
 
 .frames-eye.static {
@@ -204,7 +204,7 @@
 	30%,
 	70% {
 		background: rgba(87, 143, 255, 0.25);
-		color: #f4f4f5;
+		color: var(--text-strong);
 	}
 }
 
@@ -215,17 +215,17 @@
 }
 
 .frames-row.is-hidden .frames-eye {
-	color: #71717a;
+	color: var(--text-dim);
 }
 
 .toast .toast-dismiss {
-	color: #71717a;
+	color: var(--text-dim);
 	font-weight: 400;
 }
 
 .toast .toast-dismiss:hover {
 	background: rgba(255, 255, 255, 0.08);
-	color: #e4e4e7;
+	color: var(--text);
 }
 
 /* On the canvas: a small eye beside the close button on a hovered frame title (page-space, see .section-label .close). */
@@ -241,7 +241,7 @@
 	border: 0;
 	border-radius: 0.409em;
 	background: transparent;
-	color: #a1a1aa;
+	color: var(--text-muted);
 	font: inherit;
 	font-size: 0.55em;
 	line-height: 1;
@@ -264,7 +264,7 @@
 .section-label .hide-frame:hover {
 	opacity: 1;
 	background: rgba(255, 255, 255, 0.08);
-	color: #e4e4e7;
+	color: var(--text);
 }
 
 .section-label .hide-frame + .close {
@@ -277,5 +277,5 @@
 
 .attention-row-hidden {
 	font-weight: 400;
-	color: #71717a;
+	color: var(--text-dim);
 }

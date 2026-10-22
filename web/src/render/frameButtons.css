@@ -59,7 +59,7 @@
 	padding: 0;
 	border: 0;
 	background: transparent;
-	color: #a1a1aa;
+	color: var(--text-muted);
 	opacity: 0.55;
 	cursor: pointer;
 	pointer-events: auto;
@@ -73,7 +73,7 @@
 
 .section-label .frame-buttons .prompt-frame:hover {
 	background: rgba(255, 255, 255, 0.08);
-	color: #e4e4e7;
+	color: var(--text);
 }
 
 .section-label .frame-buttons .prompt-frame.active {

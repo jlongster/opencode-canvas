@@ -15,8 +15,8 @@
 	gap: 5px;
 	padding: 3px 8px 3px 8px;
 	border-radius: 999px;
-	background: rgba(20, 20, 24, 0.78);
-	border: 1px solid rgba(255, 255, 255, 0.12);
+	background: rgb(var(--canvas-rgb) / 0.78);
+	border: 1px solid var(--border-strong);
 	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 	backdrop-filter: blur(8px);
 	color: rgba(255, 255, 255, 0.9);

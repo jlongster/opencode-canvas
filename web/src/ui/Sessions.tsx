@@ -1,9 +1,13 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { OpenCodeSessionSummary } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
 import type { SessionControl } from '../multiplayer/SessionControl'
+import { atom } from '../state/signals'
 import { PairForm, ServerList, SessionGroups, sessionKey, useOpenCode } from './OpenCodeServers'
 import { useValue } from './useValue'
+
+/** Bump to open the Sessions popover from elsewhere (the empty canvas's "Add a session"). */
+export const openSessionsRequests = atom('openSessionsRequests', 0)
 
 /**
  * The toolbar's Sessions button (edit links): pick a session from a paired OpenCode to add its frame
@@ -11,6 +15,12 @@ import { useValue } from './useValue'
  * OpenCode servers are paired and managed.
  */
 export function SessionsButton({ editor, sessions, open, setOpen }: { editor: Editor; sessions: SessionControl; open: boolean; setOpen: (open: boolean) => void }) {
+	const requests = useValue(() => openSessionsRequests.get())
+	const seen = useRef(requests)
+	useEffect(() => {
+		if (requests !== seen.current) setOpen(true)
+		seen.current = requests
+	}, [requests])
 	return (
 		<>
 			<button className="sessions-button" title="Add an OpenCode session to the canvas, to prompt it from its frame" aria-pressed={open} onClick={() => setOpen(!open)}>

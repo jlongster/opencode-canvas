@@ -26,10 +26,10 @@ import { DeepLink } from './deepLink'
 import { FramesStatus, HiddenLinkToast } from './FramesPanel'
 import { HtmlDrawer } from './HtmlDrawer'
 import { NotFound } from './NotFound'
-import { SeedPicker } from './SeedPicker'
+import { EmptyState } from './EmptyState'
+import { PopulateProgress } from './PopulateProgress'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
-import { API_BASE } from '../base'
 
 /** The last used select/hand tool is remembered across reloads; the note and annotate tools never are. */
 const TOOL_KEY = 'canvas.tool'
@@ -73,8 +73,6 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 	const [presence, setPresence] = useState<Presence | null>(null)
 	const [sessions, setSessions] = useState<SessionControl | null>(null)
 	const [attention, setAttention] = useState<Attention | null>(null)
-	// the strip under the top bar where the attention tray and the auto-seed progress stack
-	const [topStack, setTopStack] = useState<HTMLDivElement | null>(null)
 	const role = link.role
 	const onGoneRef = useRef(onGone)
 	onGoneRef.current = onGone
@@ -246,7 +244,8 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			{presence && <CursorChat editor={editor} presence={presence} />}
 			{sessions?.canPrompt && <SessionPrompt editor={editor} sessions={sessions} />}
 			{sessions && attention && <FrameAsks editor={editor} sessions={sessions} attention={attention} />}
-			<div className="top-stack" ref={setTopStack}>
+			{sessions?.canPrompt && <PopulateProgress editor={editor} />}
+			<div className="top-stack">
 				{attention && <AttentionTray attention={attention} />}
 			</div>
 			<div className="top-bar">
@@ -271,7 +270,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			<FramesStatus editor={editor} canEdit={role === 'edit'} />
 			<UndoToast editor={editor} />
 			<HiddenLinkToast editor={editor} canEdit={role === 'edit'} />
-			{canvas && <EmptyState editor={editor} canvas={canvas} role={role} topStack={topStack} />}
+			{canvas && <EmptyState editor={editor} canAdd={!!sessions?.canPrompt} viewOnly={role === 'view'} />}
 			{(rendererError || error) && (
 				<div className="error">
 					<strong>{rendererError ? "Can't start the renderer." : "Can't open this canvas."}</strong>
@@ -504,36 +503,6 @@ function UndoToast({ editor }: { editor: Editor }) {
 					<span className="toast-sep">·</span>
 					<button onClick={() => editor.deletions.undo()}>Undo</button>
 				</>
-			)}
-		</div>
-	)
-}
-
-function EmptyState({ editor, canvas, role, topStack }: { editor: Editor; canvas: Canvas; role: CanvasLink['role']; topStack: HTMLElement | null }) {
-	const empty = useValue(() => editor.connection.get() === 'open' && Object.keys(editor.sessions.get()).length === 0)
-	// Seeding fills the canvas, but the picker stays up with its progress until it's done. With no
-	// OpenCode paired in this browser, the picker asks to connect one first.
-	const [seeding, setSeeding] = useState(false)
-	const showPicker = role === 'edit' && (empty || seeding)
-	if (!empty && !showPicker) return null
-	if (role === 'view') {
-		return (
-			<div className="empty">
-				<h2>Nothing here yet</h2>
-				<p>Media posted to this canvas shows up here live.</p>
-			</div>
-		)
-	}
-	const curl = `curl -X POST ${API_BASE}/api/canvases/${canvas.id}/sessions/$SESSION_ID/items \\
-  -F file=@output.png -F caption="first try"`
-	return (
-		<div className="empty seeding">
-			<SeedPicker editor={editor} canvasId={canvas.id} onBusy={setSeeding} topStack={topStack} />
-			{empty && !seeding && (
-				<div className="seed-curl">
-					<p>Or post media from a session yourself:</p>
-					<pre>{curl}</pre>
-				</div>
 			)}
 		</div>
 	)

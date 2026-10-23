@@ -9,7 +9,7 @@ import { PairForm, ServerList, sessionKey, useOpenCode } from './OpenCodeServers
 import { useValue } from './useValue'
 import './sessions.css'
 
-/** The Sessions popover, while it's open; `focus`: a hidden frame to point out in it (from the attention bar). */
+/** The Sessions popover, while it's open; `focus`: a frame to point out in its recent frames (from the attention bar). */
 export const sessionsPopover = atom<{ focus?: string } | null>('sessionsPopover', null)
 
 /** sessions coming or going on a server have the popover list them again this long after */
@@ -18,8 +18,8 @@ const RELIST_DEBOUNCE_MS = 300
 /**
  * The toolbar's Sessions button (edit links): every session on the paired OpenCode servers, in one
  * list, most recently active first. Picking one adds its frame to the canvas (if it has none yet),
- * linked to this browser, with its prompt open there. Also where hidden frames are shown again and
- * OpenCode servers are paired and managed.
+ * linked to this browser, with its prompt open there. Also lists this canvas's recent frames (going
+ * to one shows it again if hidden), and where OpenCode servers are paired and managed.
  */
 export function SessionsButton({ editor, sessions }: { editor: Editor; sessions: SessionControl }) {
 	const open = useValue(() => sessionsPopover.get() !== null)
@@ -66,7 +66,6 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 	const [managing, setManaging] = useState(false)
 	const focus = useValue(() => sessionsPopover.get()?.focus)
 	const known = useValue(() => liveSessions.sessions.get())
-	const busyNow = useValue(() => liveSessions.busy.get())
 	const listVersion = useValue(() => liveSessions.listVersion.get())
 	const frames = useValue(() => editor.sessions.get(), [editor])
 	const rootRef = useRef<HTMLDivElement>(null)
@@ -80,10 +79,9 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 		return () => clearTimeout(timer)
 	}, [listVersion])
 
-	const multi = servers.length > 1
 	const q = query.trim().toLowerCase()
-	const loading = servers.filter((p) => !byServer[p.key] || byServer[p.key].status === 'loading')
-	const answered = servers.length - loading.length
+	const loading = servers.some((p) => !byServer[p.key] || byServer[p.key].status === 'loading')
+	const answered = servers.some((p) => byServer[p.key] && byServer[p.key].status !== 'loading')
 	const failing = servers.filter((p) => errors[p.key])
 
 	// Every server's sessions in one list, with what their event streams said since they were listed.
@@ -92,7 +90,6 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 		for (const p of servers) {
 			const l = byServer[p.key]
 			if (l?.status !== 'ok') continue
-			const busy = liveSessions.busyOn(p.key)
 			for (const s of l.sessions) {
 				const k = known[s.id]
 				if (k?.deleted) continue
@@ -103,40 +100,37 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 					title: live?.title ?? s.title,
 					directory: live?.directory ?? s.directory,
 					updatedAt: Math.max(s.updatedAt, live?.updatedAt ?? 0),
-					busy: busy ? busy.has(s.id) : s.busy,
 					here: !!frame,
 					hidden: !!frame?.hidden,
 				})
 			}
 		}
 		return list.sort((a, b) => b.updatedAt - a.updatedAt)
-	}, [servers, byServer, known, busyNow, frames])
-	const shown = q
-		? rows.filter((s) => [s.title, s.directory, multi ? s.serverName : ''].some((f) => f.toLowerCase().includes(q)) || s.id.toLowerCase() === q)
-		: rows
+	}, [servers, byServer, known, frames])
+	const shown = q ? rows.filter((s) => [s.title, projectName(s.directory)].some((f) => f.toLowerCase().includes(q)) || s.id.toLowerCase() === q) : rows
 
-	// each frame's item count and newest item, for the hidden ones
-	const itemStats = useValue(() => {
-		const stats: Record<string, [count: number, latest: number]> = {}
-		for (const item of Object.values(editor.items.get())) {
-			const [count, latest] = stats[item.sessionId] ?? [0, 0]
-			stats[item.sessionId] = [count + 1, Math.max(latest, item.createdAt)]
-		}
-		return JSON.stringify(stats)
+	// each frame's newest item
+	const latestItems = useValue(() => {
+		const latest: Record<string, number> = {}
+		for (const item of Object.values(editor.items.get())) latest[item.sessionId] = Math.max(latest[item.sessionId] ?? 0, item.createdAt)
+		return JSON.stringify(latest)
 	}, [editor])
-	const hiddenFrames = useMemo(() => {
-		const stats = JSON.parse(itemStats) as Record<string, [number, number]>
+	// The frames on this canvas, hidden ones included, most recently active first.
+	const recentFrames = useMemo(() => {
+		const latest = JSON.parse(latestItems) as Record<string, number>
 		return Object.values(frames)
-			.filter((s) => s.hidden)
-			.map((s) => {
-				const untitled = !s.title.trim() || s.title === s.id
-				const [items, latest] = stats[s.id] ?? [0, 0]
-				return { id: s.id, title: untitled ? 'Untitled session' : s.title, untitled, items, fresh: !!s.hiddenAt && latest > s.hiddenAt }
-			})
-	}, [frames, itemStats])
-	const [showHidden, setShowHidden] = useState(!!focus)
+			.map((s) => ({
+				id: s.id,
+				title: s.title.trim() && s.title !== s.id ? s.title : '',
+				directory: s.opencode?.directory ?? known[s.id]?.directory ?? '',
+				hidden: !!s.hidden,
+				activeAt: Math.max(s.createdAt, s.opencode?.updatedAt ?? 0, known[s.id]?.updatedAt ?? 0, latest[s.id] ?? 0),
+			}))
+			.sort((a, b) => b.activeAt - a.activeAt)
+	}, [frames, known, latestItems])
+	const [showRecent, setShowRecent] = useState(!!focus)
 	useEffect(() => {
-		if (focus) setShowHidden(true)
+		if (focus) setShowRecent(true)
 	}, [focus])
 
 	const pick = async (s: Row) => {
@@ -154,7 +148,7 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 		}
 	}
 
-	const showFrame = (id: string) => {
+	const goToFrame = (id: string) => {
 		editor.setFrameHidden(id, false)
 		onClose()
 		requestAnimationFrame(() => editor.focusSelectionKey(frameKey(id)))
@@ -178,12 +172,7 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 		<div className="sp" ref={rootRef} role="dialog" aria-label="Sessions" onKeyDown={onKeyDown} onWheel={(e) => e.stopPropagation()}>
 			<div className="sp-head">
 				<span className="sp-title">Sessions</span>
-				{servers.length > 0 && answered > 0 && (
-					<span className="sp-count">
-						{rows.length}
-						{multi ? ` · ${servers.length} servers` : ''}
-					</span>
-				)}
+				{answered && <span className="sp-count">{rows.length}</span>}
 				<button className="sp-close" title="Close (Esc)" aria-label="Close" onClick={onClose}>
 					<CloseIcon />
 				</button>
@@ -200,7 +189,7 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 						<input
 							ref={inputRef}
 							autoFocus
-							placeholder={multi ? 'Search sessions, folders, servers' : 'Search sessions and folders'}
+							placeholder="Search sessions and projects"
 							aria-label="Search sessions"
 							spellCheck={false}
 							autoComplete="off"
@@ -213,7 +202,7 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 					</label>
 
 					<div className="sp-list">
-						{answered === 0 && !failing.length ? (
+						{!answered && !failing.length ? (
 							<SkeletonRows />
 						) : (
 							<>
@@ -222,36 +211,17 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 									return (
 										<button
 											key={k}
-											className={`sp-row${s.here ? ' is-here' : ''}`}
+											className="sp-row"
 											disabled={pending !== null}
 											title={s.here ? (s.hidden ? 'Hidden on this canvas: show its frame and prompt it' : 'Go to its frame and prompt it') : 'Add its frame to this canvas and prompt it'}
 											onClick={() => pick(s)}
 										>
-											<span className="sp-row-main">
-												<span className={`sp-row-title${s.title ? '' : ' is-untitled'}`}>{s.title || 'Untitled session'}</span>
-												<span className="sp-row-meta">
-													{s.busy && (
-														<span className="sp-busy">
-															<span className="sp-spin" aria-hidden="true" />
-															Working
-														</span>
-													)}
-													<span className="sp-meta-part sp-dir" title={s.directory}>
-														{shortDir(s.directory)}
-													</span>
-													{!s.busy && <span className="sp-meta-part">{relativeTime(s.updatedAt)}</span>}
-													{multi && <span className="sp-meta-part sp-server">{s.serverName}</span>}
-												</span>
-											</span>
-											{pending === k ? (
-												<span className="sp-spin" aria-label="Adding" />
-											) : s.here ? (
-												<span className="sp-chip">{s.hidden ? 'Hidden' : 'On canvas'}</span>
-											) : null}
+											<RowText title={s.title} directory={s.directory} />
+											{pending === k ? <span className="sp-spin" aria-label="Adding" /> : s.here && !s.hidden ? <span className="sp-chip">On canvas</span> : null}
 										</button>
 									)
 								})}
-								{answered > 0 && !shown.length && !loading.length && (
+								{answered && !shown.length && !loading && (
 									<div className="sp-empty">
 										{q ? (
 											<>No sessions match “{query.trim()}”</>
@@ -263,13 +233,12 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 										)}
 									</div>
 								)}
-								{answered > 0 &&
-									loading.map((p) => (
-										<div key={p.key} className="sp-status">
-											<span className="sp-spin" aria-hidden="true" />
-											Loading {p.name}…
-										</div>
-									))}
+								{answered && loading && (
+									<div className="sp-status">
+										<span className="sp-spin" aria-hidden="true" />
+										Loading…
+									</div>
+								)}
 							</>
 						)}
 						{failing.map((p) => (
@@ -290,30 +259,28 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 				</div>
 			)}
 
-			{(hiddenFrames.length > 0 || servers.length > 0) && (
+			{(recentFrames.length > 0 || servers.length > 0) && (
 				<div className="sp-foot">
-					{hiddenFrames.length > 0 && (
+					{recentFrames.length > 0 && (
 						<div className="sp-section">
-							<button className="sp-toggle" aria-expanded={showHidden} onClick={() => setShowHidden(!showHidden)}>
-								<Caret open={showHidden} />
-								Hidden frames
-								<span className="sp-toggle-count">{hiddenFrames.length}</span>
+							<button className="sp-toggle" aria-expanded={showRecent} onClick={() => setShowRecent(!showRecent)}>
+								<Caret open={showRecent} />
+								Recent frames
+								<span className="sp-toggle-count">{recentFrames.length}</span>
 							</button>
-							{showHidden && (
-								<div className="sp-hidden-list">
-									{hiddenFrames.map((f) => (
-										<div key={f.id} className={`sp-hidden${focus === f.id ? ' is-focus' : ''}`} ref={focus === f.id ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}>
-											<span className={`sp-hidden-title${f.untitled ? ' is-untitled' : ''}`} title={f.untitled ? f.id : f.title}>
-												{f.title}
-											</span>
-											<span className="sp-hidden-meta" title={f.fresh ? 'Items were posted to it since it was hidden' : undefined}>
-												{plural(f.items, 'item')}
-												{f.fresh && ' · new'}
-											</span>
-											<button className="sp-text-button" autoFocus={focus === f.id} title="Show this frame again, for everyone" onClick={() => showFrame(f.id)}>
-												Show
-											</button>
-										</div>
+							{showRecent && (
+								<div className="sp-recent">
+									{recentFrames.map((f) => (
+										<button
+											key={f.id}
+											className={`sp-row${f.hidden ? ' is-hidden' : ''}${focus === f.id ? ' is-focus' : ''}`}
+											ref={focus === f.id ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+											autoFocus={focus === f.id}
+											title={f.hidden ? 'Hidden: show it again, for everyone, and go to it' : 'Go to this frame'}
+											onClick={() => goToFrame(f.id)}
+										>
+											<RowText title={f.title} directory={f.directory} />
+										</button>
 									))}
 								</div>
 							)}
@@ -325,7 +292,6 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 								<Caret open={managing} />
 								{servers.length === 1 ? 'Server' : 'Servers'}
 								<span className="sp-toggle-count">{servers.length}</span>
-								{failing.length > 0 && <span className="sp-toggle-warn">{failing.length} not reachable</span>}
 							</button>
 							{managing && (
 								<div className="sp-servers">
@@ -337,6 +303,18 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 				</div>
 			)}
 		</div>
+	)
+}
+
+/** A row's two lines: the session's title, and its project under it. */
+function RowText({ title, directory }: { title: string; directory: string }) {
+	return (
+		<span className="sp-row-main">
+			<span className={`sp-row-title${title ? '' : ' is-untitled'}`}>{title || 'Untitled session'}</span>
+			<span className="sp-row-project" title={directory || undefined}>
+				{directory ? projectName(directory) : 'No project'}
+			</span>
+		</span>
 	)
 }
 
@@ -387,22 +365,9 @@ function CloseIcon() {
 	)
 }
 
-function plural(n: number, word: string) {
-	return `${n} ${word}${n === 1 ? '' : 's'}`
-}
-
-/** "~/projects/canvas" style: home shortened, and only the last two folders of long paths. */
-export function shortDir(dir: string) {
+/** The project a session's directory is: its last folder ("canvas"), else a shortened path ("~", "/"). */
+function projectName(dir: string) {
 	const home = dir.replace(/^\/(?:root|home\/[^/]+)(?=\/|$)/, '~')
 	const parts = home.split('/').filter(Boolean)
-	return parts.length > 3 ? `…/${parts.slice(-2).join('/')}` : home || '/'
-}
-
-export function relativeTime(at: number) {
-	const s = Math.max(0, (Date.now() - at) / 1000)
-	if (s < 45) return 'just now'
-	if (s < 3600) return `${Math.round(s / 60)}m ago`
-	if (s < 86400) return `${Math.round(s / 3600)}h ago`
-	if (s < 86400 * 30) return `${Math.round(s / 86400)}d ago`
-	return new Date(at).toLocaleDateString()
+	return parts.length > 1 || (parts.length === 1 && parts[0] !== '~') ? parts[parts.length - 1] : home || '/'
 }

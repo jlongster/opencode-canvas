@@ -1,6 +1,6 @@
 /*
  * The Sessions popover (top right, see Sessions.tsx): every session on the paired OpenCode servers in
- * one list, a search field across the top, and hidden frames and the servers folded away below.
+ * one list, a search field across the top, and the canvas's recent frames and the servers folded away below.
  * Colours come from theme.css; the fallbacks are its dark values.
  */
 
@@ -194,54 +194,12 @@
 	font-weight: 400;
 }
 
-.sp-row-meta {
-	display: flex;
-	align-items: center;
-	min-width: 0;
+.sp-row-project {
 	overflow: hidden;
 	color: var(--text-dim, #93939c);
 	font-size: 11.5px;
+	text-overflow: ellipsis;
 	white-space: nowrap;
-}
-
-.sp-meta-part {
-	flex: none;
-}
-
-.sp-meta-part + .sp-meta-part::before {
-	content: '·';
-	margin: 0 6px;
-	color: var(--text-faint, #5f5f68);
-}
-
-/* the folder gives way first, then the server's name */
-.sp-dir {
-	flex: 0 1000 auto;
-	min-width: 1.5em;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.sp-server {
-	flex: 0 1 auto;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-/* a session working right now: the app's spinner, quietly, in place of when it was last active */
-.sp-busy {
-	display: inline-flex;
-	flex: none;
-	align-items: center;
-	gap: 5px;
-	color: var(--text-muted, #ababb3);
-}
-
-.sp-busy + .sp-meta-part::before {
-	content: '·';
-	margin: 0 6px;
-	color: var(--text-faint, #5f5f68);
 }
 
 .sp-chip {
@@ -421,11 +379,6 @@
 	font-variant-numeric: tabular-nums;
 }
 
-.sp-toggle-warn {
-	margin-left: auto;
-	color: #fca5a5;
-}
-
 .sp-caret {
 	flex: none;
 	transition: transform 120ms;
@@ -435,43 +388,25 @@
 	transform: rotate(90deg);
 }
 
-.sp-hidden-list {
+.sp-recent {
 	display: flex;
 	flex-direction: column;
 	gap: 1px;
 	padding-bottom: 4px;
 }
 
-.sp-hidden {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	min-height: 34px;
-	padding: 0 6px 0 27px;
-	border-radius: 7px;
+.toolbar .sp-recent .sp-row {
+	min-height: 42px;
+	padding-left: 27px;
 }
 
-.sp-hidden.is-focus {
+/* hidden frames are listed too, quieter */
+.toolbar .sp-row.is-hidden .sp-row-title {
+	color: var(--text-muted, #ababb3);
+}
+
+.toolbar .sp-row.is-focus {
 	background: var(--raised, rgb(52 52 58));
-}
-
-.sp-hidden-title {
-	flex: 1;
-	min-width: 0;
-	overflow: hidden;
-	color: var(--text-soft, #d4d4d8);
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.sp-hidden-title.is-untitled {
-	color: var(--text-dim, #93939c);
-}
-
-.sp-hidden-meta {
-	flex: none;
-	color: var(--text-dim, #93939c);
-	font-size: 11.5px;
 }
 
 .sp-servers {

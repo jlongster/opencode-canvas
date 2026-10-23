@@ -1,4 +1,4 @@
-import { easeOut } from '../../render/busy/ember'
+import { easeOut } from '../../render/busy/envelope'
 import { clamp01, hexToRgb, type KidLook, type KidState, type RGB } from '../../render/subagents/field'
 import { sessionColor } from '../../../../shared/sessionColor'
 import { rng, type DemoFamily, type DemoKid } from './data'

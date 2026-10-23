@@ -1,7 +1,6 @@
 /**
- * The busy effect round a session frame that's working: "Ember clumps". Shared by the app's
- * renderer (WebGPU, see Renderer.ts) and the busy playground (WebGL, see playground/busy), which
- * only differ in how they rasterize the dots this fills in.
+ * "Ember clumps", a busy effect round a session frame that's working (the app's until it switched to
+ * Brian's Brain, see render/busy/brain.ts); drawn by the busy playground's DotPass.
  *
  * A continuous field lives in a band outside each frame's rounded outline: two layers of fine value
  * noise wrapped round the perimeter crawl in opposite directions while drifting outward, and only
@@ -14,6 +13,8 @@
  * When a frame stops working its band resolves: the flow gives way to a bright rim falling off
  * outward, held, then faded (see envelope).
  */
+
+import { FRAME_RADIUS } from '../../render/busy/envelope'
 
 export type DotShape = 'round' | 'square'
 export type MaskMode = 'brightness' | 'halftone' | 'dither'
@@ -56,7 +57,7 @@ export interface EmberSettings {
 	dim: number
 }
 
-/** James's settings: the app's effect, and the playground's Ember defaults. */
+/** James's settings: the playground's Ember defaults. */
 export const EMBER: EmberSettings = {
 	speed: 0.75,
 	pitch: 5,
@@ -82,53 +83,6 @@ export const EMBER: EmberSettings = {
 /** Reduced motion: the time the field freezes at, a pose that still reads as busy. */
 export const EMBER_STILL = 4
 
-/** How a frame that stops working resolves. */
-export interface DoneSettings {
-	/** play the resolve (else the band just fades) */
-	enabled: boolean
-	/** the rim fills in over this long, s */
-	fill: number
-	/** then holds, s */
-	hold: number
-	/** then fades out, s */
-	fade: number
-}
-
-export const DONE: DoneSettings = { enabled: true, fill: 0.2, hold: 0.15, fade: 0.7 }
-
-/** A frame starting to work: its band rises from nothing over this long (s, ease-out). */
-export const ENTER_S = 0.3
-/** Done without the resolve (or with reduced motion): the band fades over this long (s). */
-const QUICK_FADE_S = 0.2
-/** The frames' corner radius (page units), as the renderer draws them. */
-export const FRAME_RADIUS = 20
-
-/** CSS cubic-bezier(0.23, 1, 0.32, 1): the band's ease-out. */
-export const easeOut = bezier(0.23, 1, 0.32, 1)
-
-/** Whether a frame is working, since when (s), and whether it stopped after working (so resolves). */
-export interface BusyState {
-	working: boolean
-	since: number
-	finished: boolean
-}
-
-/**
- * How present a frame's band is (0..1) and how far its done fill has gone (0..1), `now` (s) on the
- * same clock as `state.since`. Settled (nothing left to animate) once presence is 0 while idle.
- */
-export function envelope(state: BusyState, now: number, done: DoneSettings, reduced: boolean): [presence: number, fill: number] {
-	const dt = now - state.since
-	if (state.working) return [easeOut(Math.min(1, dt / ENTER_S)), 0]
-	if (!state.finished) return [0, 0]
-	if (reduced || !done.enabled) return [1 - easeOut(Math.min(1, dt / QUICK_FADE_S)), 0]
-	return [1 - easeOut(clamp01((dt - done.fill - done.hold) / done.fade)), easeOut(Math.min(1, dt / done.fill))]
-}
-
-/** How long after it stops working a frame's band is gone (s). */
-export function doneDuration(done: DoneSettings, reduced: boolean) {
-	return reduced || !done.enabled ? QUICK_FADE_S : done.fill + done.hold + done.fade
-}
 
 /** One frame's band. */
 export interface EmberFrame {
@@ -438,36 +392,4 @@ function smoothstep(e0: number, e1: number, x: number) {
 
 function clamp01(x: number) {
 	return x < 0 ? 0 : x > 1 ? 1 : x
-}
-
-/** CSS cubic-bezier(x1, y1, x2, y2) as a function of progress. */
-export function bezier(x1: number, y1: number, x2: number, y2: number) {
-	const cx = 3 * x1
-	const bx = 3 * (x2 - x1) - cx
-	const ax = 1 - cx - bx
-	const cy = 3 * y1
-	const by = 3 * (y2 - y1) - cy
-	const ay = 1 - cy - by
-	const sx = (t: number) => ((ax * t + bx) * t + cx) * t
-	return (x: number) => {
-		if (x <= 0) return 0
-		if (x >= 1) return 1
-		let lo = 0
-		let hi = 1
-		let t = x
-		for (let i = 0; i < 24; i++) {
-			if (sx(t) < x) lo = t
-			else hi = t
-			t = (lo + hi) / 2
-		}
-		return ((ay * t + by) * t + cy) * t
-	}
-}
-
-/** A stable seed and time offset for a frame, from its session id, so frames run out of phase. */
-export function frameSeed(id: string): { seed: number; offset: number } {
-	let h = 2166136261
-	for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619)
-	h >>>= 0
-	return { seed: 1 + (h % 997), offset: ((h >>> 10) % 10000) / 10 }
 }

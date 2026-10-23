@@ -1,7 +1,7 @@
 import '../../ui/styles.css'
 import './frames.css'
 import { Box } from '../../editor/geometry'
-import { bezier } from '../../render/busy/ember'
+import { bezier } from '../../render/busy/envelope'
 import { describeError, Renderer } from '../../render/Renderer'
 import { clamp01, hexToRgb, type KidLook } from '../../render/subagents/field'
 import { OrbLayer } from '../../render/subagents/orbs'

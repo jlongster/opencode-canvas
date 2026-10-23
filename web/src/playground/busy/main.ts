@@ -1,13 +1,15 @@
-import { DONE as DONE_DEFAULTS, EmberDots, envelope as busyEnvelope, type DoneSettings, type EmberFrame } from '../../render/busy/ember'
+import { BrainBlocks, type BrainFrame } from '../../render/busy/brain'
+import { DONE as DONE_DEFAULTS, envelope as busyEnvelope, type DoneSettings } from '../../render/busy/envelope'
+import { EmberDots, type EmberFrame } from './ember'
 import { button, el, paramControl, switchControl } from '../shared/controls'
 import { defaults, hexToRgb, pack, range, resolve, toggle, type ParamValues } from '../shared/params'
 import { frameRows, optionsSection, paramsSection, restoreVariations, shareVariations, variationSection, type VariationSettings } from '../shared/panels'
 import { createShell, defaultFrames, frameFromSaved } from '../shared/shell'
-import { BlockBatch, BlockPass } from './blocks'
+import { BlockPass } from './blocks'
 import { DotPass } from './dots'
 import { FLOW_VARIANTS } from './fields'
 import { FlowPass, type FlowFrame } from './flow'
-import { BLOCK_VARIANTS, type BusyCtx } from './variants'
+import { BLOCK_VARIANTS } from './variants'
 
 const VARIANTS = [...FLOW_VARIANTS, ...BLOCK_VARIANTS]
 
@@ -30,7 +32,7 @@ interface BusySettings extends VariationSettings {
 const shell = createShell<BusySettings>({
 	site: 'busy',
 	title: 'Busy',
-	storageKey: 'canvas-playground-busy-v6',
+	storageKey: 'canvas-playground-busy-v7',
 	defaults: () => ({
 		variant: VARIANTS[0].id,
 		params: Object.fromEntries(VARIANTS.map((v) => [v.id, defaults(v.params)])),
@@ -138,7 +140,7 @@ function envelope(i: number): [number, number] {
 // ---------- loop ----------
 
 const pass = new BlockPass(shell.gl.gl)
-const batch = new BlockBatch()
+const blocks = new BrainBlocks()
 let time = 0
 let paused = false
 const advance = (dt: number) => {
@@ -194,42 +196,19 @@ shell.onDraw((view) => {
 			}
 		: undefined
 	shell.gl.draw(view, shell.layout.sections.map((s) => ({ box: s.box })), [...shell.layout.items.values()], between)
-	if (!v.draw) return
+	if (!v.blocks) return
 
-	batch.begin()
-	shell.layout.sections.forEach((s, i) => {
-		const [pres, fill] = envelope(i)
-		if (pres <= 0.001) return
-		const f = settings.frames[i]
-		const col = values.color === 'white' ? [1, 1, 1] : hexToRgb(f.color)
-		const floor = (values.floor as number) ?? 0
-		const peak = (values.peak as number) ?? 1
-		const levels = (values.levels as number) || 0
-		const ctx: BusyCtx = {
-			frame: { x: (s.box.x * z + camera.x) * dpr, y: (s.box.y * z + camera.y) * dpr, w: s.box.w * z * dpr, h: s.box.h * z * dpr },
-			t: reduced ? v.still : time + offset(i),
-			reduced,
-			dpr,
-			z,
-			p: values,
-			key: `${v.id}:${i}`,
-			px: (css) => Math.max(1, Math.round(css * dpr)),
-			cell: (x, y, w, h, level, weight = 1) => {
-				// Done: the pattern gives way to a bright rim that falls off outward (weight³), then fades.
-				let l = Math.max(Math.min(1, Math.max(0, level)) * (1 - fill), fill * weight * weight * weight)
-				if (levels > 0) l = Math.round(l * levels) / levels
-				if (floor > 0) batch.add(x, y, w, h, 1, 1, 1, floor * pres)
-				if (l > 0) batch.add(x, y, w, h, col[0], col[1], col[2], peak * l * pres)
-			},
-		}
-		v.draw!(ctx)
+	const frames: BrainFrame[] = shell.layout.sections.map((s, i) => {
+		const [presence, fill] = envelope(i)
+		return { key: `${v.id}:${i}`, box: s.box, color: hexToRgb(settings.frames[i].color), offset: reduced ? 0 : offset(i), seed: i + 1, presence, fill }
 	})
-	pass.draw(batch)
+	v.blocks(blocks, { x: camera.x, y: camera.y, z, width: view.width, height: view.height, dpr }, frames, values, t)
+	pass.draw(blocks)
 })
 
 Object.assign(shell.playground, {
 	time: () => time,
-	blocks: () => batch.n,
+	blocks: () => blocks.n,
 	dots: () => dots.n,
 	select: (id: string) => document.querySelector<HTMLElement>(`[role="option"][data-id="${id}"]`)?.click(),
 	setWorking: (on: boolean[]) => on.forEach((w, i) => setWorking(i, w)),

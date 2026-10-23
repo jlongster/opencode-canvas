@@ -85,57 +85,33 @@ struct RectOut {
 `
 
 /**
- * The busy band's dots (see render/busy/ember.ts for what each instance holds): each instance
- * covers its grid cell's pitch × pitch device pixels, and each pixel takes the larger of the lit
- * and unlit dot's coverage × alpha. Square dots cover whole pixels; round ones are antialiased.
+ * The busy band's blocks (see render/busy/brain.ts): solid rectangles in whole device pixels, in
+ * premultiplied rgba, so every block covers exact pixels.
  */
-export const dotShader = /* wgsl */ `
+export const blockShader = /* wgsl */ `
 ${common}
 
-struct DotIn {
-  @location(0) cell: vec4f,  // x, y (device px), pitch (device px), round
-  @location(1) size: vec4f,  // lit size, unlit size (device px), lit alpha, unlit alpha
-  @location(2) color: vec4f, // rgb
+struct BlockIn {
+  @location(0) rect: vec4f,  // x, y, w, h (device px)
+  @location(1) color: vec4f, // premultiplied rgba
 };
 
-struct DotOut {
+struct BlockOut {
   @builtin(position) pos: vec4f,
-  @location(0) @interpolate(flat) cell: vec4f,
-  @location(1) @interpolate(flat) size: vec4f,
-  @location(2) @interpolate(flat) color: vec4f,
+  @location(0) @interpolate(flat) color: vec4f,
 };
 
-@vertex fn vs(@builtin(vertex_index) vi: u32, d: DotIn) -> DotOut {
-  let px = d.cell.xy + quadCorner(vi) * d.cell.z;
+@vertex fn vs(@builtin(vertex_index) vi: u32, b: BlockIn) -> BlockOut {
+  let px = b.rect.xy + quadCorner(vi) * b.rect.zw;
   let n = px / (g.viewport.xy * g.camera.w) * 2.0 - 1.0;
-  var out: DotOut;
+  var out: BlockOut;
   out.pos = vec4f(n.x, -n.y, 0.0, 1.0);
-  out.cell = d.cell;
-  out.size = d.size;
-  out.color = d.color;
+  out.color = b.color;
   return out;
 }
 
-@fragment fn fs(i: DotOut) -> @location(0) vec4f {
-  let pix = floor(i.pos.xy) - i.cell.xy;
-  let pd = i.cell.z;
-  var cover = 0.0;
-  var baseCover = 0.0;
-  if (i.cell.w > 0.5) {
-    let dist = length(pix + vec2f(0.5) - vec2f(0.5 * pd));
-    cover = clamp(0.5 * i.size.x - dist + 0.5, 0.0, 1.0);
-    baseCover = clamp(0.5 * i.size.y - dist + 0.5, 0.0, 1.0);
-  } else {
-    let side = floor(i.size.x + 0.5);
-    let start = floor(0.5 * (pd - side));
-    if (side >= 1.0 && all(pix >= vec2f(start)) && all(pix < vec2f(start + side))) { cover = 1.0; }
-    let bside = floor(i.size.y + 0.5);
-    let bstart = floor(0.5 * (pd - bside));
-    if (all(pix >= vec2f(bstart)) && all(pix < vec2f(bstart + bside))) { baseCover = 1.0; }
-  }
-  let a = max(i.size.z * cover, i.size.w * baseCover);
-  if (a <= 0.002) { discard; }
-  return vec4f(i.color.rgb * a, a);
+@fragment fn fs(i: BlockOut) -> @location(0) vec4f {
+  return i.color;
 }
 `
 

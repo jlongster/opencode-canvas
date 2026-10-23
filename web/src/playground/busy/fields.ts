@@ -1,4 +1,4 @@
-import { EMBER, EMBER_STILL, type EmberSettings } from '../../render/busy/ember'
+import { EMBER, EMBER_STILL, type EmberSettings } from './ember'
 import { range, select, SPEED, type ParamDef } from '../shared/params'
 import type { BusyVariant } from './variants'
 
@@ -58,7 +58,7 @@ export const FLOW_VARIANTS: BusyVariant[] = [
 	{
 		id: 'embers',
 		name: 'Ember clumps',
-		note: 'What busy frames show in the app (render/busy/ember.ts, with these defaults). Tuned to look like Brian’s Brain, but continuous: two layers of fine noise crawl in opposite directions round the frame while drifting outward, and only their peaks light up, giving sparse bright clumps that thin out away from the edge and glide instead of stepping. Evaluated once per cell on the CPU.',
+		note: 'What busy frames showed in the app before Brian’s Brain (ember.ts, with these defaults). Tuned to look like Brian’s Brain, but continuous: two layers of fine noise crawl in opposite directions round the frame while drifting outward, and only their peaks light up, giving sparse bright clumps that thin out away from the edge and glide instead of stepping. Evaluated once per cell on the CPU.',
 		params: params(EMBER, [
 			range('crawl', 'Crawl', EMBER.crawl, 0, 40, 0.5, 'px/s'),
 			range('sparse', 'Sparseness', EMBER.sparse, 0.4, 0.9, 0.005),

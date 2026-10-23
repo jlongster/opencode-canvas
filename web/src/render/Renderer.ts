@@ -3,7 +3,7 @@ import { GROUP_OUTLINE_PADDING, opensInDrawer, type Editor, type FrameStatus, ty
 import { Box, clamp } from '../editor/geometry'
 import { LAYOUT, type SectionLayout } from '../editor/layout'
 import { frameKey } from '../editor/selection'
-import { dotShader, imageShader, rectShader, videoShader } from './shaders'
+import { blockShader, imageShader, rectShader, videoShader } from './shaders'
 import { TextureCache } from './TextureCache'
 import { VideoPool } from './VideoPool'
 import { EXTRACT_ICON, VideoControls } from './VideoControls'
@@ -12,9 +12,9 @@ import { PageBadges, pageDomain } from './PageBadges'
 import { ItemBadges } from './ItemBadges'
 import { linkCardUrl } from './linkCard'
 import { url as withBase } from '../base'
-import { sessionColor } from '../../../shared/sessionColor'
 import { THEME } from '../theme'
-import { DONE, DOT_FLOATS, EMBER, EMBER_STILL, ENTER_S, EmberDots, doneDuration, envelope, frameSeed, type BusyState, type EmberFrame } from './busy/ember'
+import { BLOCK_FLOATS, BRAIN, BRAIN_STILL, BrainBlocks, type BrainFrame } from './busy/brain'
+import { DONE, ENTER_S, doneDuration, envelope, frameSeed, type BusyState } from './busy/envelope'
 import './frameButtons.css'
 
 const THUMB_SIZE = 512
@@ -34,9 +34,10 @@ const MIN_HTML_PX = 24
 
 const RECT_FLOATS = 16
 const IMAGE_FLOATS = 8
-/** While nothing else moves, busy bands animate at this rate (ms per frame). */
+/** Busy bands redraw at most at this rate (ms per frame) while nothing else moves. */
 const BUSY_FRAME_MS = 1000 / 30
 const NO_SESSIONS: ReadonlySet<string> = new Set()
+const WHITE = [1, 1, 1] as const
 
 type RGBA = [number, number, number, number]
 const [BG_R, BG_G, BG_B] = hexToRgba(THEME.canvas)
@@ -94,7 +95,7 @@ export class Renderer {
 	private rectPipeline: GPURenderPipeline
 	private imagePipeline: GPURenderPipeline
 	private videoPipeline: GPURenderPipeline
-	private dotPipeline: GPURenderPipeline
+	private blockPipeline: GPURenderPipeline
 	private videoLayout: GPUBindGroupLayout
 	private imageLayout: GPUBindGroupLayout
 	/** Zero-copy video via importExternalTexture; false once it's missing or has failed, then frames are copied. */
@@ -105,13 +106,14 @@ export class Renderer {
 	private rectData = new Float32Array(RECT_FLOATS * 256) as Float32Array<ArrayBuffer>
 	private imageBuffer: GPUBuffer | null = null
 	private imageData = new Float32Array(IMAGE_FLOATS * 256) as Float32Array<ArrayBuffer>
-	private dotBuffer: GPUBuffer | null = null
-	private dots = new EmberDots()
+	private blockBuffer: GPUBuffer | null = null
+	private blocks = new BrainBlocks()
 	/** each session's busy band, while it works and as it resolves after (see trackBusy) */
 	private busy = new Map<string, BusyState & { seed: number; offset: number }>()
-	/** whether a busy band in view needs animating, and when it was last drawn */
-	private busyAnimating = false
+	/** whether a busy band in view is coming or going, when it was last drawn, and when one next steps (ms) */
+	private busySettling = false
 	private busyDrawnAt = 0
+	private busyNextAt = Infinity
 	private reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
 	private textures: TextureCache
 	private videos: VideoPool
@@ -238,7 +240,7 @@ export class Renderer {
 		this.rectPipeline = pipeline(rectShader, [globalsLayout], [0, 1, 2, 3].map(vec4), RECT_FLOATS * 4)
 		this.imagePipeline = pipeline(imageShader, [globalsLayout, imageLayout], [0, 1].map(vec4), IMAGE_FLOATS * 4)
 		this.videoPipeline = pipeline(videoShader, [globalsLayout, this.videoLayout], [0, 1].map(vec4), IMAGE_FLOATS * 4)
-		this.dotPipeline = pipeline(dotShader, [globalsLayout], [0, 1, 2].map(vec4), DOT_FLOATS * 4)
+		this.blockPipeline = pipeline(blockShader, [globalsLayout], [0, 1].map(vec4), BLOCK_FLOATS * 4)
 
 		this.imageLayout = imageLayout
 		this.textures = new TextureCache(device, imageLayout)
@@ -333,7 +335,7 @@ export class Renderer {
 			this.animating ||
 			uploaded ||
 			busyChanged ||
-			(this.busyAnimating && now - this.busyDrawnAt >= BUSY_FRAME_MS) ||
+			((this.busySettling || now >= this.busyNextAt) && now - this.busyDrawnAt >= BUSY_FRAME_MS) ||
 			this.videos.takeDirty() ||
 			this.videos.isPlaying ||
 			editor.isCameraMoving()
@@ -354,7 +356,7 @@ export class Renderer {
 		this.device.queue.writeBuffer(this.globals, 0, this.globalsData)
 
 		const cull = Box.expand(viewBounds, 64 / camera.z)
-		const dots = this.busyBands(layout.sections, camera, now)
+		const blocks = this.busyBands(layout.sections, camera, now)
 
 		// ---- build instance data ----
 		let rects = 0
@@ -509,7 +511,7 @@ export class Renderer {
 		// ---- upload & draw ----
 		this.rectBuffer = this.upload(this.rectBuffer, this.rectData, rects * RECT_FLOATS)
 		this.imageBuffer = this.upload(this.imageBuffer, this.imageData, images * IMAGE_FLOATS)
-		this.dotBuffer = this.upload(this.dotBuffer, dots.data as Float32Array<ArrayBuffer>, dots.n * DOT_FLOATS)
+		this.blockBuffer = this.upload(this.blockBuffer, blocks.data as Float32Array<ArrayBuffer>, blocks.n * BLOCK_FLOATS)
 
 		const encoder = this.device.createCommandEncoder()
 		const pass = encoder.beginRenderPass({
@@ -520,10 +522,10 @@ export class Renderer {
 		pass.setBindGroup(0, this.globalsBindGroup)
 
 		// Busy bands first: behind every frame and what's in it.
-		if (dots.n) {
-			pass.setPipeline(this.dotPipeline)
-			pass.setVertexBuffer(0, this.dotBuffer)
-			pass.draw(6, dots.n)
+		if (blocks.n) {
+			pass.setPipeline(this.blockPipeline)
+			pass.setVertexBuffer(0, this.blockBuffer)
+			pass.draw(6, blocks.n)
 		}
 
 		const drawRects = (from: number, to: number) => {
@@ -606,14 +608,15 @@ export class Renderer {
 	}
 
 	/**
-	 * The busy bands of the frames in view (see render/busy/ember.ts), following the frames' eased
-	 * boxes. Reduced motion freezes the field (the bands still come and go).
+	 * The busy bands of the frames in view (see render/busy/brain.ts), following the frames' eased
+	 * boxes: white cells, out of phase per session. Reduced motion stops the automaton (the bands
+	 * still come and go).
 	 */
 	private busyBands(sections: SectionLayout[], camera: { x: number; y: number; z: number }, now: number) {
-		const dots = this.dots
+		const blocks = this.blocks
 		const reduced = this.reducedMotion.matches
 		const t = now / 1000
-		const frames: EmberFrame[] = []
+		const frames: BrainFrame[] = []
 		let settling = false
 		for (const s of sections) {
 			const b = this.busy.get(s.id)
@@ -623,16 +626,16 @@ export class Renderer {
 			if (!b.working || t - b.since < ENTER_S) settling = true
 			const [presence, fill] = envelope(b, t, DONE, reduced)
 			if (presence <= 0.001) continue
-			const [r, g, bl] = hexToRgba(sessionColor(s.id))
-			frames.push({ box: d, color: [r, g, bl], offset: reduced ? 0 : b.offset, seed: b.seed, presence: presence * d.opacity, fill })
+			frames.push({ key: s.id, box: d, color: WHITE, offset: b.offset, seed: b.seed, presence: presence * d.opacity, fill })
 		}
 		const { w, h } = this.editor.viewport.peek()
 		// Snapped to the drawing buffer's own pixels (see globals).
 		const dpr = this.canvas.width / w
-		dots.fill({ x: camera.x * camera.z, y: camera.y * camera.z, z: camera.z, width: w, height: h, dpr }, frames, EMBER, reduced ? EMBER_STILL : t * EMBER.speed)
-		this.busyAnimating = settling || (dots.framesInView > 0 && !reduced)
+		blocks.fill({ x: camera.x * camera.z, y: camera.y * camera.z, z: camera.z, width: w, height: h, dpr }, frames, BRAIN, reduced ? BRAIN_STILL : t * BRAIN.speed)
+		this.busySettling = settling
+		this.busyNextAt = reduced ? Infinity : (blocks.nextT / BRAIN.speed) * 1000
 		this.busyDrawnAt = now
-		return dots
+		return blocks
 	}
 
 	/**

@@ -1,5 +1,5 @@
 import type { Editor } from '../../editor/Editor'
-import { bezier } from '../../render/busy/ember'
+import { bezier } from '../../render/busy/envelope'
 import { clamp01, toLinear, type KidLook, type RGB } from '../../render/subagents/field'
 import type { OrbLayer } from '../../render/subagents/orbs'
 import { pack, type ParamValues } from '../shared/params'

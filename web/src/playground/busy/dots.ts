@@ -1,10 +1,9 @@
-import { DOT_FLOATS, type EmberDots } from '../../render/busy/ember'
+import { DOT_FLOATS, type EmberDots } from './ember'
 import { link } from '../shared/gl'
 
 /**
- * Draws the dots the shared Ember field fills in (see render/busy/ember.ts), as the app's renderer
- * does with WebGPU: one instance per cell, its pitch × pitch device pixels, each pixel lit by the
- * larger of the lit and unlit dot's coverage.
+ * Draws the dots the Ember field fills in (see ember.ts): one instance per cell, its pitch × pitch
+ * device pixels, each pixel lit by the larger of the lit and unlit dot's coverage.
  */
 const VS = /* glsl */ `#version 300 es
 layout(location = 0) in vec2 a_c;

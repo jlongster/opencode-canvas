@@ -3,7 +3,8 @@ import { bezier } from '../../render/busy/ember'
 import { clamp01, toLinear, type KidLook, type RGB } from '../../render/subagents/field'
 import type { OrbLayer } from '../../render/subagents/orbs'
 import { pack, type ParamValues } from '../shared/params'
-import type { Plan } from './plan'
+import { THEME } from '../../theme'
+import type { CardPlan, Plan } from './plan'
 import type { KidView } from './sim'
 import { shaderOf, type Technique } from './techniques'
 
@@ -26,6 +27,9 @@ export interface HeadInfo {
 	agent?: string
 	task?: string
 	child: boolean
+	/** a subagent's state, shown after its title inside its card */
+	status?: string
+	statusKind?: string
 }
 
 export interface RowKid {
@@ -34,6 +38,10 @@ export interface RowKid {
 	rgb: RGB
 	/** its orb's clock, s */
 	time: number
+	/** items it posted since it was last expanded (the badge) */
+	unread: number
+	/** its latest output (the hover preview) */
+	thumb: string | null
 }
 
 export interface RowInfo {
@@ -54,10 +62,13 @@ export interface RowSettings {
 	max: number
 	titlePx: number
 	reduced: boolean
+	/** the hover label shows the subagent's latest output */
+	preview: boolean
 }
 
 export interface ChromeActions {
-	toggleKid(id: string): void
+	/** a click on its orb (shift: alongside the ones open) or its card's close button */
+	toggleKid(id: string, additive: boolean): void
 	showAll(parentId: string): void
 	zoomTo(sectionId: string): void
 }
@@ -69,6 +80,9 @@ const HOVER_MS = 140
 const LABEL_MS = 220
 const LABEL_WARM_MS = 70
 const LABEL_FADE_MS = 120
+/** the hover preview shows once the pointer rests on one orb this long (not while sweeping along the row), and fades in */
+const PREVIEW_MS = 450
+const PREVIEW_FADE_MS = 160
 const FONT = `-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter Variable', ui-sans-serif, system-ui, sans-serif`
 const ease = bezier(0.4, 0, 0.2, 1)
 
@@ -121,12 +135,18 @@ class Glide {
 	moving(now: number) {
 		return now - this.start < this.dur
 	}
+
+	get target() {
+		return this.to
+	}
 }
 
 type Mode = 'row' | 'merged' | 'hidden'
 
 interface Slot {
 	el: HTMLButtonElement
+	badge: HTMLSpanElement
+	unread: number
 	/** slot units from the first orb */
 	u: Glide
 	alpha: Glide
@@ -135,6 +155,10 @@ interface Slot {
 
 interface Row {
 	el: HTMLElement
+	/** where its first orb's centre is, from the title's left, and the orbs' spacing (screen px; last drawn) */
+	x0: number
+	S: number
+	D: number
 	mode: Mode
 	shown: number
 	slots: Map<string, Slot>
@@ -147,6 +171,13 @@ interface HeadEl {
 	title: HTMLElement
 	key: string
 	row: Row | null
+	status: HTMLElement | null
+	close: HTMLButtonElement | null
+}
+
+interface Link {
+	caret: HTMLDivElement
+	wire: SVGPathElement
 }
 
 /** Where an orb was drawn this frame (CSS px, canvas container), for tracing. */
@@ -161,8 +192,12 @@ export class Chrome {
 	readonly host: HTMLDivElement
 	private tip: HTMLDivElement
 	private heads = new Map<string, HeadEl>()
+	private links = new Map<string, Link>()
+	private wires: SVGSVGElement
 	private hovered: string | null = null
 	private hoveredAt = 0
+	/** the orb just clicked: no preview over the card it opened, until the pointer leaves it */
+	private clicked: string | null = null
 	/** what the label shows: what's hovered, once the pointer has rested on it a moment */
 	private labelFor: string | null = null
 	private labelShownAt = 0
@@ -190,6 +225,24 @@ export class Chrome {
 		this.tip.className = 'sa-tip'
 		this.tip.hidden = true
 		this.host.appendChild(this.tip)
+		this.wires = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+		this.wires.classList.add('sa-wires')
+		this.host.insertBefore(this.wires, this.host.firstChild)
+	}
+
+	/**
+	 * Where a subagent's orb is (screen px from its parent's title's left), as drawn this frame: its
+	 * slot in the row, the +N it folded into, or the one orb the row merged into. The plan anchors
+	 * its card here, before the row is drawn; the glides are continuous, so the two agree.
+	 */
+	anchor(parentId: string, kidId: string, now: number): number | null {
+		const r = this.heads.get(parentId)?.row
+		if (!r) return null
+		if (r.mode === 'merged') return r.x0
+		if (r.mode === 'hidden') return null
+		const slot = r.slots.get(kidId)
+		if (slot && slot.alpha.target > 0.5) return r.x0 + slot.u.at(now) * r.S
+		return r.x0 + r.more.u.at(now) * r.S + Math.max(r.D, r.S) / 2 + 2 + (this.text.width(r.more.text, 600, 12) + 8) / 2
 	}
 
 	/** 0..1: how hovered an orb is (it eases in and out). */
@@ -211,6 +264,7 @@ export class Chrome {
 		}
 		this.hovered = id
 		this.hoveredAt = now
+		this.clicked = null
 	}
 
 	/**
@@ -256,15 +310,25 @@ export class Chrome {
 		let tipShown = false
 
 		const seen = new Set<string>()
+		const toScreen = (b: { x: number; y: number; w: number; h: number }) => ({ x: (b.x + cam.x) * cam.z, y: (b.y + cam.y) * cam.z, w: b.w * cam.z, h: b.h * cam.z })
+		const floating = plan.cards.filter((c) => c.fit === 'overlay' && c.opacity > 0.01).map((c) => ({ c, b: toScreen(c.box) }))
+		const orbsAt = new Map<string, { px: number; y: number }>()
 		for (const h of plan.heads) {
 			const info = heads.get(h.id)
 			if (!info) continue
 			const px = snap((h.box.x + cam.x) * cam.z)
 			const py = snap((h.box.y + cam.y) * cam.z)
-			// a narrow subagent frame's title may run past its right edge (there's room beside it)
-			const w = h.parentId ? Math.max(h.box.w * cam.z, Math.min(300, h.box.w * cam.z * 2.5)) : h.box.w * cam.z
+			// a narrow subagent frame's title may run past its right edge (there's room beside it); one in a card stays in it
+			const w = h.inCard ? h.box.w * cam.z : h.parentId ? Math.max(h.box.w * cam.z, Math.min(300, h.box.w * cam.z * 2.5)) : h.box.w * cam.z
+			// a card floating over a neighbouring frame hides the title it covers
+			let covered = 0
+			for (const { c, b } of floating) {
+				if (c.parentId === h.id || c.parentId === h.parentId || c.id === h.id) continue
+				if (px < b.x + b.w && px + w > b.x && py < b.y + b.h && py + HEAD_PX > b.y) covered = Math.max(covered, c.opacity)
+			}
+			const opacity = h.opacity * (1 - covered)
 			const reachUp = tech.anchor === 'baseline' ? Number(p.height ?? 0) : 0
-			const visible = h.opacity > 0.01 && px < vw && px + w > 0 && py - reachUp < vh && py + HEAD_PX + 40 > 0 && w > 24
+			const visible = opacity > 0.01 && px < vw && px + w > 0 && py - reachUp < vh && py + HEAD_PX + 40 > 0 && w > 24
 			let el = this.heads.get(h.id)
 			if (!visible) {
 				if (el) this.css(el.el, 'display:none')
@@ -283,6 +347,10 @@ export class Chrome {
 				shownTitle = this.layoutRow(r, row, s, titleW, w, now)
 				const x0 = shownTitle + TITLE_GAP + D / 2
 				const y = py + anchorY
+				r.x0 = x0
+				r.S = S
+				r.D = D
+				orbsAt.set(h.id, { px, y })
 				const start = layer.nOrbs
 				let lo = Infinity
 				let hi = -Infinity
@@ -301,7 +369,7 @@ export class Chrome {
 						r: (D / 2) * dpr,
 						seed: seed % 97,
 						rgb,
-						alpha: alpha * h.opacity,
+						alpha: alpha * opacity,
 						run: look.run,
 						done: look.done,
 						fail: look.fail,
@@ -328,9 +396,13 @@ export class Chrome {
 					if (a > 0.002) push(k.view.id, k, u, a)
 					const hit = Math.max(Math.min(S, D + 8), 12)
 					const live = a > 0.5
-					this.css(slot.el, live ? `transform:translate(${snap(x0 + u * S - hit / 2)}px,0);width:${hit}px` : 'display:none')
-					if (live && this.labelFor === k.view.id && h.opacity > 0.5) {
-						this.showTip(k.view, px + x0 + u * S, y - D / 2 - 7, tipAlpha)
+					this.css(slot.el, live ? `transform:translate(${snap(x0 + u * S - hit / 2)}px,0);width:${hit}px;--badge-x:${Math.round(hit / 2 + D / 2 - 3)}px;--badge-y:${Math.max(0, Math.round(anchorY - D / 2 - 7))}px` : 'display:none')
+					this.setBadge(slot, k.unread)
+					if (live && this.labelFor === k.view.id && opacity > 0.5) {
+						const rest = now - this.hoveredAt - PREVIEW_MS
+						const thumb = s.preview && k.view.look.open < 0.5 && rest > 0 && this.clicked !== k.view.id ? k.thumb : null
+						if (s.preview && k.thumb && rest < PREVIEW_FADE_MS) this.animating = true
+						this.showTip(k.view, px + x0 + u * S, y - D / 2 - 7, tipAlpha, thumb, vw, y + D / 2 + 7, ease(clamp01(rest / PREVIEW_FADE_MS)))
 						tipShown = true
 					}
 				}
@@ -340,14 +412,14 @@ export class Chrome {
 				const countW = row.kids.length > 1 ? this.text.width(String(row.kids.length), 600, 11) + 6 : 0
 				this.css(r.agg.el, aggLive ? `transform:translate(${snap(x0 - D / 2 - 3)}px,0);width:${Math.ceil(D + 10 + countW)}px;--count-x:${D + 9}px` : 'display:none')
 				if (aggLive && this.labelFor === `agg:${h.id}`) {
-					this.showText(r.agg.label, px + x0, y - D / 2 - 7, tipAlpha)
+					this.showText(r.agg.label, px + x0, y - D / 2 - 7, tipAlpha, vw)
 					tipShown = true
 				}
 				const moreA = r.more.alpha.at(now)
 				const moreX = x0 + r.more.u.at(now) * S + Math.max(D, S) / 2 + 2
 				this.css(r.more.el, moreA > 0.01 ? `transform:translate(${snap(moreX - 4)}px,0);opacity:${moreA.toFixed(3)};pointer-events:${moreA > 0.5 ? 'auto' : 'none'}` : 'display:none')
 				if (moreA > 0.5 && this.labelFor === `more:${h.id}`) {
-					this.showText(r.more.el.dataset.label ?? '', px + moreX + 10, y - D / 2 - 7, tipAlpha)
+					this.showText(r.more.el.dataset.label ?? '', px + moreX + 10, y - D / 2 - 7, tipAlpha, vw)
 					tipShown = true
 				}
 				this.animating ||= this.rowMoving(r, now)
@@ -357,10 +429,18 @@ export class Chrome {
 				el.row.el.remove()
 				el.row = null
 			}
-			this.fillHead(el, info, shownTitle)
-			this.css(el.el, `transform:translate(${px}px,${py}px);width:${Math.max(0, Math.floor(w))}px;opacity:${h.opacity.toFixed(3)};--title:${s.titlePx}px`)
+			// in a card: the title, then its state if there's room for both (else the title gets it all)
+			let status = info.status ?? ''
+			if (h.inCard) {
+				const room = w - 30
+				if (status && titleW + this.text.width(status, 500, 12) + 10 > room) status = ''
+				shownTitle = Math.max(0, Math.min(titleW, room))
+			}
+			this.fillHead(el, { ...info, status }, shownTitle, h.inCard)
+			this.css(el.el, `transform:translate(${px}px,${py}px);width:${Math.max(0, Math.floor(w))}px;opacity:${opacity.toFixed(3)};--title:${s.titlePx}px;--status-x:${Math.ceil(shownTitle) + 8}px`)
 		}
 		for (const [id, el] of this.heads) if (!seen.has(id)) this.css(el.el, 'display:none')
+		this.drawLinks(plan.cards, orbsAt, anchorY, D, now, snap)
 		if (!tipShown) this.tip.hidden = true
 		pack(tech.params, p, this.params)
 		const grid = [Math.round(cam.x * cam.z * dpr), Math.round(cam.y * cam.z * dpr), Math.max(2, Math.round(5 * dpr)), Math.max(1, Math.floor(2 * dpr + 0.5))] as const
@@ -459,11 +539,34 @@ export class Chrome {
 		el.dataset.session = id
 		el.innerHTML = '<span class="title"></span>'
 		this.host.insertBefore(el, this.host.firstChild)
-		return { el, title: el.firstChild as HTMLElement, key: '', row: null }
+		return { el, title: el.firstChild as HTMLElement, key: '', row: null, status: null, close: null }
 	}
 
-	private fillHead(h: HeadEl, info: HeadInfo, shown: number) {
-		this.css(h.title, `max-width:${Math.ceil(shown)}px`)
+	private fillHead(h: HeadEl, info: HeadInfo, shown: number, inCard: boolean) {
+		this.css(h.title, `max-width:${Math.max(0, Math.ceil(shown))}px`)
+		if (inCard && !h.close) {
+			h.status = document.createElement('span')
+			h.status.className = 'status'
+			h.close = document.createElement('button')
+			h.close.type = 'button'
+			h.close.className = 'sa-close'
+			h.close.textContent = '×'
+			h.close.setAttribute('aria-label', `Collapse ${info.title}`)
+			h.close.addEventListener('pointerdown', (e) => e.stopPropagation())
+			h.close.addEventListener('click', (e) => (e.stopPropagation(), this.actions.toggleKid(info.id, true)))
+			h.el.append(h.status, h.close)
+		} else if (!inCard && h.close) {
+			h.status?.remove()
+			h.close.remove()
+			h.status = h.close = null
+		}
+		h.el.classList.toggle('in-card', inCard)
+		if (h.status) {
+			const text = info.status ?? ''
+			if (h.status.textContent !== text) h.status.textContent = text
+			const cls = `status ${info.statusKind ?? ''}`
+			if (h.status.className !== cls) h.status.className = cls
+		}
 		const key = `${info.title}|${info.child}`
 		if (h.key === key) return
 		h.key = key
@@ -500,6 +603,9 @@ export class Chrome {
 		const agg = button('sa-agg', () => this.actions.zoomTo(parentId), `agg:${parentId}`)
 		return {
 			el: holder,
+			x0: 0,
+			S: 16,
+			D: 10,
 			mode: 'row',
 			shown: 0,
 			slots: new Map(),
@@ -515,11 +621,31 @@ export class Chrome {
 		b.dataset.id = id
 		b.addEventListener('pointerdown', (e) => e.stopPropagation())
 		b.addEventListener('dblclick', (e) => e.stopPropagation())
-		b.addEventListener('click', (e) => (e.stopPropagation(), this.actions.toggleKid(id)))
+		b.addEventListener('click', (e) => {
+			e.stopPropagation()
+			this.clicked = id
+			this.actions.toggleKid(id, e.shiftKey)
+		})
+		// arrow keys move between the orbs of a row (in the order they're drawn)
+		b.addEventListener('keydown', (e) => {
+			if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+			const all = [...r.slots.values()].filter((x) => x.alpha.target > 0.5).sort((a, c) => a.u.target - c.u.target)
+			const i = all.findIndex((x) => x.el === b)
+			const next = all[i + (e.key === 'ArrowLeft' ? -1 : 1)]
+			if (next) {
+				e.preventDefault()
+				e.stopPropagation()
+				next.el.focus()
+			}
+		})
 		this.hoverable(b, id)
 		r.el.insertBefore(b, r.el.firstChild)
+		const badge = document.createElement('span')
+		badge.className = 'sa-badge'
+		badge.hidden = true
+		b.appendChild(badge)
 		// a new orb starts where it will be, faded out
-		const slot: Slot = { el: b, u: new Glide(r.slots.size, 300), alpha: new Glide(0, 260), label: '' }
+		const slot: Slot = { el: b, badge, unread: 0, u: new Glide(r.slots.size, 300), alpha: new Glide(0, 260), label: '' }
 		r.slots.set(id, slot)
 		return slot
 	}
@@ -536,18 +662,108 @@ export class Chrome {
 		b.addEventListener('blur', off)
 	}
 
-	private showTip(k: KidView, x: number, y: number, alpha: number) {
-		this.showHtml(`<span class="nm"><span class="agent">${esc(k.agent)}:</span> ${esc(k.task)}</span><span class="st ${k.state}">${esc(stateText(k))}</span>`, x, y, alpha)
+	private showTip(k: KidView, x: number, y: number, alpha: number, thumb: string | null, vw: number, below: number, thumbAlpha: number) {
+		const line = `<span class="line"><span class="nm"><span class="agent">${esc(k.agent)}:</span> ${esc(k.task)}</span><span class="st ${k.state}">${esc(stateText(k))}</span></span>`
+		this.showHtml(thumb ? `<img class="thumb" src="${esc(thumb)}" alt="">${line}` : line, x, y, alpha, vw, !!thumb, below, thumbAlpha)
 	}
 
-	private showText(text: string, x: number, y: number, alpha: number) {
-		this.showHtml(`<span class="nm">${esc(text)}</span>`, x, y, alpha)
+	private showText(text: string, x: number, y: number, alpha: number, vw: number) {
+		this.showHtml(`<span class="line"><span class="nm">${esc(text)}</span></span>`, x, y, alpha, vw, false)
 	}
 
-	private showHtml(html: string, x: number, y: number, alpha: number) {
+	/** Centred over the point (under it, `below`, if there's no room over it), kept on screen. */
+	private showHtml(html: string, x: number, y: number, alpha: number, vw: number, wide: boolean, below = y, thumbAlpha = 1) {
 		if (this.tip.innerHTML !== html) this.tip.innerHTML = html
 		this.tip.hidden = false
-		this.css(this.tip, `transform:translate(${Math.round(x)}px,${Math.round(y)}px) translate(-50%,-100%);opacity:${alpha.toFixed(3)}`)
+		this.tip.classList.toggle('with-thumb', wide)
+		if (this.tipSize.size > 200) this.tipSize.clear()
+		let size = this.tipSize.get(html)
+		if (!size) this.tipSize.set(html, (size = { w: this.tip.offsetWidth, h: wide ? 126 + 8 + 36 : this.tip.offsetHeight }))
+		const cx = Math.max(size.w / 2 + 6, Math.min(vw - size.w / 2 - 6, x))
+		const under = y - size.h < 4
+		this.css(this.tip, `transform:translate(${Math.round(cx)}px,${Math.round(under ? below : y)}px) translate(-50%,${under ? 0 : -100}%);opacity:${alpha.toFixed(3)};--thumb:${thumbAlpha.toFixed(3)}`)
+	}
+
+	private tipSize = new Map<string, { w: number; h: number }>()
+
+	private setBadge(slot: Slot, n: number) {
+		if (slot.unread === n) return
+		const rose = n > slot.unread
+		slot.unread = n
+		slot.badge.hidden = n === 0
+		slot.badge.textContent = n > 9 ? '9+' : String(n)
+		if (rose) {
+			slot.badge.classList.remove('pop')
+			void slot.badge.offsetWidth
+			slot.badge.classList.add('pop')
+		}
+	}
+
+	/**
+	 * Each card's caret, on its top edge right under its orb (as near as the card allows), and the wire
+	 * from the orb down to it: straight when it's right under, else round the corner.
+	 */
+	private drawLinks(cards: CardPlan[], orbs: Map<string, { px: number; y: number }>, anchorY: number, D: number, now: number, snap: (v: number) => number) {
+		const cam = this.editor.camera.peek()
+		const seen = new Set<string>()
+		// several open: the ones further right turn the corner higher up, so no two wires cross
+		const rank = new Map<string, { i: number; n: number }>()
+		const byParent = new Map<string, CardPlan[]>()
+		for (const c of cards) if (c.fit !== 'drawer') byParent.set(c.parentId, [...(byParent.get(c.parentId) ?? []), c])
+		for (const list of byParent.values()) list.sort((a, b) => a.orbX - b.orbX).forEach((c, i) => rank.set(c.id, { i, n: list.length }))
+		// drawers stack: only the top one hangs from its orb (a wire to one lower down would cross it)
+		const topDrawer = new Map<string, CardPlan>()
+		for (const c of cards) if (c.fit === 'drawer' && c.caret > 0.01 && (!topDrawer.has(c.parentId) || c.box.y < topDrawer.get(c.parentId)!.box.y)) topDrawer.set(c.parentId, c)
+		for (const c of cards) {
+			const at = orbs.get(c.parentId)
+			if (!at || c.caret < 0.01 || (c.fit === 'drawer' && topDrawer.get(c.parentId) !== c)) continue
+			// the wire leaves its orb; the caret is where the plan anchored the card (between two orbs, mid-switch)
+			const a = this.anchor(c.parentId, c.id, now)
+			const ox = at.px + (a ?? 40)
+			const px = (c.orbX + cam.x) * cam.z
+			const top = snap((c.box.y + cam.y) * cam.z)
+			const left = (c.box.x + cam.x) * cam.z
+			const w = c.box.w * cam.z
+			const grow = c.caret
+			const cx = snap(Math.max(left + 12, Math.min(left + w - 12, px)))
+			let link = this.links.get(c.id)
+			if (!link) {
+				const caret = document.createElement('div')
+				caret.className = 'sa-caret'
+				caret.style.setProperty('--fill', THEME.frame)
+				this.host.insertBefore(caret, this.wires.nextSibling)
+				const wire = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+				this.wires.appendChild(wire)
+				link = { caret, wire }
+				this.links.set(c.id, link)
+			}
+			seen.add(c.id)
+			const alpha = grow
+			this.css(link.caret, `transform:translate(${cx - 6}px,${top - 6}px) scale(${(0.4 + 0.6 * grow).toFixed(3)}) rotate(45deg);opacity:${alpha.toFixed(3)}`)
+			const y0 = snap(at.y + D / 2 + 3)
+			const y1 = top - 8
+			const xo = snap(ox)
+			let d = ''
+			if (y1 - y0 > 2) {
+				if (Math.abs(cx - xo) < 1) d = `M${xo} ${y0}V${y1}`
+				else {
+					const k = rank.get(c.id)
+					const mid = k && k.n > 1 ? Math.round(Math.max(y0 + 3, y1 - 4 - (k.n - 1 - k.i) * Math.min(4, (y1 - y0 - 7) / Math.max(1, k.n - 1)))) : Math.round((y0 + y1) / 2)
+					const r = Math.min(4, Math.abs(cx - xo) / 2, (y1 - y0) / 4)
+					const sx = Math.sign(cx - xo)
+					d = `M${xo} ${y0}V${mid - r}Q${xo} ${mid} ${xo + sx * r} ${mid}H${cx - sx * r}Q${cx} ${mid} ${cx} ${mid + r}V${y1}`
+				}
+			}
+			if (link.wire.getAttribute('d') !== d) link.wire.setAttribute('d', d)
+			const wa = alpha.toFixed(3)
+			if (link.wire.getAttribute('opacity') !== wa) link.wire.setAttribute('opacity', wa)
+		}
+		for (const [id, link] of this.links) {
+			if (seen.has(id)) continue
+			link.caret.remove()
+			link.wire.remove()
+			this.links.delete(id)
+		}
 	}
 
 	/** Screen point (canvas container px) of an orb's hit target, if it's shown. */

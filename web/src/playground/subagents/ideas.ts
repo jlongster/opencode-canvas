@@ -11,10 +11,19 @@ export const ROW_PARAMS: ParamDef[] = [
 ]
 
 export const EXPAND_PARAMS: ParamDef[] = [
-	range('scale', 'Scale', 0.75, 0.4, 1, 0.01, '×'),
-	range('dur', 'Duration', 440, 0, 1000, 10, 'ms'),
+	select('fit', 'Fit', ['overlay', 'push', 'drawer', 'below'], 'push'),
+	select('switch', 'Switching', ['morph', 'swap'], 'morph'),
+	range('scale', 'Scale', 1, 0.4, 1, 0.01, '×'),
+	range('dur', 'Duration', 360, 0, 1400, 10, 'ms'),
 	select('ease', 'Easing', ['standard', 'decelerate', 'in-out'], 'standard'),
 	range('stagger', 'Stagger', 40, 0, 120, 5, 'ms'),
+]
+
+/** Prototypes of the ideas in ideas.md. */
+export const IDEA_PARAMS: ParamDef[] = [
+	toggle('preview', 'Preview on hover', true),
+	toggle('unread', 'New-item badges', true),
+	toggle('group', 'Group by state', false),
 ]
 
 /** The coordinator's subagent counts the panel offers. */

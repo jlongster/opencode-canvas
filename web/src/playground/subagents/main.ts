@@ -5,6 +5,7 @@ import { bezier } from '../../render/busy/ember'
 import { describeError, Renderer } from '../../render/Renderer'
 import { clamp01, hexToRgb, type KidLook } from '../../render/subagents/field'
 import { OrbLayer } from '../../render/subagents/orbs'
+import { looksMoving, RowAggregate } from '../../render/subagents/row'
 import { react } from '../../state/signals'
 import { chromeParams, chromeVariations, createChrome, restoreParams, shareParams } from '../shared/chrome'
 import { button, el, paramControl, segmentedRow, switchRow } from '../shared/controls'
@@ -33,7 +34,7 @@ const shell = createChrome<Settings>({
 	title: 'Subagents',
 	storageKey: 'canvas-playground-subagents-v5',
 	defaults: () => ({
-		tech: TECHNIQUES[0].id,
+		tech: TECHNIQUES[0].id as TechId,
 		params: Object.fromEntries(TECHNIQUES.map((t) => [t.id, defaults(t.params)])),
 		row: defaults(ROW_PARAMS),
 		expand: defaults(EXPAND_PARAMS),
@@ -245,12 +246,7 @@ editor.onFrame((now) => update(now))
 
 const looks = new Map<string, KidLook>()
 const clocks = new Map<string, number>()
-interface Agg {
-	look: KidLook
-	time: number
-	phase: number
-}
-const aggs = new Map<string, Agg>()
+const aggs = new Map<string, RowAggregate>()
 
 function look(id: string): KidLook {
 	let l = looks.get(id)
@@ -286,24 +282,8 @@ function rowInfos(now: number, dt: number): Map<string, RowInfo> {
 /** The one orb a row merges into: the most pressing state among its subagents (eased between). */
 function aggregate(parentId: string, kids: KidView[], now: number, dt: number, speed: number, red: boolean) {
 	let a = aggs.get(parentId)
-	if (!a) {
-		a = { look: { run: 0, done: 1, fail: 0, wait: 0, flash: 0, open: 0, hover: 0, breath: 0 }, time: parentId.length, phase: (parentId.charCodeAt(9) % 17) / 17 }
-		aggs.set(parentId, a)
-	}
-	const has = (s: KidView['state']) => kids.some((k) => k.state === s)
-	const target = has('running') ? 'run' : has('waiting') ? 'wait' : has('failed') ? 'fail' : 'done'
-	const k = 1 - Math.exp(-dt / 150)
-	const l = a.look
-	for (const key of ['run', 'done', 'fail', 'wait'] as const) {
-		const to = key === target ? 1 : 0
-		l[key] += (to - l[key]) * k
-		if (Math.abs(to - l[key]) < 0.002) l[key] = to
-	}
-	l.flash = Math.max(0, ...kids.map((x) => x.look.flash))
-	l.hover = ui?.hover(`agg:${parentId}`, now) ?? 0
-	l.breath = red ? 0.6 : 0.5 - 0.5 * Math.cos((now / 1000 / 2.4) * 2 * Math.PI)
-	a.time += (dt / 1000) * speed * (l.run + 0.35 * l.wait)
-	return { agg: l, aggTime: a.time, aggPhase: a.phase }
+	if (!a) aggs.set(parentId, (a = new RowAggregate(parentId)))
+	return a.update(kids, now, dt, speed, red, ui?.hover(`agg:${parentId}`, now) ?? 0)
 }
 
 function headInfos(): Map<string, HeadInfo> {
@@ -345,15 +325,8 @@ function drawChrome(now: number) {
 
 /** Whether any orb is still crossfading between states (or flashing, or easing its hover or open). */
 function lookMoving(rows: Map<string, RowInfo>) {
-	for (const r of rows.values()) {
-		for (const l of [...r.kids.map((k) => k.view.look), r.agg]) {
-			if (!settled(l.run) || !settled(l.done) || !settled(l.fail) || !settled(l.wait) || l.flash > 0 || !settled(l.open) || !settled(l.hover)) return true
-		}
-	}
-	return false
+	return looksMoving([...rows.values()].flatMap((r) => [...r.kids.map((k) => k.view.look), r.agg]))
 }
-
-const settled = (v: number) => v < 0.001 || v > 0.999
 
 // ---------- boot ----------
 

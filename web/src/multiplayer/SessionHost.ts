@@ -162,6 +162,10 @@ export class SessionHost {
 interface Subagent extends SubagentInfo {
 	parentId: string
 	busy: boolean
+	/** its last run failed */
+	failed?: boolean
+	/** how its last run ended has been read from OpenCode (events say from then on) */
+	checked?: boolean
 	/** when it last turned busy */
 	since: number
 }
@@ -198,6 +202,7 @@ class SessionRuntime {
 	/** descendant sessions (children, grandchildren…), by id */
 	private subs = new Map<string, Subagent>()
 	private subagents: SubagentInfo[] = []
+	private failedSubagents: string[] = []
 	/** questions and permission requests it (or a subagent) waits on, by id, in the order they came */
 	private asks = new Map<string, Ask>()
 	private asking: AskingInfo | null = null
@@ -274,6 +279,7 @@ class SessionRuntime {
 			speaking: !!this.chat,
 			thinking: this.thinking,
 			...(this.subagents.length ? { subagents: this.subagents } : {}),
+			...(this.failedSubagents.length ? { failedSubagents: this.failedSubagents } : {}),
 			...(this.asking ? { asking: this.asking } : {}),
 		}
 		this.provider.awareness.setLocalState(state)
@@ -448,7 +454,12 @@ class SessionRuntime {
 	private publishAsking() {
 		const asks = [...this.asks.values()]
 		const next: AskingInfo | null = asks.length
-			? { kind: asks.some((a) => a.kind === 'question') ? 'question' : 'permission', count: askCount(asks), text: askText(asks.find((a) => a.kind === 'question') ?? asks[0]) }
+			? {
+					kind: asks.some((a) => a.kind === 'question') ? 'question' : 'permission',
+					count: askCount(asks),
+					text: askText(asks.find((a) => a.kind === 'question') ?? asks[0]),
+					sessions: [...new Set(asks.map((a) => a.sessionId))],
+				}
 			: null
 		if (JSON.stringify(next) === JSON.stringify(this.asking)) return
 		this.asking = next
@@ -495,20 +506,27 @@ class SessionRuntime {
 				return
 			}
 			case 'session.execution.started':
+				sub.failed = false
+				return this.setSubBusy(sub, true, true)
 			case 'session.step.started':
 			case 'session.text.started':
 			case 'session.tool.called':
 				return this.setSubBusy(sub, true)
-			case 'session.execution.succeeded':
 			case 'session.execution.failed':
+				sub.failed = true
+				return this.setSubBusy(sub, false, true)
+			case 'session.execution.succeeded':
 			case 'session.execution.interrupted':
 			case 'session.idle':
 				return this.setSubBusy(sub, false)
 		}
 	}
 
-	private setSubBusy(sub: Subagent, busy: boolean) {
-		if (sub.busy === busy) return
+	private setSubBusy(sub: Subagent, busy: boolean, changed = false) {
+		if (sub.busy === busy) {
+			if (changed) this.publishSubagents()
+			return
+		}
 		sub.busy = busy
 		if (busy) sub.since = Date.now()
 		else this.dropAsks(sub.id)
@@ -522,9 +540,23 @@ class SessionRuntime {
 			.sort((a, b) => a.since - b.since || (a.id < b.id ? -1 : 1))
 			.slice(0, SUBAGENTS_MAX)
 			.map(({ id, title, agent }) => ({ id, title, ...(agent ? { agent } : {}) }))
-		if (!force && JSON.stringify(next) === JSON.stringify(this.subagents)) return
+		const failed = [...this.subs.values()].filter((s) => s.failed && !s.busy).map((s) => s.id)
+		if (!force && JSON.stringify(next) === JSON.stringify(this.subagents) && JSON.stringify(failed) === JSON.stringify(this.failedSubagents)) return
 		this.subagents = next
+		this.failedSubagents = failed
 		this.schedulePublish()
+	}
+
+	/** How subagents' last runs ended (before we were listening): its latest message says, once per subagent. */
+	private async checkOutcomes(subs: Subagent[]) {
+		await Promise.all(
+			subs.slice(0, CHILDREN_LIMIT).map(async (sub) => {
+				sub.checked = true
+				const res = await withServer(this.record.serverKey, (c) => c.message.list({ sessionID: sub.id, limit: 1, order: 'desc' }, { signal: AbortSignal.timeout(10_000) })).catch(() => null)
+				const last = res?.data[0] as { type?: string; outcome?: string } | undefined
+				if (last?.type === 'idle' && !sub.busy) sub.failed = last.outcome === 'failed'
+			}),
+		)
 	}
 
 	/** Checks the session against the ones OpenCode says are running. */
@@ -579,6 +611,8 @@ class SessionRuntime {
 				if (busy) sub.since = Date.now()
 			}
 		}
+		await this.checkOutcomes([...this.subs.values()].filter((s) => !s.busy && !s.checked))
+		if (this.destroyed) return
 		this.publishSubagents()
 	}
 }

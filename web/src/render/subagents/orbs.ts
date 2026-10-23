@@ -229,9 +229,11 @@ export class OrbLayer {
 	readonly canvas: HTMLCanvasElement
 	private gl: WebGL2RenderingContext
 	private programs = new Map<string, Program>()
-	private vao: WebGLVertexArrayObject
-	private instBuf: WebGLBuffer
-	private tex: WebGLTexture
+	/** techniques whose shader failed (not tried again) */
+	private failed = new Set<string>()
+	private vao!: WebGLVertexArrayObject
+	private instBuf!: WebGLBuffer
+	private tex!: WebGLTexture
 	private texRows = 0
 	private orbData = new Float32Array(ORB_FLOATS * 64)
 	private instData = new Float32Array(INST_FLOATS * 64)
@@ -250,6 +252,20 @@ export class OrbLayer {
 		const gl = this.canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: true, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false })
 		if (!gl) throw new Error('WebGL2 is not available')
 		this.gl = gl
+		this.init()
+		// (the GPU process can drop the context: everything is made again once it's back)
+		this.canvas.addEventListener('webglcontextlost', (e) => e.preventDefault())
+		this.canvas.addEventListener('webglcontextrestored', () => {
+			this.programs.clear()
+			this.failed.clear()
+			this.texRows = 0
+			this.blank = false
+			this.init()
+		})
+	}
+
+	private init() {
+		const gl = this.gl
 		const quad = gl.createBuffer()!
 		gl.bindBuffer(gl.ARRAY_BUFFER, quad)
 		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1]), gl.STATIC_DRAW)
@@ -342,6 +358,7 @@ export class OrbLayer {
 	/** Draws what was pushed with `shader` (clearing first). Grid: the dot grid's origin, pitch and dot side, device px. */
 	draw(shader: OrbShader, params: ArrayLike<number>, dpr: number, grid: readonly [number, number, number, number], reduced: boolean) {
 		const gl = this.gl
+		if (gl.isContextLost()) return
 		if (this.nInst === 0) {
 			if (this.blank) return
 			gl.viewport(0, 0, this.canvas.width, this.canvas.height)
@@ -386,6 +403,7 @@ export class OrbLayer {
 	private program(shader: OrbShader): Program | null {
 		const cached = this.programs.get(shader.id)
 		if (cached) return cached
+		if (this.failed.has(shader.id)) return null
 		const gl = this.gl
 		try {
 			const fs = `#version 300 es\n${shader.defines}\n${PRELUDE}\n${shader.glsl}\n${shader.row ? MAIN_ROW : MAIN_ORB}`
@@ -398,6 +416,8 @@ export class OrbLayer {
 		} catch (e) {
 			this.error = String(e)
 			console.error(e)
+			// (a lost context compiles nothing: try again once it's back)
+			if (!gl.isContextLost()) this.failed.add(shader.id)
 			return null
 		}
 	}

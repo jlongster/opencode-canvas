@@ -79,6 +79,15 @@ body,
 	text-overflow: ellipsis;
 }
 
+/* A subagent's frame in its drawer (see editor/drawers.ts): a smaller title, in its band. */
+.section-label.in-drawer {
+	font-size: 28px;
+}
+
+.section-label.in-drawer .title {
+	color: var(--text);
+}
+
 .group-heading {
 	font-size: 22px;
 	align-items: flex-start;
@@ -2593,6 +2602,11 @@ button.oc-retry,
 	background: rgba(255, 255, 255, 0.04);
 }
 
+/* a subagent's row, under its parent's */
+.attention-row.child {
+	margin-left: 14px;
+}
+
 .attention-row-open {
 	display: flex;
 	flex: 1;
@@ -2636,6 +2650,17 @@ button.oc-retry,
 	font-weight: 600;
 	white-space: nowrap;
 	text-overflow: ellipsis;
+}
+
+/* a subagent's parent, before its name: it gives way first */
+.attention-row-parent {
+	display: inline-block;
+	max-width: 45%;
+	overflow: hidden;
+	vertical-align: bottom;
+	text-overflow: ellipsis;
+	font-weight: 500;
+	color: var(--text-muted, #ababb3);
 }
 
 .attention-row-preview {

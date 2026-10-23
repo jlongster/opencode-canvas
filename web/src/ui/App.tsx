@@ -11,7 +11,7 @@ import {
 import { listenForPastedPages } from './pastePage'
 import { Attention } from '../multiplayer/Attention'
 import { SessionControl } from '../multiplayer/SessionControl'
-import { FrameSessions } from '../opencode/live'
+import { FrameSessions, liveSessions } from '../opencode/live'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedAnnotations } from '../multiplayer/SharedAnnotations'
@@ -169,6 +169,8 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					setCanvas(c)
 					if (!first) return
 					loaded = true
+					// Subagents' drawers open here as this viewer left them on this canvas.
+					editor.drawers.load(c.id)
 					// The node in the URL hash, if any, else the usual opening view.
 					editor.whenViewportReady(() => {
 						if (!disposed) deepLink.focusInitial()
@@ -193,6 +195,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 							ended: !!editor.sessions.get()[sessionId]?.opencode?.deleted,
 						}),
 						prompt: (sessionId) => control.toggle(sessionId),
+						subagent: (sessionId) => subagentState(sessionId, editor.parentOf(sessionId), control),
 					}
 					disposers.push(
 						() => (editor.frameChrome = null),
@@ -286,6 +289,21 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			<HtmlDrawer editor={editor} />
 		</div>
 	)
+}
+
+/**
+ * What a subagent is doing, from what's known here: its parent's live state in the room (its owner's
+ * tab follows its subagents: which work, which wait on an answer, which failed), the canvas server's
+ * status (linked sessions), and this tab's paired OpenCode.
+ */
+function subagentState(sessionId: string, parentId: string | null, control: SessionControl): 'running' | 'waiting' | 'failed' | 'done' {
+	const live = control.live.get()
+	const parent = parentId ? live.get(parentId) : undefined
+	const own = live.get(sessionId)
+	if (parent?.asking?.sessions?.includes(sessionId) || own?.asking?.count) return 'waiting'
+	if (control.busy.peek().has(sessionId) || parent?.subagents?.some((s) => s.id === sessionId) || liveSessions.busy.peek().has(sessionId)) return 'running'
+	if (parent?.failedSubagents?.includes(sessionId) || liveSessions.failed.peek().has(sessionId)) return 'failed'
+	return 'done'
 }
 
 /** Top-left: a link back to the list and the canvas title, renamed inline on edit links. */

@@ -16,6 +16,7 @@ import { sessionColor } from '../../../shared/sessionColor'
 import { THEME } from '../theme'
 import { DONE, DOT_FLOATS, EMBER, EMBER_STILL, ENTER_S, EmberDots, doneDuration, envelope, frameSeed, type BusyState, type EmberFrame } from './busy/ember'
 import './frameButtons.css'
+import { TitleOrbs } from './subagents/titleOrbs'
 
 const THUMB_SIZE = 512
 const ITEM_RADIUS = 6
@@ -116,6 +117,8 @@ export class Renderer {
 	private textures: TextureCache
 	private videos: VideoPool
 	private labels: SectionLabels
+	/** subagents' orbs on frame titles (null without WebGL2) */
+	private titleOrbs: TitleOrbs | null = null
 	private actions: ItemActions
 	private videoControls: VideoControls
 	private titles: ItemTitles
@@ -251,7 +254,13 @@ export class Renderer {
 			options.readOnly ? null : (id) => options.onCloseSection?.(id),
 			options.readOnly ? null : (id) => editor.setFrameHidden(id, true),
 			(id, count) => editor.showMoreItems(id, count),
+			(id) => editor.drawers.set(id, false),
 		)
+		try {
+			this.titleOrbs = this.labels.orbs = new TitleOrbs(overlay, editor)
+		} catch (e) {
+			console.warn('no subagent orbs:', describeError(e))
+		}
 		this.titles = new ItemTitles(overlay)
 		this.videoControls = new VideoControls(overlay, this.videos, editor, !!options.readOnly)
 		this.pageBadges = new PageBadges(overlay, (item) => editor.openHtmlDrawer(item.id))
@@ -303,6 +312,12 @@ export class Renderer {
 	}
 
 	private frame(now: number, elapsed: number) {
+		this.draw(now, elapsed)
+		// (every frame: the orbs move on their own; from where this frame put the titles)
+		this.titleOrbs?.frame(now, this.canvas)
+	}
+
+	private draw(now: number, elapsed: number) {
 		const editor = this.editor
 		const layout = editor.layout.get()
 		const camera = editor.camera.get()
@@ -616,7 +631,8 @@ export class Renderer {
 		const frames: EmberFrame[] = []
 		let settling = false
 		for (const s of sections) {
-			const b = this.busy.get(s.id)
+			// (a subagent in its drawer shows that it works on its orb)
+			const b = !s.drawer && this.busy.get(s.id)
 			const d = b && this.displayedSections.get(s.id)
 			if (!b || !d) continue
 			// (coming or going: animates even while it's still at nothing, the moment it starts)
@@ -727,11 +743,19 @@ export class Renderer {
 		const k = 1 - Math.exp(-elapsed / EASE_MS)
 		const fade = elapsed / FADE_MS
 		let moving = false
-		const step = (map: Map<string, Displayed>, targets: Iterable<[string, Box]>) => {
+		// frames the layout animates itself (subagents' drawers, see drawers.ts), with their items: exactly where it says
+		const snapped = new Map<string, number>()
+		for (const s of layout.sections) if (s.snap) snapped.set(s.id, s.opacity ?? 1)
+		const step = (map: Map<string, Displayed>, targets: Iterable<[string, Box]>, sectionOf: (id: string) => string | undefined) => {
 			const seen = new Set<string>()
 			for (const [id, t] of targets) {
 				seen.add(id)
 				const d = map.get(id)
+				const snap = snapped.get(sectionOf(id) ?? '')
+				if (snap !== undefined) {
+					map.set(id, { x: t.x, y: t.y, w: t.w, h: t.h, opacity: Math.min(snap, d && d.opacity < 1 ? d.opacity + fade : 1) })
+					continue
+				}
 				if (!d) {
 					map.set(id, { ...t, opacity: 0 })
 					moving = true
@@ -746,8 +770,8 @@ export class Renderer {
 			}
 			for (const id of map.keys()) if (!seen.has(id)) map.delete(id)
 		}
-		step(this.displayedItems, layout.items)
-		step(this.displayedSections, layout.sections.map((s) => [s.id, s.box] as [string, Box]))
+		step(this.displayedItems, layout.items, (id) => layout.sectionOf.get(id))
+		step(this.displayedSections, layout.sections.map((s) => [s.id, s.box] as [string, Box]), (id) => id)
 		return moving
 	}
 
@@ -794,6 +818,7 @@ export class Renderer {
 		this.videoCopies.clear()
 		this.videos.destroy()
 		this.labels.destroy()
+		this.titleOrbs?.destroy()
 		this.actions.destroy()
 		this.openButton.destroy()
 		this.pageBadges.destroy()
@@ -1249,6 +1274,8 @@ class SectionLabels {
 	private els = new Map<string, HTMLDivElement>()
 	private titleWidths = new Map<string, number>()
 	private host: HTMLDivElement
+	/** subagents' orbs after the titles, set when there's WebGL2 for them */
+	orbs: TitleOrbs | null = null
 
 	constructor(
 		parent: HTMLElement,
@@ -1257,17 +1284,20 @@ class SectionLabels {
 		/** null hides the hide buttons (read-only views) */
 		private onHide: ((sectionId: string) => void) | null,
 		private onShowMore: (sectionId: string, count: number) => void,
+		/** a subagent's drawer's × */
+		private onCloseDrawer: (sectionId: string) => void,
 	) {
 		this.host = document.createElement('div')
 		this.host.className = 'section-labels'
 		parent.appendChild(this.host)
 	}
 
-	private createLabel(id: string, editor: Editor) {
+	private createLabel(id: string, editor: Editor, drawer: boolean) {
 		const el = document.createElement('div')
-		el.className = 'section-label'
+		el.className = drawer ? 'section-label in-drawer' : 'section-label'
 		el.dataset.session = id
 		el.innerHTML = '<span class="title"></span>'
+		if (drawer) return this.drawerButtons(el, id, editor)
 		if (!this.onHide && !this.onClose) return el
 		// Screen-space buttons at the end of the title row (see frameButtons.css and update's room rule).
 		const buttons = document.createElement('span')
@@ -1329,6 +1359,30 @@ class SectionLabels {
 		return el
 	}
 
+	/** A subagent's frame in its drawer: its prompt button (it prompts the subagent), and × to close the drawer. */
+	private drawerButtons(el: HTMLDivElement, id: string, editor: Editor) {
+		const buttons = document.createElement('span')
+		buttons.className = 'frame-buttons'
+		el.appendChild(buttons)
+		const button = (cls: string, html: string, title: string, onClick: () => void) => {
+			const b = document.createElement('button')
+			b.className = cls
+			b.innerHTML = html
+			if (title) b.title = title
+			b.addEventListener('pointerdown', (e) => e.stopPropagation())
+			b.addEventListener('dblclick', (e) => e.stopPropagation())
+			b.addEventListener('click', (e) => {
+				e.stopPropagation()
+				onClick()
+			})
+			buttons.appendChild(b)
+			return b
+		}
+		button('prompt-frame', PROMPT_ICON, '', () => editor.frameChrome?.prompt(id)).hidden = true
+		button('close close-drawer', '×', 'Close (Esc)', () => this.onCloseDrawer(id))
+		return el
+	}
+
 	/** The session's prompt button, as its FrameChrome status says. */
 	private showStatus(el: HTMLElement, status: FrameStatus | null) {
 		const prompt = el.querySelector<HTMLButtonElement>('.prompt-frame')
@@ -1386,8 +1440,13 @@ class SectionLabels {
 
 			seen.add(s.id)
 			let el = this.els.get(s.id)
+			// (a frame going into a drawer, or out of one, gets the other kind of label)
+			if (el && el.classList.contains('in-drawer') !== !!s.drawer) {
+				el.remove()
+				el = undefined
+			}
 			if (!el) {
-				el = this.createLabel(s.id, editor)
+				el = this.createLabel(s.id, editor, !!s.drawer)
 				this.host.appendChild(el)
 				this.els.set(s.id, el)
 			}
@@ -1405,11 +1464,16 @@ class SectionLabels {
 				// Page-space width of the whole title (its font size is fixed, so this only changes with the text).
 				this.titleWidths.set(s.id, title.scrollWidth)
 			}
-			const scale = Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx)
-			place(el, shift(s.header), scale)
+			// (a subagent's title in its drawer scales with it: zoomed out, it would grow over its parent's)
+			const scale = s.drawer ? z : Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx)
+			const header = shift(s.header)
+			place(el, header, scale)
 			// The buttons keep a constant screen size inside the scaled label.
 			el.style.setProperty('--u', String(1 / scale))
-			if (this.onHide || this.onClose) {
+			if (s.drawer) {
+				// (its × stays reachable however small its title gets)
+				el.classList.toggle('roomy', s.box.w * z >= MIN_FRAME_PX_FOR_BUTTONS)
+			} else if (this.onHide || this.onClose) {
 				// The buttons only show when the frame is wide enough, the title line is tall enough, and
 				// the title keeps enough room.
 				const width = s.header.w * z
@@ -1421,6 +1485,29 @@ class SectionLabels {
 					TITLE_LINE_PX * scale >= BUTTON_PX &&
 					width - buttons >= Math.min(titleWidth, MIN_TITLE_PX_BESIDE_BUTTONS)
 				el.classList.toggle('roomy', roomy)
+			}
+			// The subagents' orbs after the title (constant size on screen), in the room the buttons leave.
+			const orbs = !s.drawer && this.orbs
+			if (orbs) {
+				const roomy = el.classList.contains('roomy')
+				const buttons = roomy ? (status?.canPrompt ? BUTTON_PX : 0) + (this.onHide ? BUTTON_PX : 0) + (this.onClose ? BUTTON_PX : 0) + 2 + 16 * scale : 0
+				const bottom = editor.pageToScreen({ x: header.x, y: header.y + header.h })
+				const top = bottom.y - header.h * scale
+				const shown = orbs.title(
+					s.id,
+					{
+						left: bottom.x,
+						y: top + (4 + TITLE_LINE_PX / 2) * scale,
+						w: s.header.w * z - buttons,
+						titleW: (this.titleWidths.get(s.id) ?? 0) * scale,
+						// (more room after a bigger title)
+						gap: Math.round(6 + 0.3 * LAYOUT.frameTitlePx * scale),
+						opacity: d.opacity,
+					},
+					performance.now(),
+				)
+				const max = shown === null ? '' : `${Math.max(0, shown / scale)}px`
+				if (title.style.maxWidth !== max) title.style.maxWidth = max
 			}
 			el.style.opacity = String(d.opacity)
 			el.classList.toggle('hovered', s.id === hoveredFrameId && !liftedId)
@@ -1473,6 +1560,7 @@ class SectionLabels {
 			this.els.delete(id)
 			this.titleWidths.delete(id)
 		}
+		this.orbs?.placedAll()
 	}
 
 	destroy() {

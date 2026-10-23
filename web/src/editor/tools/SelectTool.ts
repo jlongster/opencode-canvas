@@ -62,7 +62,7 @@ class Idle extends StateNode {
 		if (group === editor.hoveredGroupId.peek() && frame === editor.hoveredFrameId.peek()) return
 		editor.setHoveredGroup(group)
 		editor.hoveredFrameId.set(frame)
-		if (!editor.inputs.isSpaceDown) editor.setCursor(group ? 'pointer' : frame && editor.frames ? 'grab' : 'default')
+		if (!editor.inputs.isSpaceDown) editor.setCursor(group ? 'pointer' : frame && editor.frames && !editor.parentOf(frame) ? 'grab' : 'default')
 	}
 }
 
@@ -93,7 +93,8 @@ class PointingItem extends StateNode {
 	override onPointerMove() {
 		const { editor } = this
 		if (!editor.inputs.isDragging) return
-		if (this.frameId && editor.frames && !editor.inputs.shiftKey) this.parent!.transition('dragging_frame', { sessionId: this.frameId })
+		// (a subagent's frame in its drawer stays where it is)
+		if (this.frameId && editor.frames && !editor.inputs.shiftKey && !editor.parentOf(this.frameId)) this.parent!.transition('dragging_frame', { sessionId: this.frameId })
 		else this.parent!.transition('brushing')
 	}
 

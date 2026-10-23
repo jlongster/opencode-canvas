@@ -33,6 +33,8 @@ export interface PresenceState {
 	thinking?: boolean
 	/** linked sessions: their busy subagents (child sessions), oldest first */
 	subagents?: SubagentInfo[]
+	/** linked sessions: their subagents whose last run failed (ids) */
+	failedSubagents?: string[]
 	/** linked sessions: waiting for its owner to answer questions or permission requests */
 	asking?: AskingInfo | null
 }
@@ -44,6 +46,8 @@ export interface AskingInfo {
 	count: number
 	/** the first one, in a line, for viewers who can't read the session */
 	text?: string
+	/** the sessions waiting (it, or its subagents) */
+	sessions?: string[]
 }
 
 export interface SubagentInfo {

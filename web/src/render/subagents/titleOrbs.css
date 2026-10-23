@@ -1,0 +1,47 @@
+/* The app's subagent orbs on frame titles (see titleOrbs.ts); the orbs themselves are in orbs.css. */
+
+.title-orbs {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	font: 13px/1.4 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+	color: #e6e6e8;
+	letter-spacing: 0;
+}
+
+.title-orbs-row {
+	position: absolute;
+	left: 0;
+	top: 0;
+	height: 24px;
+	will-change: transform;
+}
+
+/* the wire from the top drawer's orb down to the caret on its band */
+.drawer-wire {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	overflow: visible;
+	pointer-events: none;
+	fill: none;
+	stroke: rgba(255, 255, 255, 0.22);
+	stroke-width: 1px;
+}
+
+/* a square turned on its point, half over the band's top edge, in the band's fill */
+.drawer-caret {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 12px;
+	height: 12px;
+	box-sizing: border-box;
+	background: var(--band-fill);
+	border-top: 1px solid rgba(255, 255, 255, 0.07);
+	border-left: 1px solid rgba(255, 255, 255, 0.07);
+	border-top-left-radius: 2px;
+	clip-path: polygon(0 0, 100% 0, 0 100%);
+	pointer-events: none;
+}

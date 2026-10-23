@@ -25,8 +25,12 @@ export interface SectionLayout {
 	itemIds: string[]
 	/** the row under the groups saying how many older items are hidden, if any are */
 	more: { box: Box; hidden: number } | null
-	/** drawn this opaque, items included (default 1; only a renderer with easeLayout false reads it) */
+	/** drawn this opaque, items included (default 1; read by a renderer with easeLayout false, and for `snap` frames) */
 	opacity?: number
+	/** drawn exactly where it's laid out, with its items, without easing (the caller animates it, see drawers.ts) */
+	snap?: boolean
+	/** a subagent's frame open in a drawer in its parent's frame (see drawers.ts) */
+	drawer?: { parentId: string }
 }
 
 export interface Layout {
@@ -87,6 +91,8 @@ export const LAYOUT = {
  * extended upward when the title is drawn bigger than page scale (see SectionLabels).
  */
 export function frameTitleBox(section: SectionLayout, z: number): Box {
+	// (a drawer's title stays in its band)
+	if (section.drawer) return { x: section.box.x, y: section.box.y, w: section.box.w, h: section.header.y + section.header.h - section.box.y }
 	const grow = Math.max(1, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx / z)
 	const bottom = section.header.y + section.header.h
 	const top = Math.min(section.box.y, bottom - section.header.h * grow)
@@ -126,6 +132,8 @@ export function computeLayout(
 	items: Record<string, Item>,
 	order?: readonly string[],
 	limits?: Readonly<Record<string, number>>,
+	/** sessions not laid out as frames of their own (subagents, see drawers.ts) */
+	skip?: { has(sessionId: string): boolean },
 ): Layout {
 	const L = LAYOUT
 	const bySession = new Map<string, Item[]>()
@@ -135,7 +143,7 @@ export function computeLayout(
 		list.push(item)
 	}
 
-	const ordered = orderSessions(Object.values(sessions), order).filter((s) => !s.hidden)
+	const ordered = orderSessions(Object.values(sessions), order).filter((s) => !s.hidden && !skip?.has(s.id))
 	const layout: Layout = { sections: [], groups: [], items: new Map(), sectionOf: new Map(), groupOf: new Map(), bounds: null }
 	let frameX = 0
 

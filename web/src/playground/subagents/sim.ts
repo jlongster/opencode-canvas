@@ -1,19 +1,14 @@
-import { easeOut } from '../../render/busy/ember'
-import { clamp01, hexToRgb, type KidLook, type KidState, type RGB } from '../../render/subagents/field'
+import { duration, hexToRgb, trackLook, type KidLook, type KidState, type KidView, type RGB } from '../../render/subagents/field'
 import { sessionColor } from '../../../../shared/sessionColor'
 import { rng, type DemoFamily, type DemoKid } from './data'
+
+export type { KidView }
 
 /*
  * What every subagent is doing, over time: its state, when that changed and what it was before (so
  * looks crossfade), and its run times. Live, it moves on by itself every few seconds
  * (deterministically: seeded, on performance.now).
  */
-
-/** a state change crossfades over this long (s) */
-const FADE_S = 0.45
-/** done after running: a brief brightening rises, holds, then settles (s), like a frame's done band */
-const FLASH = { fill: 0.2, hold: 0.15, fade: 0.7 }
-const BREATH_S = 2.4
 
 export interface Kid {
 	demo: DemoKid
@@ -28,23 +23,6 @@ export interface Kid {
 	/** when its current (or last) run started, and when it finished */
 	started: number
 	finished: number | null
-}
-
-/** A subagent as the indicators see it. */
-export interface KidView {
-	id: string
-	title: string
-	agent: string
-	task: string
-	/** 1-based, in the order the session started them */
-	index: number
-	/** its own session colour */
-	own: RGB
-	seed: number
-	state: KidState
-	look: KidLook
-	/** "1m 04s" (its current or last run) */
-	elapsed: string
 }
 
 export class Sim {
@@ -115,27 +93,7 @@ export class Sim {
 	}
 
 	look(k: Kid, now: number, open: number, hover: number, out: KidLook, reduced: boolean): KidLook {
-		const e = easeOut(clamp01((now - k.since) / FADE_S))
-		out.run = out.done = out.fail = out.wait = 0
-		const add = (s: KidState, w: number) => {
-			if (s === 'running') out.run += w
-			else if (s === 'done') out.done += w
-			else if (s === 'failed') out.fail += w
-			else out.wait += w
-		}
-		add(k.state, e)
-		add(k.prev, 1 - e)
-		const dt = now - k.since
-		out.flash =
-			!reduced && k.state === 'done' && k.prev === 'running'
-				? dt < FLASH.fill
-					? easeOut(dt / FLASH.fill)
-					: 1 - easeOut(clamp01((dt - FLASH.fill - FLASH.hold) / FLASH.fade))
-				: 0
-		out.open = open
-		out.hover = hover
-		out.breath = reduced ? 0.6 : 0.5 - 0.5 * Math.cos((dt / BREATH_S) * 2 * Math.PI)
-		return out
+		return trackLook(k, now, open, hover, out, reduced)
 	}
 
 	view(k: Kid, now: number, look: KidLook): KidView {
@@ -152,12 +110,4 @@ export class Sim {
 			elapsed: duration((k.finished ?? now) - k.started),
 		}
 	}
-}
-
-export function duration(s: number) {
-	const t = Math.max(0, Math.floor(s))
-	if (t < 60) return `${t}s`
-	const m = Math.floor(t / 60)
-	if (m < 60) return `${m}m ${String(t % 60).padStart(2, '0')}s`
-	return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
 }

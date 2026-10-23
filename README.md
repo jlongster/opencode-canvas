@@ -59,6 +59,13 @@ On a canvas you can then:
   Page items show a screenshot when the poster sent one (with the site's domain in a corner), else
   a link card; **Open** opens the real page in a new tab. Agents post them too (`page` below), with
   a screenshot. The canvas never fetches the page itself.
+- **Subagents** sit in their parent's frame: a session whose subagents (child sessions, e.g. from the
+  task tool) also have frames on the canvas shows them as a row of small orbs after its title, each
+  showing what that subagent is doing (running, waiting on an answer, failed, done; hover one for its
+  name). Clicking an orb opens the subagent's frame in a drawer under the title, its items laid out
+  as usual, and the parent's own content moves down; clicking another switches to it, shift-click
+  opens several, and the orb again, its × or Esc closes it. Which are open is yours alone,
+  remembered per canvas. A subagent whose parent has no frame here stays a frame of its own.
 - **Arrange frames**: drag a frame by its title to move it, or hide it with the eye on its title;
   **Sessions** lists the hidden ones, to show them again. The arrangement is shared with everyone
   on the canvas.

@@ -91,6 +91,8 @@ class LiveSessions {
 	readonly sessions = atom<Record<string, KnownSession>>('openCodeSessions', {})
 	/** sessions working right now, on paired servers whose event stream is up (live) */
 	readonly busy = atom<ReadonlySet<string>>('openCodeBusy', new Set(), setEquals)
+	/** sessions whose last run failed, as the paired servers' event streams said (live) */
+	readonly failed = atom<ReadonlySet<string>>('openCodeFailed', new Set(), setEquals)
 	/** bumped when sessions came or went on a server (or its stream reconnected): lists of them may be out of date */
 	readonly listVersion = atom<number>('openCodeListVersion', 0)
 
@@ -355,9 +357,12 @@ class LiveSessions {
 				return
 			}
 			case 'session.execution.started':
+				this.setFailed(id, false)
 				return this.setBusy(key, id, true, at)
-			case 'session.execution.succeeded':
 			case 'session.execution.failed':
+				this.setFailed(id, true)
+				return this.setBusy(key, id, false, at)
+			case 'session.execution.succeeded':
 			case 'session.execution.interrupted':
 			case 'session.idle':
 				return this.setBusy(key, id, false, at)
@@ -391,6 +396,15 @@ class LiveSessions {
 		const prev = this.sessions.peek()[id]
 		if (at && prev && (prev.updatedAt ?? 0) < at) this.sessions.set({ ...this.sessions.peek(), [id]: { ...prev, updatedAt: at } })
 		this.publishBusy()
+	}
+
+	private setFailed(id: string, failed: boolean) {
+		const now = this.failed.peek()
+		if (now.has(id) === failed) return
+		const next = new Set(now)
+		if (failed) next.add(id)
+		else next.delete(id)
+		this.failed.set(next)
 	}
 
 	private publishBusy() {
@@ -448,9 +462,28 @@ export class FrameSessions {
 			react(() => {
 				const wanted = new Map<string, string | undefined>()
 				for (const s of Object.values(editor.sessionRecords.get())) if (isOpenCodeSession(s.id)) wanted.set(s.id, s.serverKey)
+				// and their parents (and theirs) without frames: a subagent's subagent finds its way to its frame through them
+				const known = liveSessions.sessions.get()
+				let ids = [...wanted.keys()]
+				for (let depth = 0; depth < 4 && ids.length; depth++) {
+					const next: string[] = []
+					for (const id of ids) {
+						const parent = known[id]?.parentId ?? editor.sessionRecords.peek()[id]?.opencode?.parentId
+						if (parent && isOpenCodeSession(parent) && !wanted.has(parent)) {
+							wanted.set(parent, known[id]?.serverKey)
+							next.push(parent)
+						}
+					}
+					ids = next
+				}
 				liveSessions.want(this, wanted)
 			}),
 			react(() => this.show(editor.sessionRecords.get(), liveSessions.sessions.get())),
+			react(() => {
+				const parents: Record<string, string> = {}
+				for (const k of Object.values(liveSessions.sessions.get())) if (k.parentId) parents[k.id] = k.parentId
+				editor.knownParents.set(parents)
+			}),
 		)
 	}
 

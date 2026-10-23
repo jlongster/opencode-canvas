@@ -58,6 +58,8 @@ export interface PlacementWorld {
 	notes: Map<string, Box>
 	/** whether the session has a frame on the canvas (hidden or not) */
 	hasFrame(sessionId: string): boolean
+	/** the frame a subagent's drawer is in (its notes at the top of a frame go to the top of that one) */
+	parentOf?(sessionId: string): string | null
 }
 
 type Resolved =
@@ -139,7 +141,8 @@ export function placeAgentNotes(notes: AgentNoteInput[], world: PlacementWorld):
 function resolve(n: AgentNoteInput, world: PlacementWorld, agentIds: Set<string>): Resolved {
 	const { layout } = world
 	const atFrame = (sessionId: string): Resolved | null => {
-		const section = layout.sections.find((s) => s.id === sessionId)
+		const frame = world.parentOf?.(sessionId) ?? sessionId
+		const section = layout.sections.find((s) => s.id === frame)
 		return section ? { kind: 'frame', section } : null
 	}
 	const fallback = (): Resolved => atFrame(n.sessionId) ?? (world.hasFrame(n.sessionId) ? { kind: 'hidden' } : { kind: 'loose' })

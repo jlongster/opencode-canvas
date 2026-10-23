@@ -400,6 +400,11 @@
 	padding-left: 27px;
 }
 
+/* a subagent's frame, under its parent's */
+.toolbar .sp-recent .sp-row.is-child {
+	padding-left: 43px;
+}
+
 /* hidden frames are listed too, quieter */
 .toolbar .sp-row.is-hidden .sp-row-title {
 	color: var(--text-muted, #ababb3);

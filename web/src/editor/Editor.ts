@@ -3,6 +3,7 @@ import type { Item, OpenCodeSessionInfo, Session } from '../../../shared/types'
 import { atom, computed, getGlobalEpoch, react, transact } from '../state/signals'
 import { Box, clamp, easeInOutCubic, lerp, Vec } from './geometry'
 import { Deletions } from './Deletions'
+import { applyDrawers, Drawers, familiesEqual, subagentFamilies, type Families } from './drawers'
 import { computeLayout, frameTitleBox, itemsToReveal, LAYOUT, newestFirst, orderSessions, shiftSection, type GroupLayout, type Layout } from './layout'
 import { groupKey, noteKey, parseSelectionId, type SelectionKind } from './selection'
 import { StateNode } from './StateNode'
@@ -109,6 +110,8 @@ export interface FrameChrome {
 	status(sessionId: string): FrameStatus | null
 	/** the prompt button: opens (or closes) the session's prompt at its frame */
 	prompt(sessionId: string): void
+	/** what a subagent is doing (see render/subagents/titleOrbs.ts) */
+	subagent?(sessionId: string): 'running' | 'waiting' | 'failed' | 'done'
 }
 
 /** Arranging session frames (edit links): saved on the canvas server, for everyone. */
@@ -178,6 +181,11 @@ export class Editor {
 	readonly items = atom<Record<string, Item>>('items', {})
 	/** The canvas's arranged frame order (Canvas.sessionOrder). */
 	readonly sessionOrder = atom<string[]>('sessionOrder', [], arrayEquals)
+	/**
+	 * Sessions' parents as this tab's paired OpenCode knows them, by session id, sessions without a
+	 * frame included (see opencode/live.ts): how a subagent's subagent finds its way to a frame.
+	 */
+	readonly knownParents = atom<Record<string, string>>('knownParents', {}, recordEquals)
 	/** Sticky notes' page boxes (ignoring their slight tilt), kept up to date by SharedNotes. */
 	readonly noteBoxes = atom<Record<string, Box>>('noteBoxes', {}, boxRecordEquals)
 
@@ -220,26 +228,41 @@ export class Editor {
 	 */
 	readonly itemLimits = atom<Record<string, number>>('itemLimits', {})
 
+	/** Subagents' drawers in their parents' frames: which this viewer opened (see drawers.ts). */
+	readonly drawers = new Drawers()
+
 	// --- derived ---
+	/** Which frames are subagents of which (they show as orbs on their parent's title, and open in drawers there). */
+	readonly families = computed<Families>('families', () => subagentFamilies(this.sessions.get(), this.knownParents.get()), familiesEqual)
 	/** Every session (hidden ones too) left to right, as arranged; while a frame is dragged, as it would drop. */
 	readonly orderedSessions = computed<Session[]>('orderedSessions', () =>
 		orderSessions(Object.values(this.sessions.get()), this.frameDrag.get()?.order ?? this.sessionOrder.get()),
 	)
 	private readonly baseLayout = computed<Layout>('baseLayout', () =>
-		computeLayout(this.sessions.get(), this.items.get(), this.frameDrag.get()?.order ?? this.sessionOrder.get(), this.itemLimits.get()),
+		computeLayout(this.sessions.get(), this.items.get(), this.frameDrag.get()?.order ?? this.sessionOrder.get(), this.itemLimits.get(), this.families.get().parentOf),
 	)
+	/** Every subagent laid out as a frame of its own, for its drawer. */
+	private readonly kidLayout = computed<Layout>('kidLayout', () => {
+		const sessions = this.sessions.get()
+		const kids: Record<string, Session> = {}
+		for (const id of this.families.get().parentOf.keys()) if (sessions[id]) kids[id] = sessions[id]
+		return computeLayout(kids, this.items.get(), undefined, this.itemLimits.get())
+	})
 	/**
 	 * Where everything is. A dragged frame follows the pointer (loosely up and down) while the others
 	 * make room for it in the slot it would drop into.
 	 */
 	readonly layout = computed<Layout>('layout', () => {
-		const base = this.baseLayout.get()
+		let base = this.baseLayout.get()
 		const drag = this.frameDrag.get()
 		const section = drag && base.sections.find((s) => s.id === drag.sessionId)
-		if (!drag || !section) return base
-		const x = drag.from.x + drag.point.x - drag.origin.x
-		const y = drag.from.y + (drag.point.y - drag.origin.y) * FRAME_DRAG_Y
-		return shiftSection(base, drag.sessionId, x - section.box.x, y - section.box.y)
+		if (drag && section) {
+			const x = drag.from.x + drag.point.x - drag.origin.x
+			const y = drag.from.y + (drag.point.y - drag.origin.y) * FRAME_DRAG_Y
+			base = shiftSection(base, drag.sessionId, x - section.box.x, y - section.box.y)
+		}
+		const drawers = this.drawers.frame.get()
+		return drawers.size ? applyDrawers(base, this.kidLayout.get(), this.families.get(), drawers) : base
 	})
 	readonly selectedSet = computed('selectedSet', () => new Set(this.selectedIds.get()))
 	/** The linked group (see linkedGroupId), while it still exists. */
@@ -451,6 +474,7 @@ export class Editor {
 	revealItem(itemId: string): boolean {
 		const item = this.items.peek()[itemId]
 		if (!item || this.isSessionHidden(item.sessionId)) return false
+		this.openDrawerFor(item.sessionId)
 		if (this.layout.get().items.has(itemId)) return true
 		const needed = itemsToReveal(this.items.peek(), itemId)
 		const current = this.itemLimits.peek()[item.sessionId] ?? LAYOUT.visibleItems
@@ -463,6 +487,8 @@ export class Editor {
 	/** Lays out whatever a selection key points at if it's among a frame's hidden older items. */
 	revealKey(key: string) {
 		const { kind, id } = parseSelectionId(key)
+		if (kind === 'frame') this.openDrawerFor(id)
+		if (kind === 'group') this.openDrawerFor(id.slice(0, id.indexOf('/')))
 		if (kind === 'item') this.revealItem(id)
 		if (kind !== 'group' || this.layout.get().groups.some((g) => g.id === id)) return
 		// A group whose items are all older than the frame shows: reveal its newest one.
@@ -473,6 +499,34 @@ export class Editor {
 			.filter((i) => i.sessionId === sessionId && (i.group ?? '') === name)
 			.sort(newestFirst)[0]
 		if (newest) this.revealItem(newest.id)
+	}
+
+	// ---------- subagents' drawers ----------
+
+	/** The frame a subagent's drawer opens in, or null for a frame of its own. */
+	parentOf(sessionId: string | undefined): string | null {
+		return (sessionId && this.families.get().parentOf.get(sessionId)) || null
+	}
+
+	/** A click on a subagent's orb: opens its drawer (switching from its parent's other open one), or closes it. Shift keeps the others open. */
+	toggleDrawer(sessionId: string, additive = false) {
+		const parent = this.parentOf(sessionId)
+		if (!parent) return
+		this.drawers.toggle(sessionId, this.families.get().kids.get(parent) ?? [], additive)
+	}
+
+	/** Opens a subagent's drawer, straight away (`instant`, so what's in it is laid out now) or eased. False when it's no subagent here. */
+	openDrawerFor(sessionId: string, instant = true): boolean {
+		if (!this.parentOf(sessionId)) return false
+		if (!this.drawers.isOpen(sessionId)) {
+			this.drawers.set(sessionId, true, { instant })
+			this.drawers.step(performance.now())
+		}
+		return true
+	}
+
+	closeDrawers() {
+		this.drawers.closeAll()
 	}
 
 	// ---------- selection & hover ----------
@@ -1247,6 +1301,9 @@ export class Editor {
 		if (!mod && !e.altKey && (e.key === 'n' || e.key === 'N') && this.createNote) return this.setCurrentTool('note')
 		if (!mod && !e.altKey && e.key.length === 1 && 'pPaA'.includes(e.key) && this.annotationDrafts) return this.setCurrentTool('pencil')
 
+		// Esc: the selection goes first, then any subagents' drawers.
+		if (e.key === 'Escape' && !this.selectedIds.peek().length && this.drawers.openIds().length && !this.inputs.isPointing) return this.closeDrawers()
+
 		const focused = document.activeElement
 		this.dispatch({ name: 'key_down', key: e.key, code: e.code, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey })
 		// A key that opened a text box (see PencilTool) isn't typed into it as well.
@@ -1333,6 +1390,7 @@ export class Editor {
 	/** Camera animation and pan inertia, then a tick for the state chart. */
 	private tick(now: number, elapsed: number) {
 		transact(() => {
+			this.drawers.step(now)
 			const anim = this.cameraAnimation
 			if (anim) {
 				const t = clamp((now - anim.start) / anim.duration, 0, 1)
@@ -1382,6 +1440,11 @@ function linkEquals(a: HtmlLink | null, b: HtmlLink | null) {
 	if (a === b) return true
 	if (!a || !b || a.itemId !== b.itemId || a.href !== b.href || a.rects.length !== b.rects.length) return false
 	return a.rects.every((r, i) => Box.equals(r, b.rects[i]))
+}
+
+function recordEquals(a: Record<string, string>, b: Record<string, string>) {
+	const keys = Object.keys(a)
+	return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k])
 }
 
 function arrayEquals(a: string[], b: string[]) {

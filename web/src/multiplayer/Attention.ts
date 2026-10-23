@@ -11,7 +11,12 @@ import type { AgentNoteInfo, SharedNotes } from './SharedNotes'
 /** One session calling for attention, as the bar at the top lists it. */
 export interface Caller {
 	sessionId: string
+	/** a subagent's: "Parent › Subagent" */
 	name: string
+	/** a subagent's parent's name (its row goes under its parent's) */
+	parentName: string | null
+	/** its own name */
+	ownName: string
 	color: string
 	/** the sticky notes it placed that nobody has acknowledged yet, oldest first */
 	notes: AgentNoteInfo[]
@@ -62,13 +67,21 @@ export class Attention {
 	readonly callers = computed<Caller[]>('attentionCallers', () => {
 		const asking = this.asking.get()
 		const notes = this.bySession.get()
-		return [...new Set([...asking.keys(), ...notes.keys()])].map((sessionId) => ({
-			sessionId,
-			name: this.sessions.label(sessionId),
-			color: sessionColor(sessionId),
-			notes: notes.get(sessionId) ?? [],
-			asking: asking.get(sessionId) ?? null,
-		}))
+		// (a subagent's row comes right after its parent's)
+		const ids = [...new Set([...asking.keys(), ...notes.keys()])]
+		const rank = (id: string) => ids.indexOf(this.editor.parentOf(id) ?? id)
+		return ids
+			.map((sessionId, i) => ({ sessionId, i }))
+			.sort((a, b) => rank(a.sessionId) - rank(b.sessionId) || a.i - b.i)
+			.map(({ sessionId }) => ({
+				sessionId,
+				name: this.name(sessionId),
+				parentName: this.editor.parentOf(sessionId) ? this.sessions.label(this.editor.parentOf(sessionId)!) : null,
+				ownName: this.sessions.label(sessionId),
+				color: sessionColor(sessionId),
+				notes: notes.get(sessionId) ?? [],
+				asking: asking.get(sessionId) ?? null,
+			}))
 	})
 
 	constructor(
@@ -110,6 +123,9 @@ export class Attention {
 	/** Glides the camera to a note and what it points at, and briefly emphasises it. */
 	show(id: string) {
 		const info = this.notes.agentNotes.peek().find((n) => n.id === id)
+		// a subagent's opens its drawer (one on its item or frame straight away, to show it there)
+		if (info?.target) this.editor.revealKey(info.target)
+		if (info) this.editor.openDrawerFor(info.sessionId, false)
 		const placed = this.notes.placementOf(id)
 		if (!info || !placed) return
 		this.current.set({ id, createdAt: info.createdAt })
@@ -125,6 +141,12 @@ export class Attention {
 	answer(sessionId: string) {
 		this.sessions.showAsks(sessionId)
 		this.revealFrame(sessionId)
+	}
+
+	/** A session's name in the bar: a subagent's under its parent's ("Parent › Subagent"). */
+	name(sessionId: string) {
+		const parent = this.editor.parentOf(sessionId)
+		return parent ? `${this.sessions.label(parent)} › ${this.sessions.label(sessionId)}` : this.sessions.label(sessionId)
 	}
 
 	/**

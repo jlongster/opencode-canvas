@@ -19,6 +19,11 @@
 	transition: opacity 120ms, visibility 0s 120ms;
 }
 
+/* (centred on a drawer's 34px title line) */
+.section-label.in-drawer .frame-buttons {
+	margin-top: calc((34px - 24px * var(--u, 1)) / 2);
+}
+
 .section-label.roomy .frame-buttons {
 	position: static;
 	opacity: 1;

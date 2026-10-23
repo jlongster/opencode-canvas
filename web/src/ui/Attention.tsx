@@ -64,7 +64,7 @@ function CallerRow({ attention, caller: c, hidden }: { attention: Attention; cal
 	const current = useValue(() => attention.current.get()?.id, [attention])
 	const shown = c.notes.find((n) => n.id === current) ?? c.notes[0]
 	return (
-		<div className={`attention-row${c.asking ? ' asking' : ''}`} style={{ ['--agent-color' as string]: c.color }}>
+		<div className={`attention-row${c.asking ? ' asking' : ''}${c.parentName ? ' child' : ''}`} style={{ ['--agent-color' as string]: c.color }}>
 			<button
 				className="attention-row-open"
 				title={
@@ -85,8 +85,9 @@ function CallerRow({ attention, caller: c, hidden }: { attention: Attention; cal
 			>
 				<i className="attention-row-dot" />
 				<span className="attention-row-main">
-					<span className="attention-row-name">
-						{c.name}
+					<span className="attention-row-name" title={c.name}>
+						{c.parentName && <span className="attention-row-parent">{c.parentName} › </span>}
+						{c.ownName}
 						{hidden && <span className="attention-row-hidden"> (hidden)</span>}
 					</span>
 					<span className="attention-row-preview">

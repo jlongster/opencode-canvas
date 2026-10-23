@@ -153,6 +153,8 @@ export class SharedNotes {
 
 	/** Where an agent's note is on the page and what it points at, while it's shown. */
 	placementOf(id: string): NotePlacement | undefined {
+		// (what it's on may have just been laid out: a subagent's drawer opened to show it)
+		if (this.placedFor.layout !== this.editor.layout.get()) this.placeAgents()
 		return this.placements.get(id)
 	}
 
@@ -272,6 +274,7 @@ export class SharedNotes {
 			},
 			notes: new Map(Object.entries(this.peopleBoxes)),
 			hasFrame: (sessionId) => !!editor.sessions.peek()[sessionId],
+			parentOf: (sessionId) => editor.parentOf(sessionId),
 		}
 		this.placements = placeAgentNotes(inputs, world)
 		this.placedFor = { layout, scale: titleScale(z) }

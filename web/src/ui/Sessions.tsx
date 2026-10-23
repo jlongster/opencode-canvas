@@ -115,19 +115,22 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 		for (const item of Object.values(editor.items.get())) latest[item.sessionId] = Math.max(latest[item.sessionId] ?? 0, item.createdAt)
 		return JSON.stringify(latest)
 	}, [editor])
-	// The frames on this canvas, hidden ones included, most recently active first.
+	const families = useValue(() => editor.families.get(), [editor])
+	// The frames on this canvas, hidden ones included, most recently active first; subagents' under their parent's.
 	const recentFrames = useMemo(() => {
 		const latest = JSON.parse(latestItems) as Record<string, number>
-		return Object.values(frames)
+		const all = Object.values(frames)
 			.map((s) => ({
 				id: s.id,
 				title: s.title.trim() && s.title !== s.id ? s.title : '',
 				directory: s.opencode?.directory ?? known[s.id]?.directory ?? '',
 				hidden: !!s.hidden,
+				parent: families.parentOf.get(s.id) ?? null,
 				activeAt: Math.max(s.createdAt, s.opencode?.updatedAt ?? 0, known[s.id]?.updatedAt ?? 0, latest[s.id] ?? 0),
 			}))
 			.sort((a, b) => b.activeAt - a.activeAt)
-	}, [frames, known, latestItems])
+		return all.filter((f) => !f.parent).flatMap((f) => [f, ...all.filter((k) => k.parent === f.id)])
+	}, [frames, known, latestItems, families])
 	const [showRecent, setShowRecent] = useState(!!focus)
 	useEffect(() => {
 		if (focus) setShowRecent(true)
@@ -273,13 +276,13 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 									{recentFrames.map((f) => (
 										<button
 											key={f.id}
-											className={`sp-row${f.hidden ? ' is-hidden' : ''}${focus === f.id ? ' is-focus' : ''}`}
+											className={`sp-row${f.hidden ? ' is-hidden' : ''}${f.parent ? ' is-child' : ''}${focus === f.id ? ' is-focus' : ''}`}
 											ref={focus === f.id ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
 											autoFocus={focus === f.id}
-											title={f.hidden ? 'Hidden: show it again, for everyone, and go to it' : 'Go to this frame'}
+											title={f.hidden ? 'Hidden: show it again, for everyone, and go to it' : f.parent ? 'Open it in its drawer in its parent’s frame' : 'Go to this frame'}
 											onClick={() => goToFrame(f.id)}
 										>
-											<RowText title={f.title} directory={f.directory} />
+											<RowText title={f.title} directory={f.directory} parent={f.parent ? frames[f.parent]?.title || 'Untitled session' : undefined} />
 										</button>
 									))}
 								</div>
@@ -306,13 +309,13 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 	)
 }
 
-/** A row's two lines: the session's title, and its project under it. */
-function RowText({ title, directory }: { title: string; directory: string }) {
+/** A row's two lines: the session's title, and its project under it (a subagent: whose it is). */
+function RowText({ title, directory, parent }: { title: string; directory: string; parent?: string }) {
 	return (
 		<span className="sp-row-main">
 			<span className={`sp-row-title${title ? '' : ' is-untitled'}`}>{title || 'Untitled session'}</span>
-			<span className="sp-row-project" title={directory || undefined}>
-				{directory ? projectName(directory) : 'No project'}
+			<span className="sp-row-project" title={parent ? undefined : directory || undefined}>
+				{parent ? `Subagent of ${parent}` : directory ? projectName(directory) : 'No project'}
 			</span>
 		</span>
 	)

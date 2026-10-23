@@ -9,7 +9,7 @@ const SCALE = 2
 const FONT = '"Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", sans-serif'
 const MONO = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace'
 
-/** Where the "Open ↗" pill sits on the card, as fractions of its width and height (PageBadges puts a button there). */
+/** Where the "Open" pill sits on the card, as fractions of its width and height (PageBadges puts a button there). */
 export function linkCardOpenBox(width: number, height: number) {
 	const u = Math.min(width / 800, height / 500)
 	const w = 132 * u
@@ -96,7 +96,7 @@ function drawCard(width: number, height: number, title: string, url: string): st
 	c.font = `${15 * u}px ${MONO}`
 	c.fillText(fit(c, url, maxW), cx, cy + 46 * u)
 
-	// "Open ↗" (a real button sits on it, see PageBadges)
+	// "Open" (a real button sits on it, see PageBadges)
 	const box = linkCardOpenBox(width, height)
 	const px = box.x * width
 	const py = box.y * height
@@ -111,7 +111,7 @@ function drawCard(width: number, height: number, title: string, url: string): st
 	c.stroke()
 	c.fillStyle = 'rgba(255, 255, 255, 0.9)'
 	c.font = `500 ${16 * u}px ${FONT}`
-	c.fillText('Open ↗', cx, py + ph / 2 + 0.5 * u)
+	c.fillText('Open', cx, py + ph / 2 + 0.5 * u)
 
 	return canvas.toDataURL('image/png')
 }

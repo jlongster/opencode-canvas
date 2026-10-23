@@ -1,5 +1,5 @@
 import type { Item } from '../../../shared/types'
-import { GROUP_OUTLINE_PADDING, type Editor, type FrameStatus, type HtmlLink } from '../editor/Editor'
+import { GROUP_OUTLINE_PADDING, opensInDrawer, type Editor, type FrameStatus, type HtmlLink } from '../editor/Editor'
 import { Box, clamp } from '../editor/geometry'
 import { LAYOUT, type SectionLayout } from '../editor/layout'
 import { frameKey } from '../editor/selection'
@@ -8,7 +8,7 @@ import { TextureCache } from './TextureCache'
 import { VideoPool } from './VideoPool'
 import { EXTRACT_ICON, VideoControls } from './VideoControls'
 import { LinkHover, loadHtml, makeNonce, parseLinkMessage, withLinkReporter, type FrameTransform } from './HtmlLinks'
-import { EXTERNAL_ICON, PageBadges, pageDomain } from './PageBadges'
+import { PageBadges, pageDomain } from './PageBadges'
 import { ItemBadges } from './ItemBadges'
 import { linkCardUrl } from './linkCard'
 import { url as withBase } from '../base'
@@ -254,14 +254,10 @@ export class Renderer {
 		)
 		this.titles = new ItemTitles(overlay)
 		this.videoControls = new VideoControls(overlay, this.videos, editor, !!options.readOnly)
-		this.pageBadges = new PageBadges(overlay, (item) => openPage(item))
+		this.pageBadges = new PageBadges(overlay, (item) => editor.openHtmlDrawer(item.id))
 		this.itemBadges = new ItemBadges(overlay)
-		// HTML items open in the side drawer; pages open the real page in a new tab.
-		const open = (id: string) => {
-			const item = editor.items.peek()[id]
-			if (item?.kind === 'page') openPage(item)
-			else editor.openHtmlDrawer(id)
-		}
+		// HTML items and pages both open in the side drawer (a page: its live web page).
+		const open = (id: string) => editor.openHtmlDrawer(id)
 		this.actions = new ItemActions(overlay, options.readOnly ? null : this.videoControls, open)
 		this.openButton = new HtmlOpenButton(overlay, open)
 
@@ -572,9 +568,9 @@ export class Renderer {
 		this.itemBadges.update(items, this.displayedItems, viewBounds, editor)
 		const showDownload = hovered && editor.isShiftDown.get()
 		this.actions.update(showDownload ? items[hovered] : undefined, showDownload ? this.displayedItems.get(hovered) : undefined, editor)
-		// Without shift, a hovered HTML item gets just the button that opens it in the drawer (a page: in a new tab).
+		// Without shift, a hovered HTML item or page gets just the button that opens it in the drawer.
 		const openable = hovered ? items[hovered] : undefined
-		const showOpen = hovered && !showDownload && !editor.inputs.isPointing && (openable?.kind === 'html' || (openable?.kind === 'page' && !!openable.pageUrl))
+		const showOpen = hovered && !showDownload && !editor.inputs.isPointing && opensInDrawer(openable)
 		this.openButton.update(showOpen ? openable! : null, showOpen ? this.displayedItems.get(hovered) : undefined, editor)
 
 		this.frameTimes.push(performance.now() - t0)
@@ -1052,27 +1048,21 @@ const CHECK_ICON =
 export const OPEN_DRAWER_ICON =
 	'<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M14 4v16"/><path d="m9 10-2 2 2 2"/></svg>'
 const COPIED_MS = 1400
-const EXTERNAL_ICON_15 = EXTERNAL_ICON.replace(/1em/g, '15')
-
-/** Opens a page item's web page in a new tab. */
-export function openPage(item: Item) {
-	if (item.pageUrl && /^https?:/i.test(item.pageUrl)) window.open(item.pageUrl, '_blank', 'noopener,noreferrer')
-}
 
 /**
- * "Open" at the top-right corner of the hovered HTML item (at a constant size on screen), which
- * opens it in the side drawer where it takes input; on a page item, the real page in a new tab.
+ * "Open" at the top-right corner of the hovered HTML item or page (at a constant size on screen),
+ * which opens it in the side drawer where it takes input (a page: the live web page).
  * Shift shows ItemActions there instead.
  */
 class HtmlOpenButton {
 	private el: HTMLButtonElement
 	private itemId: string | null = null
-	private kind: Item['kind'] | null = null
 
 	constructor(parent: HTMLElement, onOpen: (id: string) => void) {
 		this.el = document.createElement('button')
 		this.el.className = 'item-action html-open'
 		this.el.style.display = 'none'
+		this.el.innerHTML = `${OPEN_DRAWER_ICON}<span>Open</span>`
 		this.el.addEventListener('pointerdown', (e) => e.stopPropagation())
 		this.el.addEventListener('dblclick', (e) => e.stopPropagation())
 		this.el.addEventListener('click', (e) => {
@@ -1090,12 +1080,7 @@ class HtmlOpenButton {
 			return
 		}
 		this.itemId = item.id
-		if (this.kind !== item.kind) {
-			this.kind = item.kind
-			const page = item.kind === 'page'
-			this.el.innerHTML = page ? `${EXTERNAL_ICON.replace(/1em/g, '14')}<span>Open</span>` : `${OPEN_DRAWER_ICON}<span>Open</span>`
-		}
-		this.el.title = item.kind === 'page' ? `Open ${item.pageUrl ?? pageDomain(item)} in a new tab` : 'Open in a side panel, to use the page'
+		this.el.title = drawerTitle(item)
 		const p = editor.pageToScreen({ x: box.x + box.w, y: box.y })
 		this.el.style.display = 'flex'
 		this.el.style.transform = `translate(calc(${p.x - 8}px - 100%), ${p.y + 8}px)`
@@ -1148,7 +1133,6 @@ class ItemActions {
 		this.extract.addEventListener('click', () => this.itemId && this.frames?.extract(this.itemId))
 		this.open = document.createElement('button')
 		this.open.className = 'item-action item-open'
-		this.open.title = 'Open in a side panel, to use the page'
 		this.open.innerHTML = OPEN_DRAWER_ICON
 		this.open.addEventListener('click', () => this.itemId && onOpen(this.itemId))
 		this.el.append(this.extract, this.open, this.link, this.download)
@@ -1177,13 +1161,12 @@ class ItemActions {
 		this.linkTarget = page ? (item.pageUrl ?? '') : new URL(withBase(item.src), location.href).href
 		if (this.kind !== item.kind) {
 			this.kind = item.kind
-			this.open.innerHTML = page ? EXTERNAL_ICON_15 : OPEN_DRAWER_ICON
-			this.open.title = page ? 'Open the page in a new tab' : 'Open in a side panel, to use the page'
 			this.download.title = page ? 'Download the screenshot' : 'Download'
 			this.showCopied(false)
 		}
 		this.extract.style.display = this.frames?.canExtract(item) ? '' : 'none'
-		this.open.style.display = item.kind === 'html' || (page && item.pageUrl) ? '' : 'none'
+		this.open.title = drawerTitle(item)
+		this.open.style.display = opensInDrawer(item) ? '' : 'none'
 		this.download.style.display = item.src ? '' : 'none'
 		const p = editor.pageToScreen({ x: box.x + box.w, y: box.y })
 		this.el.style.display = 'flex'
@@ -1213,6 +1196,11 @@ class ItemActions {
 		clearTimeout(this.copiedTimer)
 		this.el.remove()
 	}
+}
+
+/** The tooltip of the buttons that open an item in the side drawer. */
+export function drawerTitle(item: Item) {
+	return item.kind === 'page' ? `Open ${pageDomain(item)} in a side panel` : 'Open in a side panel, to use the page'
 }
 
 /** Puts text on the clipboard, falling back to execCommand where the Clipboard API isn't available. */

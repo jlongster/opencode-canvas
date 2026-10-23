@@ -94,7 +94,7 @@ export class DeepLink {
 	focusInitial() {
 		// Opening the drawer from a link also shows its item behind it, for when it's closed.
 		const drawer = parseDrawerHash(location.hash)
-		if (drawer && this.editor.items.peek()[drawer]?.kind === 'html') this.editor.openHtmlDrawer(drawer)
+		if (drawer) this.editor.openHtmlDrawer(drawer)
 		const key = parseHash(location.hash)
 		if (!key) {
 			this.editor.goToInitialView()

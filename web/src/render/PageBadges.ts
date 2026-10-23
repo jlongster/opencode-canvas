@@ -29,7 +29,7 @@ export function pageDomain(item: Pick<Item, 'pageUrl' | 'page'>): string {
  * Over each page item on screen: with a screenshot, a small badge in its bottom-left corner with the
  * page's domain and an external-link mark (at a constant size on screen, hidden when the item is
  * small; it never takes input: the hover Open button opens the page); without one, a button on the
- * link card's drawn "Open ↗" (see linkCard.ts) that opens the page.
+ * link card's drawn "Open" (see linkCard.ts) that opens the page in the side drawer.
  */
 export class PageBadges {
 	private host: HTMLDivElement
@@ -80,7 +80,7 @@ export class PageBadges {
 				el.badge.innerHTML = `<span class="domain"></span>${EXTERNAL_ICON}`
 				el.badge.children[0].textContent = pageDomain(item)
 				el.badge.title = item.pageUrl ?? ''
-				el.open.title = `Open ${item.pageUrl ?? pageDomain(item)} in a new tab`
+				el.open.title = `Open ${pageDomain(item)} in a side panel`
 			}
 			const p = editor.pageToScreen(d)
 			el.badge.style.display = card ? 'none' : ''

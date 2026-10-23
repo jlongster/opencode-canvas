@@ -12,6 +12,11 @@ import { NoteTool } from './tools/NoteTool'
 import { SelectTool } from './tools/SelectTool'
 import type { EditorEvent, EventOf, Modifiers, Target } from './types'
 
+/** HTML items, and page items with a web address, open in the side drawer (see ui/HtmlDrawer.tsx). */
+export function opensInDrawer(item: Item | undefined): item is Item {
+	return item?.kind === 'html' || (item?.kind === 'page' && !!item.pageUrl && /^https?:\/\//i.test(item.pageUrl))
+}
+
 export interface Camera {
 	x: number
 	y: number
@@ -207,7 +212,7 @@ export class Editor {
 	readonly frameDrag = atom<FrameDrag | null>('frameDrag', null)
 	/** A deep link that pointed into a hidden frame (see DeepLink), until dismissed. */
 	readonly hiddenLink = atom<{ key: string; sessionId: string } | null>('hiddenLink', null)
-	/** The HTML item open in the side drawer (see ui/HtmlDrawer.tsx); the canvas takes no input meanwhile. */
+	/** The HTML or page item open in the side drawer (see ui/HtmlDrawer.tsx); the canvas takes no input meanwhile. */
 	readonly htmlDrawer = atom<string | null>('htmlDrawer', null)
 	/**
 	 * How many of its newest items each frame shows, for frames this viewer has expanded (others
@@ -818,9 +823,9 @@ export class Editor {
 		this.setCamera({ x: w / 2 / z - (box.x + box.w / 2), y: pad / z - box.y, z }, { animate: opts.animate ?? true })
 	}
 
-	/** Open an HTML item in the side drawer. Returns false if there's no such HTML item. */
+	/** Open an HTML item, or a page item's web page, in the side drawer. Returns false if there's no such item. */
 	openHtmlDrawer(id: string): boolean {
-		if (this.items.peek()[id]?.kind !== 'html') return false
+		if (!opensInDrawer(this.items.peek()[id])) return false
 		transact(() => {
 			this.setHovered(null)
 			this.htmlDrawer.set(id)

@@ -1,4 +1,4 @@
-/* "Open" on the hovered HTML item (HtmlOpenButton in render/Renderer.ts) */
+/* "Open" on the hovered HTML item or page (HtmlOpenButton in render/Renderer.ts) */
 .item-action.html-open {
 	position: absolute;
 	left: 0;
@@ -237,6 +237,7 @@
 	position: relative;
 	flex: 1;
 	min-height: 0;
+	isolation: isolate;
 }
 
 .html-drawer-body iframe {
@@ -281,4 +282,159 @@
 .html-drawer-head .html-drawer-mode button[aria-pressed='true'] {
 	background: rgba(255, 255, 255, 0.12);
 	color: var(--text-strong);
+}
+
+.html-drawer-title-row {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	min-width: 0;
+}
+
+.html-drawer-title-row .html-drawer-title {
+	flex: 0 1 auto;
+	min-width: 0;
+}
+
+.html-drawer-domain {
+	flex: 0 10000 auto;
+	min-width: 48px;
+	overflow: hidden;
+	color: var(--text-dim);
+	font-size: 12px;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+/* A page item's web page (PageFrame in ui/HtmlDrawer.tsx): while it loads, and where it can't be shown */
+.html-drawer-loading {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	transform: translate(-50%, -50%);
+	z-index: -1;
+	color: var(--text-muted);
+	font-size: 13px;
+}
+
+.html-drawer-fallback {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	flex-direction: column;
+	background: var(--canvas);
+}
+
+.html-drawer-fallback.no-shot {
+	justify-content: center;
+	align-items: center;
+}
+
+.html-drawer-notice {
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--border);
+	background: var(--frame);
+	color: var(--text-strong);
+	font-size: 13px;
+}
+
+.html-drawer-fallback.no-shot .html-drawer-notice {
+	align-items: center;
+	padding: 24px 28px;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	text-align: center;
+}
+
+.html-drawer-notice-text {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 6px;
+	font-weight: 600;
+}
+
+.html-drawer-notice-text .sep {
+	color: var(--text-dim);
+}
+
+.html-drawer-notice a {
+	color: #7aa7ff;
+	text-decoration: none;
+}
+
+.html-drawer-notice a:hover {
+	text-decoration: underline;
+}
+
+.html-drawer-notice-why {
+	color: var(--text-muted);
+	font-size: 12px;
+}
+
+.html-drawer-shot {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	overscroll-behavior: contain;
+	padding: 16px;
+}
+
+.html-drawer-shot img {
+	display: block;
+	width: 100%;
+	height: auto;
+	border-radius: 6px;
+	box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+	opacity: 0.92;
+}
+
+.html-drawer-hint {
+	position: absolute;
+	left: 50%;
+	bottom: 16px;
+	transform: translateX(-50%);
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 12px;
+	border: 1px solid var(--border-strong);
+	border-radius: 999px;
+	background: rgb(var(--canvas-rgb) / 0.88);
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+	backdrop-filter: blur(8px);
+	color: var(--text-muted);
+	font-size: 12px;
+	white-space: nowrap;
+	animation: html-drawer-fade 200ms ease-out both;
+}
+
+.html-drawer-hint .sep {
+	color: var(--text-dim);
+}
+
+.html-drawer-hint a,
+.html-drawer-hint button,
+.html-drawer-retry {
+	padding: 0;
+	border: 0;
+	background: none;
+	color: #7aa7ff;
+	font: inherit;
+	text-decoration: none;
+	cursor: pointer;
+}
+
+.html-drawer-hint a:hover,
+.html-drawer-hint button:hover,
+.html-drawer-retry:hover {
+	text-decoration: underline;
+}
+
+.html-drawer-retry {
+	margin-left: 8px;
 }

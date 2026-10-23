@@ -1,6 +1,6 @@
 import type { Item, SessionLink } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
-import type { Vec } from '../editor/geometry'
+import { Box, type Vec } from '../editor/geometry'
 import { frameTitleBox } from '../editor/layout'
 import { parseSelectionId } from '../editor/selection'
 import { answerQuestion, dismissQuestion, listAsks, replyPermission, type Ask, type AskValue, type PermissionAsk, type QuestionAsk } from '../opencode/asks'
@@ -22,6 +22,19 @@ export interface PromptAttachment {
 
 /** Why this browser can't prompt a session, or null when it can. 'unlinked': nobody linked it to OpenCode here. */
 export type TalkBlock = 'not-yours' | 'not-paired' | 'unlinked' | null
+
+/**
+ * Where a session's prompt bubbles open, in page coordinates: set as they open and kept, so they stay
+ * at that spot on the canvas (see PromptThread's placeAtAnchor). `x`, `top`, `bottom`: what they open
+ * at (the pointer, the prompt button, the selection or the frame's title); `place`: just below and
+ * right of the pointer, below the rest, or above it.
+ */
+export interface PromptAnchor {
+	x: number
+	top: number
+	bottom: number
+	place: 'cursor' | 'below' | 'above'
+}
 
 /** One of your prompts in a session, as the prompt thread shows it: the text you typed and the images' data: URLs. */
 export interface ThreadPrompt {
@@ -52,26 +65,28 @@ const FIND_SESSION_MS = 8_000
 const INTERRUPT_MS = 10_000
 /** a session still working this long after it was interrupted can be stopped again */
 const STOP_WAIT_MS = 20_000
+/** an added session's frame is filled in after this long even if the camera hasn't brought it into view */
+const CENTER_WAIT_MS = 1_000
 /** screen px outside a session frame (title included) that still counts as over it, for C */
 const FRAME_REACH = 48
-/** screen px kept above a frame's title brought into view for its prompt */
-const PROMPT_ROOM_PX = 200
 
 /**
  * Talking to a canvas's sessions from their frames. A frame's session is linked to OpenCode by one
  * browser (records from the canvas server, see server/links.ts), which runs it (SessionHost) while
  * one of its tabs is open; everyone sees its live state (the reply streaming in, what it asks)
- * through the room, and whether it's working from the server's status.
+ * through the room. Whether any frame's session is working comes from OpenCode (see LiveSessions.busyFrames).
  *
  * On edit links, a frame's prompt button, or C over it (or with it or something in it selected),
- * opens the prompt bubbles at the frame (see SessionPrompt): the input for its owner, a note about
+ * opens the prompt bubbles there (see SessionPrompt): the input for its owner, a note about
  * whose it is for everyone else. A session not linked yet is linked on the way when one of this
  * browser's paired OpenCodes has it. View links (canEdit false) only watch.
  */
 export class SessionControl {
 	/** the session whose prompt bubbles are open */
 	readonly prompting = atom<string | null>('sessionPrompting', null)
-	/** linked sessions that are working, from the server's status (live) */
+	/** where its prompt bubbles opened */
+	readonly promptAnchor = atom<PromptAnchor | null>('sessionPromptAnchor', null)
+	/** the frames whose sessions are working (live, see LiveSessions.busyFrames) */
 	readonly busy: Atom<Set<string>>
 	/** our own sessions we interrupted, by session id (when), until they stop working */
 	readonly stopping = atom<Record<string, number>>('sessionStopping', {})
@@ -144,7 +159,37 @@ export class SessionControl {
 		if (!sessionId) return
 		// (so the C doesn't land in the prompt's input, focused as it opens)
 		e.preventDefault()
-		this.toggle(sessionId)
+		// At the pointer, else above the selection (or the frame's title).
+		this.toggle(sessionId, pointer ? { x: pointer.x, top: pointer.y, bottom: pointer.y, place: 'cursor' } : this.selectionAnchor())
+	}
+
+	/** A prompt anchor at a box on screen (CSS px in the canvas), such as the frame's prompt button. */
+	screenAnchor(box: { x: number; top: number; bottom: number }, place: PromptAnchor['place']): PromptAnchor {
+		const a = this.editor.screenToPage({ x: box.x, y: box.top })
+		return { x: a.x, top: a.y, bottom: this.editor.screenToPage({ x: box.x, y: box.bottom }).y, place }
+	}
+
+	/** Above what's selected (a frame's title included), if anything is. */
+	private selectionAnchor(): PromptAnchor | null {
+		const z = this.editor.getZoom()
+		const boxes: Box[] = []
+		for (const key of this.editor.selectedIds.peek()) {
+			const box = this.editor.getSelectionBounds(key)
+			if (box) boxes.push(box)
+			const { kind, id } = parseSelectionId(key)
+			const section = kind === 'frame' && this.editor.layout.get().sections.find((s) => s.id === id)
+			if (section) boxes.push(frameTitleBox(section, z))
+		}
+		const box = Box.union(boxes)
+		return box && { x: box.x, top: box.y, bottom: box.y + box.h, place: 'above' }
+	}
+
+	/** Above the session's frame title, if it's laid out. */
+	private frameAnchor(sessionId: string): PromptAnchor | null {
+		const section = this.editor.layout.get().sections.find((s) => s.id === sessionId)
+		if (!section) return null
+		const title = frameTitleBox(section, this.editor.getZoom())
+		return { x: section.header.x, top: title.y, bottom: title.y + title.h, place: 'above' }
 	}
 
 	/** The session whose frame (title included) contains a page point, or is nearest within FRAME_REACH screen px of it. */
@@ -173,10 +218,10 @@ export class SessionControl {
 		return ids.size === 1 ? [...ids][0] : null
 	}
 
-	/** Opens the session's prompt (which says why, if it can't link it), or closes it if it's open. */
-	toggle(sessionId: string) {
+	/** Opens the session's prompt at `at` (else at its frame), which says why if it can't link it; or closes it if it's open. */
+	toggle(sessionId: string, at?: PromptAnchor | null) {
 		if (this.prompting.peek() === sessionId) return this.close()
-		void this.open(sessionId)
+		void this.open(sessionId, at)
 	}
 
 	/** Whether this browser can open the session's prompt (reactive): edit links, when it's linked or a paired OpenCode may have it. */
@@ -236,12 +281,13 @@ export class SessionControl {
 	}
 
 	/**
-	 * Opens the session's prompt bubbles at its frame. Not linked yet: links it to this browser first
+	 * Opens the session's prompt bubbles at `at`, else above its frame's title. Not linked yet: links it to this browser first
 	 * when one of our paired OpenCodes has it (the bubbles open meanwhile, read-only until it's linked).
 	 * Resolves to a message for the user when it can't link it, else null.
 	 */
-	async open(sessionId: string): Promise<string | null> {
+	async open(sessionId: string, at?: PromptAnchor | null): Promise<string | null> {
 		if (!this.canPrompt) return null
+		this.promptAnchor.set(at ?? this.frameAnchor(sessionId))
 		this.prompting.set(sessionId)
 		if (this.record(sessionId)) return null
 		this.linking.set({ sessionId, error: null })
@@ -265,7 +311,8 @@ export class SessionControl {
 
 	/**
 	 * A session picked from a paired OpenCode (the Sessions panel): gets a frame if it has none, is
-	 * linked to this browser, and its prompt bubbles open there.
+	 * linked to this browser (quietly, ready to prompt), fills in with its media if empty, and the
+	 * camera glides to centre its frame. Its prompt doesn't open.
 	 */
 	async add(sessionId: string, found: { serverKey: string; title: string }): Promise<string | null> {
 		if (!this.canEdit) return null
@@ -277,11 +324,35 @@ export class SessionControl {
 				if ((e as { status?: number }).status !== 409) throw e
 			}
 		}
-		this.populateIfEmpty(sessionId, found.serverKey)
-		this.editor.revealKey(`frame:${sessionId}`)
-		this.prompting.set(sessionId)
-		this.bringIntoView(sessionId)
+		// Filled in once it's in view, so its progress ("Finding media…") shows there.
+		this.centerFrame(sessionId, () => this.populateIfEmpty(sessionId, found.serverKey))
 		return null
+	}
+
+	/** Glides the camera to centre the session's frame (title included) once it's laid out, then calls `arrived` as its title comes into view. */
+	private centerFrame(sessionId: string, arrived: () => void, tries = 20) {
+		const section = this.editor.layout.get().sections.find((s) => s.id === sessionId)
+		if (!section) {
+			if (tries > 0) window.setTimeout(() => this.centerFrame(sessionId, arrived, tries - 1), 100)
+			else arrived()
+			return
+		}
+		this.editor.centerOn(Box.union([section.box, frameTitleBox(section, this.editor.getZoom())])!, { animate: true })
+		let done = false
+		const arrive = () => {
+			if (done) return
+			done = true
+			window.clearTimeout(timer)
+			queueMicrotask(() => stop())
+			arrived()
+		}
+		const timer = window.setTimeout(arrive, CENTER_WAIT_MS)
+		const stop = react(() => {
+			const s = this.editor.layout.get().sections.find((s) => s.id === sessionId)
+			const title = s && frameTitleBox(s, this.editor.getZoom())
+			const view = this.editor.viewportPageBounds.get()
+			if (!title || (title.x >= view.x && title.x < view.x + view.w && title.y >= view.y && title.y + title.h <= view.y + view.h)) arrive()
+		})
 	}
 
 	/** A frame with nothing in it yet fills in with what its session involved (once per session per canvas, see populate.ts). */
@@ -290,24 +361,9 @@ export class SessionControl {
 		void populateSession(this.canvasId, serverKey, sessionId).then((r) => r?.error && console.warn(`populating ${sessionId}: ${r.error}`))
 	}
 
-	/** Pans to the session's frame title (with room above it for the prompt) once its frame is laid out, if it's off screen. */
-	private bringIntoView(sessionId: string, tries = 20) {
-		const section = this.editor.layout.get().sections.find((s) => s.id === sessionId)
-		if (!section) {
-			if (tries > 0) window.setTimeout(() => this.bringIntoView(sessionId, tries - 1), 100)
-			return
-		}
-		const z = this.editor.getZoom()
-		const title = frameTitleBox(section, z)
-		const view = this.editor.viewportPageBounds.get()
-		const onScreen = title.x < view.x + view.w && title.x + 200 / z > view.x && title.y + title.h > view.y && title.y < view.y + view.h
-		if (onScreen) return
-		const room = PROMPT_ROOM_PX / z
-		this.editor.centerOn({ x: title.x, y: title.y - room, w: Math.min(section.box.w, view.w * 0.6), h: title.h + room * 2 })
-	}
-
 	close() {
 		this.prompting.set(null)
+		this.promptAnchor.set(null)
 	}
 
 	/**

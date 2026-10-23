@@ -108,8 +108,8 @@ function withLive(record: Session, info: LiveSession): Session {
 export interface FrameChrome {
 	/** read while rendering: a change to what it reads makes the renderer redraw */
 	status(sessionId: string): FrameStatus | null
-	/** the prompt button: opens (or closes) the session's prompt at its frame */
-	prompt(sessionId: string): void
+	/** the prompt button (`button`: where it is on screen, CSS px in the canvas): opens (or closes) the session's prompt under it */
+	prompt(sessionId: string, button?: { x: number; top: number; bottom: number }): void
 	/** what a subagent is doing (see render/subagents/titleOrbs.ts) */
 	subagent?(sessionId: string): 'running' | 'waiting' | 'failed' | 'done'
 }

@@ -112,9 +112,11 @@ when no paired tab is open). The canvas keeps only its own state for each sessio
 groups, notes, order and whether it's hidden. The title an agent posts with (`sessionTitle`) is
 just a fallback until then.
 
-Prompting a session from its frame links it to your browser: while one of your tabs has the canvas
-open, it talks to that session's OpenCode and tells everyone whether it's working (the busy band)
-and shares its replies. Only you can prompt it; others see it work and reply.
+Whether a session is working (the busy band) also comes from its OpenCode, for every frame: your
+tab tells the canvas server, so everyone sees it, paired or not. Prompting a session from its frame
+(or adding it from Sessions) links it to your browser: while one of your tabs has the canvas open,
+it talks to that session's OpenCode and shares its replies. Only you can prompt it; others see it
+work and reply.
 
 ## Use it from your agents
 

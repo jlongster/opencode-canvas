@@ -6,7 +6,7 @@ import type { LastExchange, PromptAttachment, SessionControl, TalkBlock } from '
 import { pendingItems } from '../multiplayer/itemAttachments'
 import { url as withBase } from '../base'
 import { AskBubbles, AskWaiting, useAsking, useSessionAsks } from './AskBubbles'
-import { placeAtFrame, useFrameAnchor, type FrameAnchor } from './frameAnchor'
+import { placeAtAnchor } from './frameAnchor'
 import { markdownToHtml } from './markdown'
 import { useValue } from './useValue'
 import './promptThread.css'
@@ -61,8 +61,9 @@ interface LocalMessage {
 type Expanded = null | 'prompt' | 'reply' | 'note'
 
 /**
- * A session's prompt, at its frame (its prompt button, or C; see SessionControl): three bubbles
- * floating one above the other over the frame's title, each one line until clicked (the CSS clips
+ * A session's prompt (its frame's prompt button, or C; see SessionControl): three bubbles floating
+ * one above the other where it opened (the input just below and right of the pointer, for C), pinned
+ * to that spot on the canvas at a constant size, each one line until clicked (the CSS clips
  * it with an ellipsis): your last prompt and its reply in the session's colour (the reply's live
  * last line while it works), then the input, outlined in that colour, for its owner (send, steer,
  * stop, attach). Everyone else gets a note on whose it is. While the session waits on its owner to
@@ -71,7 +72,16 @@ type Expanded = null | 'prompt' | 'reply' | 'note'
  */
 export function SessionPrompt({ editor, sessions }: { editor: Editor; sessions: SessionControl }) {
 	const sessionId = useValue(() => sessions.prompting.get(), [sessions])
-	const anchor = useFrameAnchor(editor, sessionId)
+	const anchorKey = useValue(() => {
+		const a = sessions.promptAnchor.get()
+		if (!a) return ''
+		editor.camera.get()
+		const p = editor.pageToScreen({ x: a.x, y: a.top })
+		return JSON.stringify({ x: p.x, top: p.y, bottom: editor.pageToScreen({ x: a.x, y: a.bottom }).y, place: a.place })
+	}, [editor, sessions])
+	const anchor = useMemo(() => (anchorKey ? (JSON.parse(anchorKey) as ScreenAnchor) : null), [anchorKey])
+	/** (a new one for each time it opens: where it goes is worked out then) */
+	const opened = useValue(() => sessions.promptAnchor.get(), [sessions])
 	const metaKey = useValue(() => {
 		const id = sessions.prompting.get()
 		if (!id) return ''
@@ -89,10 +99,18 @@ export function SessionPrompt({ editor, sessions }: { editor: Editor; sessions: 
 	}, [sessions])
 	const meta = useMemo(() => (metaKey ? (JSON.parse(metaKey) as Meta) : null), [metaKey])
 	if (!sessionId || !meta || !anchor) return null
-	return <PromptStack key={sessionId} sessions={sessions} sessionId={sessionId} meta={meta} anchor={anchor} />
+	return <PromptStack key={`${sessionId}:${opened?.x},${opened?.top}`} sessions={sessions} sessionId={sessionId} meta={meta} anchor={anchor} />
 }
 
-function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionControl; sessionId: string; meta: Meta; anchor: FrameAnchor }) {
+/** SessionControl.promptAnchor on screen (CSS px) */
+interface ScreenAnchor {
+	x: number
+	top: number
+	bottom: number
+	place: 'cursor' | 'below' | 'above'
+}
+
+function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionControl; sessionId: string; meta: Meta; anchor: ScreenAnchor }) {
 	const { block, thinking, online, color, name } = meta
 	const owner = !block
 	const live = useValue(() => {
@@ -116,7 +134,10 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 	const [typing, setTyping] = useState(false)
 	const [dragging, setDragging] = useState(false)
 	const [activity, setActivity] = useState<string | null>(null)
-	const [size, setSize] = useState<{ w: number; h: number } | null>(null)
+	/** its size, and how far down it its input (or read-only note) is: that's what goes at the anchor */
+	const [size, setSize] = useState<{ w: number; h: number; inputTop: number } | null>(null)
+	/** where it goes from its anchor, worked out once as it opens (see placeAtAnchor) */
+	const place = useRef<{ dx: number; dy: number } | null>(null)
 	const [inputLines, setInputLines] = useState(1)
 	const [, setTick] = useState(0)
 	/** media people dragged onto the frame that the session doesn't have yet: goes with the next prompt unless removed here */
@@ -215,16 +236,22 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 		if (owner && !asksShowing) inputRef.current?.focus()
 	}, [owner, asksShowing])
 
-	// Kept on screen: its size decides whether it fits above the frame's title.
+	// Its size decides where it fits as it opens; then its input stays put as the bubbles above it change.
+	const measure = useCallback(() => {
+		const el = rootRef.current
+		if (!el) return
+		const input = el.querySelector<HTMLElement>(':scope > [data-b="input"], :scope > [data-b="note"]')
+		const next = { w: el.offsetWidth, h: el.offsetHeight, inputTop: input?.offsetTop ?? 0 }
+		setSize((prev) => (prev && prev.w === next.w && prev.h === next.h && prev.inputTop === next.inputTop ? prev : next))
+	}, [])
+	useLayoutEffect(measure)
 	useLayoutEffect(() => {
 		const el = rootRef.current
 		if (!el) return
-		const measure = () => setSize((prev) => (prev && prev.w === el.offsetWidth && prev.h === el.offsetHeight ? prev : { w: el.offsetWidth, h: el.offsetHeight }))
-		measure()
 		const observer = new ResizeObserver(measure)
 		observer.observe(el)
 		return () => observer.disconnect()
-	}, [])
+	}, [measure])
 
 	// A click away (not a drag or a pan) collapses what's open, else closes the stack; unless that
 	// click opened it again (its frame's prompt button) or another session's.
@@ -449,8 +476,9 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 	const vw = window.innerWidth
 	const vh = window.innerHeight
 	const w = size?.w ?? BUBBLE_MAX
-	const h = size?.h ?? 0
-	const { left, top } = placeAtFrame(anchor, w, h, vw, vh)
+	if (size && !place.current) place.current = placeAtAnchor(anchor, size.w, size.h, size.inputTop, vw, vh)
+	const left = Math.round(anchor.x + (place.current?.dx ?? 0))
+	const top = Math.round(anchor.top + (place.current?.dy ?? 0) - (size?.inputTop ?? 0))
 	/** the ⋯ and × go on the stack's right, or its left with no room there */
 	const ctlSide = left + w + 40 > vw ? 'left' : 'right'
 
@@ -472,7 +500,7 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 		<div
 			ref={rootRef}
 			className={`pt${dragging ? ' dragging' : ''}`}
-			style={{ left, top, ['--c' as string]: color, ['--ink' as string]: ink }}
+			style={{ left, top, visibility: place.current ? undefined : 'hidden', ['--c' as string]: color, ['--ink' as string]: ink }}
 			onPointerDown={(e) => {
 				e.stopPropagation()
 				const t = e.target as HTMLElement

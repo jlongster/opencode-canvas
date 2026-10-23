@@ -55,3 +55,39 @@ export function placeAtFrame(a: FrameAnchor, w: number, h: number, vw: number, v
 	const below = Math.max(TOP_ROOM, Math.min(a.bottom + GAP, vh - h - MARGIN))
 	return { left, top: Math.round(Math.max(MARGIN, below)), above: false }
 }
+
+/** the input's top-left from the pointer, like a cursor chat bubble */
+const CURSOR_DX = 14
+const CURSOR_DY = 18
+/** room kept above the input for the last prompt and its reply (they come in after it opens) */
+const ROOM_ABOVE = 80
+
+/**
+ * Where a w × h prompt stack goes at its anchor (screen px; see SessionControl.promptAnchor), as an
+ * offset of its input's top-left (`inputTop` px into the stack) from the anchor's (x, top): just
+ * below and right of the pointer, below or above the rest; flipped to the other side when that
+ * runs off screen (left of the pointer at the right edge), and kept on screen. Worked out once, as
+ * it opens.
+ */
+export function placeAtAnchor(
+	a: { x: number; top: number; bottom: number; place: 'cursor' | 'below' | 'above' },
+	w: number,
+	h: number,
+	inputTop: number,
+	vw: number,
+	vh: number,
+): { dx: number; dy: number } {
+	const above = Math.max(inputTop, ROOM_ABOVE)
+	const below = h - inputTop
+	// (under the pointer the input goes right under it; under the rest, the whole stack does)
+	const under = a.place === 'cursor' ? a.bottom + CURSOR_DY : a.bottom + GAP + above
+	const over = a.top - GAP - below
+	const fitsUnder = under + below <= vh - MARGIN
+	const fitsOver = over - above >= TOP_ROOM
+	let y = a.place === 'above' ? (fitsOver || !fitsUnder ? over : under) : fitsUnder || !fitsOver ? under : over
+	y = Math.max(TOP_ROOM + above, Math.min(y, vh - MARGIN - below))
+	const right = a.x + (a.place === 'cursor' ? CURSOR_DX : 0)
+	const left = a.place === 'cursor' && right + w > vw - MARGIN ? a.x - CURSOR_DX - w : right
+	const x = Math.max(MARGIN, Math.min(left, vw - w - MARGIN))
+	return { dx: Math.round(x - a.x), dy: Math.round(y - a.top) }
+}

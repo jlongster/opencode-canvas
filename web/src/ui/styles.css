@@ -159,52 +159,6 @@ body,
 	display: none;
 }
 
-.section-label .close {
-	/*
-	 * A 36px (page-space) square pinned to the frame's right edge and centred on the
-	 * title's 48px line (1.2 × 40px): margin-top = (48 − 36) / 2 = 6px.
-	 * At font-size 0.55em (22px): 36px = 1.636em, 6px = 0.273em, radius 9px = 0.409em.
-	 */
-	flex: none;
-	display: inline-grid;
-	place-items: center;
-	box-sizing: border-box;
-	height: 1.636em;
-	min-width: 1.636em;
-	margin: 0.273em 0 0 auto;
-	padding: 0;
-	border: 0;
-	border-radius: 0.409em;
-	background: transparent;
-	color: var(--text-muted);
-	font: inherit;
-	font-size: 0.55em;
-	line-height: 1;
-	opacity: 0.3;
-	cursor: pointer;
-	pointer-events: auto;
-	transition: opacity 120ms, background 120ms, color 120ms;
-}
-
-.section-label .close:hover {
-	opacity: 1;
-	background: rgba(255, 255, 255, 0.08);
-	color: var(--text);
-}
-
-.section-label .close.armed {
-	/* Same 36px box and 6px offset at font-size 0.4em (16px): 2.25em, 0.375em, radius 0.5625em. */
-	opacity: 1;
-	font-size: 0.4em;
-	height: 2.25em;
-	min-width: 0;
-	margin-top: 0.375em;
-	padding: 0 0.75em;
-	border-radius: 0.5625em;
-	background: rgba(239, 68, 68, 0.18);
-	color: #fca5a5;
-}
-
 .item-title {
 	position: absolute;
 	left: 0;

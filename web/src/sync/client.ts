@@ -1,5 +1,6 @@
 import type { AnnotationView, Canvas, CanvasData, CanvasSummary, Item, ItemDelivery, OpenCodeSessionInfo, ServerEvent, SessionLink } from '../../../shared/types'
 import type { Editor } from '../editor/Editor'
+import { react, type Atom } from '../state/signals'
 import { API_BASE, BASE, url as withBase, wsUrl } from '../base'
 
 /** Edit links (/c/:id) open a canvas by id; view links (/v/:viewKey) by its secret view key. */
@@ -123,12 +124,6 @@ const linksPath = (canvasId: string, sessionId?: string) =>
 export const linkSession = (canvasId: string, link: { sessionId: string; serverKey: string; ownerId: string }) =>
 	request<SessionLink>(linksPath(canvasId), json('POST', link))
 export const unlinkSession = (canvasId: string, sessionId: string) => request<unknown>(linksPath(canvasId, sessionId), { method: 'DELETE' })
-/** Says whether our linked session is working, for everyone looking (still sent if the tab is closing). */
-export const reportStatus = (canvasId: string, sessionId: string, status: { busy: boolean; ownerId: string }) =>
-	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(sessionId)}/status`, {
-		...json('PUT', status),
-		keepalive: true,
-	})
 
 /** Thrown when a canvas doesn't exist (or was deleted). */
 export class CanvasNotFound extends Error {}
@@ -143,10 +138,13 @@ export async function loadCanvas(link: CanvasLink): Promise<CanvasData> {
 
 const HEARTBEAT_MS = 4_000
 const DEAD_AFTER_MS = 12_000
+/** while any session we report is working, the report is sent again this often (the server drops one a minute old) */
+const BUSY_REFRESH_MS = 20_000
 
 /**
  * A live event socket at /api/live (optionally for one canvas) that keeps itself alive. onOpen runs
- * on every (re)connect, so callers reload their state there and miss nothing while disconnected.
+ * on every (re)connect, so callers reload their state there and miss nothing while disconnected; it
+ * gets a function that sends a message on that connection.
  *
  * Behind exe.dev's proxy a connection can die silently: no close event, nothing arrives. So we ping
  * every HEARTBEAT_MS, and if nothing (not even a pong) comes back for DEAD_AFTER_MS we abandon the
@@ -156,7 +154,7 @@ const DEAD_AFTER_MS = 12_000
 export function liveSocket(
 	canvasId: string | null,
 	handlers: {
-		onOpen: () => void
+		onOpen: (send: (message: string) => void) => void
 		onEvent: (event: ServerEvent) => void
 		onStatus?: (status: 'connecting' | 'open') => void
 	},
@@ -184,7 +182,7 @@ export function liveSocket(
 			retryMs = 500
 			lastHeard = Date.now()
 			handlers.onStatus?.('open')
-			handlers.onOpen()
+			handlers.onOpen((message) => ws.readyState === WebSocket.OPEN && ws.send(message))
 			clearInterval(heartbeat)
 			heartbeat = window.setInterval(() => {
 				if (Date.now() - lastHeard > DEAD_AFTER_MS) {
@@ -246,8 +244,10 @@ export function connectCanvas(
 		onCanvas: (canvas: Canvas) => void
 		/** the canvas's session links: all of them on every load, then each change */
 		onLinks?: (change: { all: SessionLink[] } | { put: SessionLink } | { deleted: string }) => void
-		/** which linked sessions are working: all of them on every load, then each change */
+		/** which sessions are working: all of them on every load, then each change */
 		onStatus?: (change: { all: string[] } | { sessionId: string; busy: boolean }) => void
+		/** the canvas's sessions this tab sees working, to report to the canvas server for everyone (edit links) */
+		reportBusy?: Atom<string[]>
 		onGone: () => void
 		onError: (error: Error) => void
 	},
@@ -275,7 +275,7 @@ export function connectCanvas(
 			const first = !loaded
 			loaded = true
 			handlers.onLinks?.({ all: data.links ?? [] })
-			handlers.onStatus?.({ all: (data.links ?? []).filter((l) => l.busy).map((l) => l.sessionId) })
+			handlers.onStatus?.({ all: data.busy ?? [] })
 			handlers.onLoad(data.canvas, first)
 		} catch (e) {
 			if (closed) return
@@ -322,9 +322,31 @@ export function connectCanvas(
 		}
 	}
 
+	// What we report is sent on every connection (the server drops it when the socket closes), on every change, and while anything's working, every BUSY_REFRESH_MS.
+	let send: ((message: string) => void) | null = null
+	let reportTimer = 0
+	const report = () => {
+		clearInterval(reportTimer)
+		const ids = handlers.reportBusy?.peek()
+		if (!send || !ids) return
+		const message = JSON.stringify({ type: 'busy', sessionIds: ids })
+		send(message)
+		if (ids.length) reportTimer = window.setInterval(() => send?.(message), BUSY_REFRESH_MS)
+	}
+	const stopReport = handlers.reportBusy
+		? react(() => {
+				handlers.reportBusy!.get()
+				report()
+			})
+		: null
+
 	const startLive = (id: string) => {
 		stopLive = liveSocket(id, {
-			onOpen: () => void load(),
+			onOpen: (sendOn) => {
+				send = sendOn
+				report()
+				void load()
+			},
 			onEvent: apply,
 			onStatus: (status) => editor.connection.set(status),
 		})
@@ -340,5 +362,7 @@ export function connectCanvas(
 	return () => {
 		closed = true
 		stopLive?.()
+		stopReport?.()
+		clearInterval(reportTimer)
 	}
 }

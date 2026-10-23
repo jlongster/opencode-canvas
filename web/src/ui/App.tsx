@@ -4,7 +4,6 @@ import { describeError, Renderer } from '../render/Renderer'
 import { atom, react } from '../state/signals'
 import { sessionColor } from '../../../shared/sessionColor'
 import type { Canvas, SessionLink } from '../../../shared/types'
-import { frameKey } from '../editor/selection'
 import {
 	connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, setSessionHidden, setSessionOrder, viewUrl, type CanvasLink,
 } from '../sync/client'
@@ -65,6 +64,8 @@ export function App({ link }: { link: CanvasLink }) {
 	return <CanvasPage link={link} onGone={(loaded) => setGone(loaded ? 'deleted' : 'missing')} />
 }
 
+const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every((id) => b.has(id))
+
 function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: boolean) => void }) {
 	const containerRef = useRef<HTMLDivElement>(null)
 	const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -89,8 +90,18 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 		const disposers: (() => void)[] = []
 		// Which OpenCode session each frame talks to, from the canvas server (loaded with the canvas, then live).
 		const links = atom<SessionLink[]>('links', [])
-		// Which of them are working, as their owners' tabs report it (loaded with the canvas, then live): for everyone.
-		const busy = atom<Set<string>>('busySessions', new Set())
+		// Which frames are working, as the canvas server says (loaded with the canvas, then live)...
+		const reportedBusy = atom<Set<string>>('reportedBusy', new Set())
+		// ...or this tab's paired OpenCodes, where they have the session; edit links report what they see for everyone.
+		const busy = atom<Set<string>>('busySessions', new Set(), sameSet)
+		const ownBusy = atom<string[]>('ownBusy', [], (a, b) => a.join() === b.join())
+		disposers.push(
+			react(() => {
+				const { shown, own } = liveSessions.busyFrames(editor.sessionRecords.get(), reportedBusy.get())
+				busy.set(shown)
+				ownBusy.set(own)
+			}),
+		)
 		let canvasTitle = ''
 
 		editor.mount(container)
@@ -122,7 +133,6 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			let lost = false
 			Renderer.create(canvasRef.current!, overlayRef.current!, editor, {
 				readOnly: link.role === 'view',
-				onCloseSection: (id) => editor.deletions.delete([frameKey(id)]),
 				getRemoteSelections: () => live?.peers.get().map((p) => ({ ids: p.selection ?? [], color: p.user.color })) ?? [],
 				busySessions: () => busy.peek(),
 				onDeviceLost: (message) => {
@@ -156,14 +166,14 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					else links.set(links.peek().filter((r) => r.sessionId !== change.deleted))
 				},
 				onStatus: (change) => {
-					const next = new Set('all' in change ? change.all : busy.peek())
+					const next = new Set('all' in change ? change.all : reportedBusy.peek())
 					if ('sessionId' in change) {
 						if (change.busy) next.add(change.sessionId)
 						else next.delete(change.sessionId)
 					}
-					const prev = busy.peek()
-					if (next.size !== prev.size || [...next].some((id) => !prev.has(id))) busy.set(next)
+					if (!sameSet(next, reportedBusy.peek())) reportedBusy.set(next)
 				},
+				...(link.role === 'edit' ? { reportBusy: ownBusy } : {}),
 				onLoad: (c, first) => {
 					canvasTitle = c.title
 					setCanvas(c)
@@ -194,7 +204,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 							prompting: control.prompting.get() === sessionId,
 							ended: !!editor.sessions.get()[sessionId]?.opencode?.deleted,
 						}),
-						prompt: (sessionId) => control.toggle(sessionId),
+						prompt: (sessionId, button) => control.toggle(sessionId, button && control.screenAnchor(button, 'below')),
 						subagent: (sessionId) => subagentState(sessionId, editor.parentOf(sessionId), control),
 					}
 					disposers.push(
@@ -293,15 +303,15 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 
 /**
  * What a subagent is doing, from what's known here: its parent's live state in the room (its owner's
- * tab follows its subagents: which work, which wait on an answer, which failed), the canvas server's
- * status (linked sessions), and this tab's paired OpenCode.
+ * tab follows its subagents: which wait on an answer, which failed), whether it's working as the busy
+ * band says (LiveSessions.busyFrames), and this tab's paired OpenCode.
  */
 function subagentState(sessionId: string, parentId: string | null, control: SessionControl): 'running' | 'waiting' | 'failed' | 'done' {
 	const live = control.live.get()
 	const parent = parentId ? live.get(parentId) : undefined
 	const own = live.get(sessionId)
 	if (parent?.asking?.sessions?.includes(sessionId) || own?.asking?.count) return 'waiting'
-	if (control.busy.peek().has(sessionId) || parent?.subagents?.some((s) => s.id === sessionId) || liveSessions.busy.peek().has(sessionId)) return 'running'
+	if (control.busy.peek().has(sessionId)) return 'running'
 	if (parent?.failedSubagents?.includes(sessionId) || liveSessions.failed.peek().has(sessionId)) return 'failed'
 	return 'done'
 }

@@ -1,5 +1,5 @@
 import type { Session } from '../../../shared/types'
-import { bezier } from '../render/busy/ember'
+import { bezier } from '../render/busy/envelope'
 import { clamp01 } from '../render/subagents/field'
 import { atom } from '../state/signals'
 import { Box } from './geometry'

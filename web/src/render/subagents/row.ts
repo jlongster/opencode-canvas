@@ -1,5 +1,5 @@
 import './orbs.css'
-import { bezier } from '../busy/ember'
+import { bezier } from '../busy/envelope'
 import { pack, type ParamValues } from '../params'
 import { clamp01, toLinear, type KidLook, type KidView, type RGB } from './field'
 import type { OrbLayer } from './orbs'

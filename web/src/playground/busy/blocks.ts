@@ -1,8 +1,10 @@
+import { BLOCK_FLOATS, type BrainBlocks } from '../../render/busy/brain'
 import { link } from '../shared/gl'
 
 /**
- * Solid axis-aligned rectangles in whole device pixels, drawn with one instanced call. Nothing is
- * antialiased or blurred: every block covers exact pixels, so it stays crisp at any zoom or DPR.
+ * Brian's Brain's blocks (see render/busy/brain.ts): solid axis-aligned rectangles in whole device
+ * pixels, drawn with one instanced call. Nothing is antialiased or blurred: every block covers exact
+ * pixels, so it stays crisp at any zoom or DPR.
  */
 const VS = /* glsl */ `#version 300 es
 layout(location = 0) in vec2 a_c;
@@ -23,29 +25,6 @@ in vec4 v_col;
 out vec4 o;
 void main() { o = v_col; }`
 
-const STRIDE = 8
-
-export class BlockBatch {
-	data = new Float32Array(STRIDE * 4096)
-	n = 0
-
-	begin() {
-		this.n = 0
-	}
-
-	/** A block at whole device pixels, in premultiplied rgba. */
-	add(x: number, y: number, w: number, h: number, r: number, g: number, b: number, a: number) {
-		if (a <= 0.002 || w <= 0 || h <= 0) return
-		if ((this.n + 1) * STRIDE > this.data.length) {
-			const next = new Float32Array(this.data.length * 2)
-			next.set(this.data)
-			this.data = next
-		}
-		this.data.set([x, y, w, h, r * a, g * a, b * a, a], this.n * STRIDE)
-		this.n++
-	}
-}
-
 export class BlockPass {
 	private program: WebGLProgram
 	private uSize: WebGLUniformLocation | null
@@ -65,15 +44,15 @@ export class BlockPass {
 		this.buf = gl.createBuffer()!
 		gl.bindBuffer(gl.ARRAY_BUFFER, this.buf)
 		gl.enableVertexAttribArray(1)
-		gl.vertexAttribPointer(1, 4, gl.FLOAT, false, STRIDE * 4, 0)
+		gl.vertexAttribPointer(1, 4, gl.FLOAT, false, BLOCK_FLOATS * 4, 0)
 		gl.vertexAttribDivisor(1, 1)
 		gl.enableVertexAttribArray(2)
-		gl.vertexAttribPointer(2, 4, gl.FLOAT, false, STRIDE * 4, 16)
+		gl.vertexAttribPointer(2, 4, gl.FLOAT, false, BLOCK_FLOATS * 4, 16)
 		gl.vertexAttribDivisor(2, 1)
 		gl.bindVertexArray(null)
 	}
 
-	draw(batch: BlockBatch) {
+	draw(batch: BrainBlocks) {
 		const { gl } = this
 		if (!batch.n) return
 		gl.bindFramebuffer(gl.FRAMEBUFFER, null)
@@ -84,7 +63,7 @@ export class BlockPass {
 		gl.uniform2f(this.uSize, gl.drawingBufferWidth, gl.drawingBufferHeight)
 		gl.bindVertexArray(this.vao)
 		gl.bindBuffer(gl.ARRAY_BUFFER, this.buf)
-		gl.bufferData(gl.ARRAY_BUFFER, batch.data.subarray(0, batch.n * STRIDE), gl.DYNAMIC_DRAW)
+		gl.bufferData(gl.ARRAY_BUFFER, batch.data.subarray(0, batch.n * BLOCK_FLOATS), gl.DYNAMIC_DRAW)
 		gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, batch.n)
 		gl.bindVertexArray(null)
 	}

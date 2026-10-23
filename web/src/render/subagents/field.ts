@@ -1,4 +1,4 @@
-import { easeOut } from '../busy/ember'
+import { easeOut } from '../busy/envelope'
 
 /**
  * What every subagent indicator shares: its state, and how it looks right now (state weights that

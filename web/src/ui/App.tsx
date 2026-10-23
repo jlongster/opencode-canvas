@@ -4,7 +4,6 @@ import { describeError, Renderer } from '../render/Renderer'
 import { atom, react } from '../state/signals'
 import { sessionColor } from '../../../shared/sessionColor'
 import type { Canvas, SessionLink } from '../../../shared/types'
-import { frameKey } from '../editor/selection'
 import {
 	connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, setSessionHidden, setSessionOrder, viewUrl, type CanvasLink,
 } from '../sync/client'
@@ -122,7 +121,6 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			let lost = false
 			Renderer.create(canvasRef.current!, overlayRef.current!, editor, {
 				readOnly: link.role === 'view',
-				onCloseSection: (id) => editor.deletions.delete([frameKey(id)]),
 				getRemoteSelections: () => live?.peers.get().map((p) => ({ ids: p.selection ?? [], color: p.user.color })) ?? [],
 				busySessions: () => busy.peek(),
 				onDeviceLost: (message) => {

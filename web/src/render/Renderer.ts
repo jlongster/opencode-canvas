@@ -57,8 +57,6 @@ export interface RendererOptions {
 	readOnly?: boolean
 	/** Other people's selections (selection keys, see selection.ts), outlined in their colour (multiplayer). */
 	getRemoteSelections?: () => { ids: string[]; color: string }[]
-	/** Called when the user removes a section with its close button. */
-	onCloseSection?: (sectionId: string) => void
 	/** Called when the GPU device is lost other than by destroy() (iOS drops it in background tabs, GPU resets). */
 	onDeviceLost?: (message: string) => void
 	/** Frames drawn last, back to front, each opaque over a soft shadow (0–1), so they can overlap like a stack (a dragged frame goes on top). */
@@ -248,7 +246,6 @@ export class Renderer {
 		editor.linkAt = (point) => this.html.linkAt(point)
 		this.labels = new SectionLabels(
 			overlay,
-			options.readOnly ? null : (id) => options.onCloseSection?.(id),
 			options.readOnly ? null : (id) => editor.setFrameHidden(id, true),
 			(id, count) => editor.showMoreItems(id, count),
 		)
@@ -1233,7 +1230,7 @@ const EYE_OFF_ICON =
 	'<path d="M10.7 5.1a10.7 10.7 0 0 1 11.2 6.6 1 1 0 0 1 0 .7 10.7 10.7 0 0 1-1.4 2.5"/><path d="M14.1 14.2a3 3 0 0 1-4.2-4.2"/>' +
 	'<path d="M17.5 17.5a10.8 10.8 0 0 1-15.4-5.2 1 1 0 0 1 0-.7 10.8 10.8 0 0 1 4.4-5.1"/><path d="m2 2 20 20"/></svg>'
 
-/** On-screen size of a frame title's prompt, hide and remove buttons (keep in step with frameButtons.css). */
+/** On-screen size of a frame title's prompt and hide buttons (keep in step with frameButtons.css). */
 const BUTTON_PX = 24
 const PROMPT_ICON =
 	'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
@@ -1252,8 +1249,6 @@ class SectionLabels {
 
 	constructor(
 		parent: HTMLElement,
-		/** null hides the close buttons (read-only views) */
-		private onClose: ((sectionId: string) => void) | null,
 		/** null hides the hide buttons (read-only views) */
 		private onHide: ((sectionId: string) => void) | null,
 		private onShowMore: (sectionId: string, count: number) => void,
@@ -1268,7 +1263,7 @@ class SectionLabels {
 		el.className = 'section-label'
 		el.dataset.session = id
 		el.innerHTML = '<span class="title"></span>'
-		if (!this.onHide && !this.onClose) return el
+		if (!this.onHide) return el
 		// Screen-space buttons at the end of the title row (see frameButtons.css and update's room rule).
 		const buttons = document.createElement('span')
 		buttons.className = 'frame-buttons'
@@ -1287,47 +1282,17 @@ class SectionLabels {
 		})
 		buttons.appendChild(prompt)
 		const onHide = this.onHide
-		if (onHide) {
-			const hide = document.createElement('button')
-			hide.className = 'hide-frame'
-			hide.title = 'Hide this frame (for everyone; show it again from Sessions, top right)'
-			hide.innerHTML = EYE_OFF_ICON
-			hide.addEventListener('pointerdown', (e) => e.stopPropagation())
-			hide.addEventListener('dblclick', (e) => e.stopPropagation())
-			hide.addEventListener('click', (e) => {
-				e.stopPropagation()
-				onHide(id)
-			})
-			buttons.appendChild(hide)
-		}
-		const onClose = this.onClose
-		if (!onClose) return el
-		const button = document.createElement('button')
-		button.className = 'close'
-		button.title = 'Remove this session'
-		button.textContent = '×'
-		buttons.appendChild(button)
-		let armTimer = 0
-		const disarm = () => {
-			clearTimeout(armTimer)
-			button.classList.remove('armed')
-			button.textContent = '×'
-		}
-		// Removal takes two clicks: the first arms the button, the second removes (undo brings it back).
-		button.addEventListener('pointerdown', (e) => e.stopPropagation())
-		button.addEventListener('dblclick', (e) => e.stopPropagation())
-		button.addEventListener('click', (e) => {
+		const hide = document.createElement('button')
+		hide.className = 'hide-frame'
+		hide.title = 'Hide this frame (for everyone; show it again from Sessions, top right)'
+		hide.innerHTML = EYE_OFF_ICON
+		hide.addEventListener('pointerdown', (e) => e.stopPropagation())
+		hide.addEventListener('dblclick', (e) => e.stopPropagation())
+		hide.addEventListener('click', (e) => {
 			e.stopPropagation()
-			if (!button.classList.contains('armed')) {
-				button.classList.add('armed')
-				button.textContent = 'Remove'
-				armTimer = window.setTimeout(disarm, 3000)
-				return
-			}
-			disarm()
-			onClose(id)
+			onHide(id)
 		})
-		button.addEventListener('pointerleave', disarm)
+		buttons.appendChild(hide)
 		return el
 	}
 
@@ -1411,12 +1376,11 @@ class SectionLabels {
 			place(el, shift(s.header), scale)
 			// The buttons keep a constant screen size inside the scaled label.
 			el.style.setProperty('--u', String(1 / scale))
-			if (this.onHide || this.onClose) {
+			if (this.onHide) {
 				// The buttons only show when the frame is wide enough, the title line is tall enough, and
 				// the title keeps enough room.
 				const width = s.header.w * z
-				const buttons =
-					(status?.canPrompt ? BUTTON_PX : 0) + (this.onHide ? BUTTON_PX : 0) + (this.onClose ? BUTTON_PX : 0) + 2 + 16 * scale
+				const buttons = (status?.canPrompt ? BUTTON_PX + 2 : 0) + BUTTON_PX + 16 * scale
 				const titleWidth = (this.titleWidths.get(s.id) ?? 0) * scale
 				const roomy =
 					s.box.w * z >= MIN_FRAME_PX_FOR_BUTTONS &&

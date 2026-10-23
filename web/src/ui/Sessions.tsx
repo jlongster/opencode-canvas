@@ -18,7 +18,7 @@ const RELIST_DEBOUNCE_MS = 300
 /**
  * The toolbar's Sessions button (edit links): every session on the paired OpenCode servers, in one
  * list, most recently active first. Picking one adds its frame to the canvas (if it has none yet),
- * linked to this browser, with its prompt open there. Also lists this canvas's recent frames (going
+ * linked to this browser, and centres it in view. Also lists this canvas's recent frames (going
  * to one shows it again if hidden), and where OpenCode servers are paired and managed.
  */
 export function SessionsButton({ editor, sessions }: { editor: Editor; sessions: SessionControl }) {
@@ -213,7 +213,7 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 											key={k}
 											className="sp-row"
 											disabled={pending !== null}
-											title={s.here ? (s.hidden ? 'Hidden on this canvas: show its frame and prompt it' : 'Go to its frame and prompt it') : 'Add its frame to this canvas and prompt it'}
+											title={s.here ? (s.hidden ? 'Hidden on this canvas: show its frame' : 'Go to its frame') : 'Add its frame to this canvas'}
 											onClick={() => pick(s)}
 										>
 											<RowText title={s.title} directory={s.directory} />

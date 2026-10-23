@@ -41,6 +41,8 @@ export interface CanvasData {
 	items: Item[]
 	/** which OpenCode session each linked frame talks to (see SessionLink) */
 	links: SessionLink[]
+	/** the sessions working right now, as the edit tabs paired with their OpenCode report it */
+	busy?: string[]
 }
 
 /**
@@ -301,7 +303,7 @@ export interface OpenCodeSessionSummary {
 /**
  * Which OpenCode session a canvas's session frame talks to (at most one per session per canvas).
  * The canvas server keeps only this record, with no credentials: the owner's browser (ownerId)
- * talks to OpenCode, runs prompts from the frame, and reports whether the session is working.
+ * talks to OpenCode and runs prompts from the frame.
  */
 export interface SessionLink {
 	canvasId: string
@@ -341,7 +343,7 @@ export type ServerEvent =
 	| { type: 'item_deleted'; canvasId: string; id: string }
 	| { type: 'link'; link: SessionLink }
 	| { type: 'link_deleted'; canvasId: string; sessionId: string }
-	/** a linked session started or stopped working */
+	/** a session started or stopped working */
 	| { type: 'status'; canvasId: string; sessionId: string; busy: boolean }
 	/**
 	 * Annotations an agent just read, sent right before they're removed from the room document, so

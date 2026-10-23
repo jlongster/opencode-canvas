@@ -65,16 +65,16 @@ const FIND_SESSION_MS = 8_000
 const INTERRUPT_MS = 10_000
 /** a session still working this long after it was interrupted can be stopped again */
 const STOP_WAIT_MS = 20_000
+/** an added session's frame is filled in after this long even if the camera hasn't brought it into view */
+const CENTER_WAIT_MS = 1_000
 /** screen px outside a session frame (title included) that still counts as over it, for C */
 const FRAME_REACH = 48
-/** screen px kept above a frame's title brought into view for its prompt */
-const PROMPT_ROOM_PX = 200
 
 /**
  * Talking to a canvas's sessions from their frames. A frame's session is linked to OpenCode by one
  * browser (records from the canvas server, see server/links.ts), which runs it (SessionHost) while
  * one of its tabs is open; everyone sees its live state (the reply streaming in, what it asks)
- * through the room, and whether it's working from the server's status.
+ * through the room. Whether any frame's session is working comes from OpenCode (see LiveSessions.busyFrames).
  *
  * On edit links, a frame's prompt button, or C over it (or with it or something in it selected),
  * opens the prompt bubbles there (see SessionPrompt): the input for its owner, a note about
@@ -86,7 +86,7 @@ export class SessionControl {
 	readonly prompting = atom<string | null>('sessionPrompting', null)
 	/** where its prompt bubbles opened */
 	readonly promptAnchor = atom<PromptAnchor | null>('sessionPromptAnchor', null)
-	/** linked sessions that are working, from the server's status (live) */
+	/** the frames whose sessions are working (live, see LiveSessions.busyFrames) */
 	readonly busy: Atom<Set<string>>
 	/** our own sessions we interrupted, by session id (when), until they stop working */
 	readonly stopping = atom<Record<string, number>>('sessionStopping', {})
@@ -311,7 +311,8 @@ export class SessionControl {
 
 	/**
 	 * A session picked from a paired OpenCode (the Sessions panel): gets a frame if it has none, is
-	 * linked to this browser, and its prompt bubbles open there.
+	 * linked to this browser (quietly, ready to prompt), fills in with its media if empty, and the
+	 * camera glides to centre its frame. Its prompt doesn't open.
 	 */
 	async add(sessionId: string, found: { serverKey: string; title: string }): Promise<string | null> {
 		if (!this.canEdit) return null
@@ -323,35 +324,41 @@ export class SessionControl {
 				if ((e as { status?: number }).status !== 409) throw e
 			}
 		}
-		this.populateIfEmpty(sessionId, found.serverKey)
-		this.editor.revealKey(`frame:${sessionId}`)
-		this.promptAnchor.set(this.frameAnchor(sessionId))
-		this.prompting.set(sessionId)
-		this.bringIntoView(sessionId)
+		// Filled in once it's in view, so its progress ("Finding media…") shows there.
+		this.centerFrame(sessionId, () => this.populateIfEmpty(sessionId, found.serverKey))
 		return null
+	}
+
+	/** Glides the camera to centre the session's frame (title included) once it's laid out, then calls `arrived` as its title comes into view. */
+	private centerFrame(sessionId: string, arrived: () => void, tries = 20) {
+		const section = this.editor.layout.get().sections.find((s) => s.id === sessionId)
+		if (!section) {
+			if (tries > 0) window.setTimeout(() => this.centerFrame(sessionId, arrived, tries - 1), 100)
+			else arrived()
+			return
+		}
+		this.editor.centerOn(Box.union([section.box, frameTitleBox(section, this.editor.getZoom())])!, { animate: true })
+		let done = false
+		const arrive = () => {
+			if (done) return
+			done = true
+			window.clearTimeout(timer)
+			queueMicrotask(() => stop())
+			arrived()
+		}
+		const timer = window.setTimeout(arrive, CENTER_WAIT_MS)
+		const stop = react(() => {
+			const s = this.editor.layout.get().sections.find((s) => s.id === sessionId)
+			const title = s && frameTitleBox(s, this.editor.getZoom())
+			const view = this.editor.viewportPageBounds.get()
+			if (!title || (title.x >= view.x && title.x < view.x + view.w && title.y >= view.y && title.y + title.h <= view.y + view.h)) arrive()
+		})
 	}
 
 	/** A frame with nothing in it yet fills in with what its session involved (once per session per canvas, see populate.ts). */
 	private populateIfEmpty(sessionId: string, serverKey: string) {
 		if (Object.values(this.editor.items.peek()).some((i) => i.sessionId === sessionId)) return
 		void populateSession(this.canvasId, serverKey, sessionId).then((r) => r?.error && console.warn(`populating ${sessionId}: ${r.error}`))
-	}
-
-	/** Pans to the session's frame title (with room above it for the prompt) once its frame is laid out, if it's off screen. */
-	private bringIntoView(sessionId: string, tries = 20) {
-		const section = this.editor.layout.get().sections.find((s) => s.id === sessionId)
-		if (!section) {
-			if (tries > 0) window.setTimeout(() => this.bringIntoView(sessionId, tries - 1), 100)
-			return
-		}
-		if (this.prompting.peek() === sessionId && !this.promptAnchor.peek()) this.promptAnchor.set(this.frameAnchor(sessionId))
-		const z = this.editor.getZoom()
-		const title = frameTitleBox(section, z)
-		const view = this.editor.viewportPageBounds.get()
-		const onScreen = title.x < view.x + view.w && title.x + 200 / z > view.x && title.y + title.h > view.y && title.y < view.y + view.h
-		if (onScreen) return
-		const room = PROMPT_ROOM_PX / z
-		this.editor.centerOn({ x: title.x, y: title.y - room, w: Math.min(section.box.w, view.w * 0.6), h: title.h + room * 2 })
 	}
 
 	close() {

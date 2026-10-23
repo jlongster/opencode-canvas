@@ -5,13 +5,10 @@
  * OpenCode URL) and whose browser runs it (ownerId, a random id kept in that browser). It never
  * talks to OpenCode and never sees credentials.
  *
- * Everything live happens in the owner's browser tab, which talks to OpenCode directly: it reports
- * whether the session is working (status, below) and shares its streaming reply through the room.
- * With no owner tab open the link is offline (`online` false in list responses).
- *
- * Status: the owner's tab says whether the session is busy (PUT …/sessions/:sid/status). The server
- * keeps that in memory and broadcasts it, so every viewer draws the busy frame. A busy status the
- * owner stops refreshing (its tab closed mid-turn) expires after STATUS_TTL_MS.
+ * Everything live happens in the owner's browser tab, which talks to OpenCode directly and shares
+ * the session's streaming reply through the room. With no owner tab open the link is offline
+ * (`online` false in list responses). Whether a session is working is for every frame, linked or
+ * not: see busy.ts.
  *
  * Deleting a session's frame drops its link (see deleteSession in index.ts); hiding it doesn't.
  */
@@ -34,8 +31,6 @@ export interface LinkDeps {
 const SESSION_ID = /^ses_[A-Za-z0-9]{26}$/
 const SERVER_KEY = /^[A-Za-z0-9_-]{1,64}$/
 const OWNER_ID = /^[A-Za-z0-9_-]{8,64}$/
-/** a busy status not refreshed for this long is dropped (the owner's tab refreshes it every 20s) */
-const STATUS_TTL_MS = 60_000
 
 const key = (canvasId: string, sessionId: string) => `${canvasId}/${sessionId}`
 
@@ -58,8 +53,6 @@ export function createLinks(deps: LinkDeps, stored: unknown[]) {
 		const link = clean(r as Partial<SessionLink>)
 		if (link && link.ownerId && deps.canvasExists(link.canvasId)) records.set(key(link.canvasId, link.sessionId), link)
 	}
-	/** busy sessions, by key: when the status expires */
-	const busy = new Map<string, ReturnType<typeof setTimeout>>()
 
 	function get(canvasId: string, sessionId: string): SessionLink {
 		const r = records.get(key(canvasId, sessionId))
@@ -74,18 +67,8 @@ export function createLinks(deps: LinkDeps, stored: unknown[]) {
 		return record
 	}
 
-	function setBusy(canvasId: string, sessionId: string, on: boolean) {
-		const k = key(canvasId, sessionId)
-		const was = busy.has(k)
-		clearTimeout(busy.get(k))
-		busy.delete(k)
-		if (on) busy.set(k, setTimeout(() => setBusy(canvasId, sessionId, false), STATUS_TTL_MS))
-		if (was !== on) deps.broadcast({ type: 'status', canvasId, sessionId, busy: on })
-	}
-
 	function remove(r: SessionLink) {
 		if (!records.delete(key(r.canvasId, r.sessionId))) return
-		setBusy(r.canvasId, r.sessionId, false)
 		deps.save()
 		deps.broadcast({ type: 'link_deleted', canvasId: r.canvasId, sessionId: r.sessionId })
 	}
@@ -96,9 +79,6 @@ export function createLinks(deps: LinkDeps, stored: unknown[]) {
 
 		list: (canvasId: string): SessionLink[] =>
 			[...records.values()].filter((r) => r.canvasId === canvasId).sort((a, b) => a.createdAt - b.createdAt),
-
-		/** Whether the session is working right now (as its owner's tab last said). */
-		isBusy: (canvasId: string, sessionId: string) => busy.has(key(canvasId, sessionId)),
 
 		/** Links a session to this browser: {"sessionId", "serverKey", "ownerId"}. */
 		link(canvasId: string, body: Record<string, unknown> | null): SessionLink {
@@ -117,15 +97,6 @@ export function createLinks(deps: LinkDeps, stored: unknown[]) {
 			if (existing && existing.ownerId !== ownerId) throw new LinkError(409, 'that session is already linked by another browser')
 			if (existing) return existing.serverKey === serverKey ? existing : put({ ...existing, serverKey })
 			return put({ canvasId, sessionId, serverKey, color: sessionColor(sessionId), createdAt: Date.now(), ownerId })
-		},
-
-		/** The owner's tab reports whether the session is working: {"busy", "ownerId"}. */
-		status(canvasId: string, sessionId: string, body: Record<string, unknown> | null) {
-			const r = get(canvasId, sessionId)
-			if (typeof body?.busy !== 'boolean') throw new LinkError(400, 'send {"busy": true|false, "ownerId"}')
-			if (body.ownerId !== r.ownerId) throw new LinkError(403, 'only the browser that linked this session reports its status')
-			setBusy(canvasId, sessionId, body.busy)
-			return { sessionId, busy: body.busy }
 		},
 
 		unlink(canvasId: string, sessionId: string) {

@@ -1,9 +1,9 @@
 /**
  * Runs this browser's linked sessions. A link belongs to the browser that made it (its ownerId);
  * while one of that browser's tabs has the canvas open (and its OpenCode is paired there), that tab
- * runs the session: it talks to OpenCode directly, reports whether the session is working to the
- * canvas server (status: everyone draws the busy frame from it), and shares the session's live
- * state through the canvas's room, so everyone sees it reply. With no such tab the link is offline.
+ * runs the session: it talks to OpenCode directly and shares the session's live state through the
+ * canvas's room, so everyone sees it reply. With no such tab the link is offline. (Whether it's
+ * working, the busy band, is reported for every frame, linked or not: see opencode/live.ts.)
  *
  * Each running session is its own room participant: a read-only y-websocket connection with its own
  * awareness client id and no pointer, publishing user.agent + sessionId, chat/chatSent/speaking
@@ -32,7 +32,7 @@ import { askCount, askText, listAsks, parseForm, parsePermission, type Ask } fro
 import { onOpenCodeEvents, type OpenCodeEvent } from '../opencode/events'
 import { errorText, ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { react, type Atom } from '../state/signals'
-import { markDelivered, reportStatus } from '../sync/client'
+import { markDelivered } from '../sync/client'
 import type { AskingInfo, PresenceState, SubagentInfo } from './Presence'
 
 const NAME_MAX = 40
@@ -44,8 +44,6 @@ const STREAM_PUBLISH_MS = 80
 const IDLE_SETTLE_MS = 600
 /** busy/idle is checked against session.active() this often, in case the stream missed something */
 const RECONCILE_MS = 30_000
-/** while busy, the status is sent again this often (the server drops one not refreshed for a minute) */
-const STATUS_REFRESH_MS = 20_000
 /** at most this many busy subagents are published (the oldest ones) */
 const SUBAGENTS_MAX = 8
 const SUBAGENT_TITLE_MAX = 80
@@ -189,9 +187,6 @@ class SessionRuntime {
 	private idleTimer = 0
 	private publishTimer = 0
 	private reconcileTimer = 0
-	private statusTimer = 0
-	/** whether the first check against OpenCode has told the server the session's status yet */
-	private statusSynced = false
 	private reconciling = false
 	private unwatch: () => void
 	private destroyed = false
@@ -218,18 +213,7 @@ class SessionRuntime {
 			onConnect: () => void this.reconcile(),
 		})
 		this.reconcileTimer = window.setInterval(() => void this.reconcile(), RECONCILE_MS)
-		window.addEventListener('pagehide', this.onPageHide)
-		window.addEventListener('pageshow', this.onPageShow)
 		void this.reconcile()
-	}
-
-	/** The tab is going away mid-turn: nobody will keep its busy status fresh, so it ends now (until it's back). */
-	private onPageHide = () => {
-		if (this.busy) this.report(false)
-	}
-
-	private onPageShow = (e: PageTransitionEvent) => {
-		if (e.persisted && this.busy) this.report(true)
 	}
 
 	setRecord(record: SessionLink) {
@@ -250,10 +234,6 @@ class SessionRuntime {
 		clearTimeout(this.idleTimer)
 		clearTimeout(this.publishTimer)
 		clearInterval(this.reconcileTimer)
-		clearInterval(this.statusTimer)
-		window.removeEventListener('pagehide', this.onPageHide)
-		window.removeEventListener('pageshow', this.onPageShow)
-		if (this.busy) this.report(false)
 		this.provider.awareness.setLocalState(null)
 		this.provider.destroy()
 		this.doc.destroy()
@@ -277,15 +257,6 @@ class SessionRuntime {
 			...(this.asking ? { asking: this.asking } : {}),
 		}
 		this.provider.awareness.setLocalState(state)
-	}
-
-	/** Tells the canvas server (so everyone) whether the session is working. */
-	private report(busy: boolean) {
-		clearInterval(this.statusTimer)
-		this.statusTimer = 0
-		const send = () => void reportStatus(this.canvasId, this.record.sessionId, { busy, ownerId: this.record.ownerId }).catch(() => {})
-		send()
-		if (busy && !this.destroyed) this.statusTimer = window.setInterval(send, STATUS_REFRESH_MS)
 	}
 
 	private schedulePublish() {
@@ -379,7 +350,6 @@ class SessionRuntime {
 			this.thinking = true
 			this.chatSent = !this.chat
 			this.publish()
-			this.report(true)
 		} else if (this.busy && !this.idleTimer) {
 			this.idleTimer = window.setTimeout(() => void this.settle(), IDLE_SETTLE_MS)
 		}
@@ -390,7 +360,6 @@ class SessionRuntime {
 		this.idleTimer = 0
 		if (!this.busy) return
 		this.busy = false
-		this.report(false)
 		const error = this.error
 		this.error = null
 		let text = this.text()
@@ -535,11 +504,7 @@ class SessionRuntime {
 			.catch(() => null)
 			.finally(() => (this.reconciling = false))
 		if (!active || this.destroyed) return
-		const busy = this.record.sessionId in active
-		this.setBusy(busy)
-		// A status left over from before (a tab closed mid-turn) is put right straight away.
-		if (!this.statusSynced && !busy) this.report(false)
-		this.statusSynced = true
+		this.setBusy(this.record.sessionId in active)
 		await this.reconcileSubagents(active)
 		await this.reconcileAsks(active)
 	}

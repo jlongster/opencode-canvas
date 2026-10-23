@@ -9,6 +9,7 @@ import type {
 } from '../shared/types'
 import { computeLayout, orderSessions } from '../web/src/editor/layout'
 import { AttentionError, createAttention, noteFrom } from './attention'
+import { createBusy } from './busy'
 import { imageSize } from './imageSize'
 import { createLinks, LinkError } from './links'
 import { createCanvasMcp } from './mcp'
@@ -161,6 +162,12 @@ const links = createLinks(
 	storedLinks,
 )
 
+/** Which sessions are working, as the edit tabs paired with their OpenCode report it (see busy.ts). */
+const busy = createBusy({
+	hasSession: (canvasId, sessionId) => db.sessions.has(sessionKey(canvasId, sessionId)),
+	broadcast: (event) => broadcast(event),
+})
+
 /** Agent sticky notes (MCP say / highlight), kept in each canvas's room document (see attention.ts). */
 const attention = createAttention({
 	canvasExists: (id) => db.canvases.has(id),
@@ -246,7 +253,7 @@ async function resolveTarget(canvasId: string, ref: string): Promise<string> {
 /** A canvas's session links, each online while its owner's tab runs it (its live state is in the room). */
 function sessionLinks(canvasId: string): SessionLink[] {
 	const online = new Set(presence(canvasId).filter((p) => p.user.agent && p.user.sessionId).map((p) => p.user.sessionId))
-	return links.list(canvasId).map((r) => ({ ...r, online: online.has(r.sessionId), busy: links.isBusy(canvasId, r.sessionId) }))
+	return links.list(canvasId).map((r) => ({ ...r, online: online.has(r.sessionId), busy: busy.isBusy(canvasId, r.sessionId) }))
 }
 
 // ---------- live events (WebSocket) ----------
@@ -418,6 +425,7 @@ function canvasData(canvas: Canvas): CanvasData {
 		sessions: [...db.sessions.values()].filter((s) => s.canvasId === canvas.id),
 		items: [...db.items.values()].filter((i) => i.canvasId === canvas.id),
 		links: sessionLinks(canvas.id),
+		busy: busy.list(canvas.id),
 	}
 }
 
@@ -1073,6 +1081,7 @@ function deleteSession(session: Session) {
 	save()
 	broadcast({ type: 'session_deleted', canvasId: session.canvasId, id: session.id })
 	links.drop(session.canvasId, session.id)
+	busy.forget(session.canvasId, session.id)
 	// A canvas being deleted throws its whole room away.
 	if (db.canvases.has(session.canvasId)) {
 		attention.dropSession(session.canvasId, session.id).catch((e) => console.error('could not remove the session\'s notes:', e))
@@ -1202,6 +1211,7 @@ function createCanvas(title?: string): Canvas {
 async function deleteCanvas(canvas: Canvas) {
 	db.canvases.delete(canvas.id)
 	links.dropCanvas(canvas.id)
+	busy.forget(canvas.id)
 	for (const session of canvasSessions(canvas.id)) deleteSession(session)
 	// items whose session record is missing, just in case
 	for (const item of [...db.items.values()]) if (item.canvasId === canvas.id) deleteItem(item.id)
@@ -1752,7 +1762,7 @@ const API_INDEX = {
 	endpoints: {
 		'GET /api/canvases': 'All canvases, newest first, with session/item counts and preview thumbnails',
 		'POST /api/canvases': 'Create a canvas. Body: {"title"} (optional). Returns it, with its id and viewKey',
-		'GET /api/canvases/:cid': 'One canvas with all its sessions and items',
+		'GET /api/canvases/:cid': 'One canvas with all its sessions and items, its links, and "busy": the sessions working right now',
 		'PATCH /api/canvases/:cid': 'Rename a canvas. Body: {"title"}',
 		'DELETE /api/canvases/:cid': 'Delete a canvas with all its sessions, items and notes',
 		'GET /api/view/:viewKey': 'A canvas by its view-only key (same body as GET /api/canvases/:cid)',
@@ -1855,14 +1865,11 @@ const API_INDEX = {
 		'GET /api/canvases/:cid/links':
 			'Which browser runs each linked frame\'s session: [{"sessionId", "serverKey", "color", "ownerId", "online", "busy"}]. ' +
 			'The canvas server never talks to OpenCode: the owner\'s browser does (people prompt the session from its frame), shares its ' +
-			'streaming reply through the room while its tab is open ("online"), and reports whether the session is working ("busy")',
+			'streaming reply through the room while its tab is open ("online"); "busy": the session is working',
 		'POST /api/canvases/:cid/links':
 			'Link an OpenCode session to this browser. Body: {"sessionId", "serverKey" (non-secret id of its OpenCode), "ownerId" ' +
 			'(the owner browser\'s random id)}. 409 if another browser linked it',
 		'DELETE /api/canvases/:cid/links/:sessionId': 'Unlink a session',
-		'PUT /api/canvases/:cid/sessions/:sessionId/status':
-			'The owner\'s browser reports whether a linked session is working: {"busy": true|false, "ownerId"}. Everyone looking sees ' +
-			'the busy band round its frame; a busy status not refreshed within a minute expires',
 		'GET /api/canvases/:cid/sessions/:sessionId/notes': 'The sticky notes the session placed that nobody has acknowledged yet, oldest first',
 		'POST /api/canvases/:cid/sessions/:sessionId/notes':
 			'Place a sticky note where you want people to look, from your session (its colour and title): it stays on the canvas, ' +
@@ -2225,12 +2232,6 @@ async function handle(req: Request): Promise<Response> {
 		return json({ items: changed })
 	}
 
-	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/status$/.exec(p)
-	if (m && method === 'PUT') {
-		const canvas = getCanvas(decodeURIComponent(m[1]))
-		return json(links.status(canvas.id, decodeURIComponent(m[2]), (await req.json().catch(() => null)) as Record<string, unknown> | null))
-	}
-
 	// ---- agent sticky notes: what sessions want people to look at ----
 
 	m = /^\/api\/canvases\/([^/]+)\/sessions\/([^/]+)\/notes$/.exec(p)
@@ -2410,9 +2411,14 @@ Bun.serve<SocketData, never>({
 			if (ws.data.kind === 'room') roomSockets.message(ws as ServerWebSocket<RoomSocketData & { kind: 'room' }>, message)
 			// Live clients heartbeat so proxies don't drop the idle connection (see web/src/sync/client.ts).
 			else if (message === 'ping') ws.send('pong')
+			// Edit tabs paired with OpenCode say which of the canvas's sessions are working (see busy.ts).
+			else if (ws.data.canvasId && typeof message === 'string') busyReport(ws, ws.data.canvasId, message)
 		},
 		close(ws) {
-			if (ws.data.kind === 'live') liveSockets.delete(ws)
+			if (ws.data.kind === 'live') {
+				liveSockets.delete(ws)
+				busy.closed(ws)
+			}
 			else roomSockets.close(ws as ServerWebSocket<RoomSocketData & { kind: 'room' }>)
 		},
 	},
@@ -2434,6 +2440,14 @@ Bun.serve<SocketData, never>({
 		return res && withCors(req, res)
 	},
 })
+
+function busyReport(ws: object, canvasId: string, message: string) {
+	let data: { type?: unknown; sessionIds?: unknown } | null = null
+	try {
+		data = JSON.parse(message)
+	} catch {}
+	if (data?.type === 'busy') busy.report(ws, canvasId, data.sessionIds)
+}
 
 /** Everything but /mcp and preflights: WebSocket upgrades (undefined once upgraded), then the HTTP API and files. */
 async function route(req: Request, server: Server<SocketData>, reqUrl: URL): Promise<Response | undefined> {

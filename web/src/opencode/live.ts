@@ -148,6 +148,26 @@ class LiveSessions {
 		return this.busyBy.get(serverKey)
 	}
 
+	/**
+	 * Which of a canvas's frames are working (reactive): what this tab's paired servers say where
+	 * their event streams are up, else what the canvas server says (`reported`). `own`: the ones this
+	 * tab knows of itself, which it reports to the canvas server for everyone else. Each frame shows
+	 * its own session only (a parent's band says nothing about its subagents').
+	 */
+	busyFrames(records: Record<string, Session>, reported: ReadonlySet<string>): { shown: Set<string>; own: string[] } {
+		this.busy.get()
+		const known = this.sessions.get()
+		const shown = new Set<string>()
+		const own: string[] = []
+		for (const [id, record] of Object.entries(records)) {
+			const home = known[id]?.serverKey ?? record.serverKey
+			const here = home && isOpenCodeSession(id) ? this.busyBy.get(home) : undefined
+			if (here ? here.has(id) : reported.has(id)) shown.add(id)
+			if (here?.has(id)) own.push(id)
+		}
+		return { shown, own: own.sort() }
+	}
+
 	private wanted(): Map<string, string | undefined> {
 		const all = new Map<string, string | undefined>()
 		for (const ids of this.wants.values()) for (const [id, hint] of ids) if (!all.get(id)) all.set(id, hint)

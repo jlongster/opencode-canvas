@@ -10,7 +10,7 @@ import {
 import { listenForPastedPages } from './pastePage'
 import { Attention } from '../multiplayer/Attention'
 import { SessionControl } from '../multiplayer/SessionControl'
-import { FrameSessions } from '../opencode/live'
+import { FrameSessions, liveSessions } from '../opencode/live'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedAnnotations } from '../multiplayer/SharedAnnotations'
@@ -64,6 +64,8 @@ export function App({ link }: { link: CanvasLink }) {
 	return <CanvasPage link={link} onGone={(loaded) => setGone(loaded ? 'deleted' : 'missing')} />
 }
 
+const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every((id) => b.has(id))
+
 function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: boolean) => void }) {
 	const containerRef = useRef<HTMLDivElement>(null)
 	const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -88,8 +90,18 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 		const disposers: (() => void)[] = []
 		// Which OpenCode session each frame talks to, from the canvas server (loaded with the canvas, then live).
 		const links = atom<SessionLink[]>('links', [])
-		// Which of them are working, as their owners' tabs report it (loaded with the canvas, then live): for everyone.
-		const busy = atom<Set<string>>('busySessions', new Set())
+		// Which frames are working, as the canvas server says (loaded with the canvas, then live)...
+		const reportedBusy = atom<Set<string>>('reportedBusy', new Set())
+		// ...or this tab's paired OpenCodes, where they have the session; edit links report what they see for everyone.
+		const busy = atom<Set<string>>('busySessions', new Set(), sameSet)
+		const ownBusy = atom<string[]>('ownBusy', [], (a, b) => a.join() === b.join())
+		disposers.push(
+			react(() => {
+				const { shown, own } = liveSessions.busyFrames(editor.sessionRecords.get(), reportedBusy.get())
+				busy.set(shown)
+				ownBusy.set(own)
+			}),
+		)
 		let canvasTitle = ''
 
 		editor.mount(container)
@@ -154,14 +166,14 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					else links.set(links.peek().filter((r) => r.sessionId !== change.deleted))
 				},
 				onStatus: (change) => {
-					const next = new Set('all' in change ? change.all : busy.peek())
+					const next = new Set('all' in change ? change.all : reportedBusy.peek())
 					if ('sessionId' in change) {
 						if (change.busy) next.add(change.sessionId)
 						else next.delete(change.sessionId)
 					}
-					const prev = busy.peek()
-					if (next.size !== prev.size || [...next].some((id) => !prev.has(id))) busy.set(next)
+					if (!sameSet(next, reportedBusy.peek())) reportedBusy.set(next)
 				},
+				...(link.role === 'edit' ? { reportBusy: ownBusy } : {}),
 				onLoad: (c, first) => {
 					canvasTitle = c.title
 					setCanvas(c)

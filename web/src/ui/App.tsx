@@ -192,7 +192,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 							prompting: control.prompting.get() === sessionId,
 							ended: !!editor.sessions.get()[sessionId]?.opencode?.deleted,
 						}),
-						prompt: (sessionId) => control.toggle(sessionId),
+						prompt: (sessionId, button) => control.toggle(sessionId, button && control.screenAnchor(button, 'below')),
 					}
 					disposers.push(
 						() => (editor.frameChrome = null),

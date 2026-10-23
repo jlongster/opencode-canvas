@@ -1281,7 +1281,9 @@ class SectionLabels {
 		prompt.addEventListener('dblclick', (e) => e.stopPropagation())
 		prompt.addEventListener('click', (e) => {
 			e.stopPropagation()
-			editor.frameChrome?.prompt(id)
+			const r = prompt.getBoundingClientRect()
+			const origin = this.host.parentElement!.getBoundingClientRect()
+			editor.frameChrome?.prompt(id, { x: r.left - origin.left, top: r.top - origin.top, bottom: r.bottom - origin.top })
 		})
 		buttons.appendChild(prompt)
 		const onHide = this.onHide

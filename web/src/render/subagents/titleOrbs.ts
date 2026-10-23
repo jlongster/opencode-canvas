@@ -184,8 +184,9 @@ export class TitleOrbs {
 		}
 		const cached = cache && this.infos.get(parentId)
 		if (cached) return cached
-		const ids = this.editor.families.get().kids.get(parentId)
-		if (!ids?.length) return null
+		const all = this.editor.families.get().kids.get(parentId)
+		if (!all?.length) return null
+		const ids = foldOldest(all, (id) => this.editor.frameChrome?.subagent?.(id) ?? 'done', SETTINGS.max)
 		const sessions = this.editor.sessions.peek()
 		const drawers = this.editor.drawers.frame.peek()
 		const t = now / 1000
@@ -310,6 +311,25 @@ export class TitleOrbs {
 		this.styles.set(e, css)
 		e.style.cssText = css
 	}
+}
+
+/**
+ * A row's subagents (oldest first) with, when there are more than `max`, the oldest finished ones
+ * moved to the end, where the row folds them into its "+N": the working ones and the latest stay.
+ */
+function foldOldest(ids: readonly string[], state: (id: string) => SubagentState, max: number): readonly string[] {
+	let fold = ids.length - max
+	if (fold <= 0) return ids
+	const folded = new Set<string>()
+	for (const finished of ['done', 'failed'] as const) {
+		for (const id of ids) {
+			if (fold <= 0) break
+			if (state(id) !== finished) continue
+			folded.add(id)
+			fold--
+		}
+	}
+	return folded.size ? [...ids.filter((id) => !folded.has(id)), ...ids.filter((id) => folded.has(id))] : ids
 }
 
 /** How much white over `base` makes `target` (see the renderer's frame fill). */

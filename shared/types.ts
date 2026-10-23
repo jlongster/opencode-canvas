@@ -43,6 +43,8 @@ export interface CanvasData {
 	links: SessionLink[]
 	/** the sessions working right now, as the edit tabs paired with their OpenCode report it */
 	busy?: string[]
+	/** the sessions waiting on an answer (a question or a permission request), reported the same way */
+	asking?: string[]
 }
 
 /**
@@ -285,6 +287,8 @@ export interface OpenCodeSessionInfo {
 	updatedAt?: number
 	/** OpenCode deleted it: its frame and items stay, marked as ended */
 	deleted?: boolean
+	/** its last run failed */
+	failed?: boolean
 }
 
 /** One OpenCode session, as the browser lists it from a paired OpenCode (see web/src/opencode). */
@@ -345,6 +349,8 @@ export type ServerEvent =
 	| { type: 'link_deleted'; canvasId: string; sessionId: string }
 	/** a session started or stopped working */
 	| { type: 'status'; canvasId: string; sessionId: string; busy: boolean }
+	/** a session started or stopped waiting on an answer */
+	| { type: 'asking'; canvasId: string; sessionId: string; asking: boolean }
 	/**
 	 * Annotations an agent just read, sent right before they're removed from the room document, so
 	 * open canvases can animate them away (into the reading session's frame).

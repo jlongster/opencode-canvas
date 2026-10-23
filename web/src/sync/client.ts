@@ -50,6 +50,10 @@ export const addSessionFrame = (canvasId: string, id: string, meta: { title?: st
 export const mirrorSessions = (canvasId: string, sessions: ({ sessionId: string; serverKey: string } & OpenCodeSessionInfo)[]) =>
 	request<{ updated: string[] }>(`/api/canvases/${encodeURIComponent(canvasId)}/opencode`, json('PUT', { sessions }))
 
+/** Gives the frames' subagents that have none a frame (no items: they show as orbs on their parent's title). */
+export const addSubagents = (canvasId: string, sessions: ({ sessionId: string; serverKey: string } & OpenCodeSessionInfo)[]) =>
+	request<{ added: string[] }>(`/api/canvases/${encodeURIComponent(canvasId)}/subagents`, json('POST', { sessions }))
+
 /** Hides or shows a session's frame for everyone. */
 export const setSessionHidden = (canvasId: string, id: string, hidden: boolean) =>
 	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(id)}`, json('PATCH', { hidden }))
@@ -248,6 +252,10 @@ export function connectCanvas(
 		onStatus?: (change: { all: string[] } | { sessionId: string; busy: boolean }) => void
 		/** the canvas's sessions this tab sees working, to report to the canvas server for everyone (edit links) */
 		reportBusy?: Atom<string[]>
+		/** which sessions wait on an answer: all of them on every load, then each change */
+		onAsking?: (change: { all: string[] } | { sessionId: string; asking: boolean }) => void
+		/** the canvas's sessions this tab sees waiting on an answer, reported the same way (edit links) */
+		reportAsking?: Atom<string[]>
 		onGone: () => void
 		onError: (error: Error) => void
 	},
@@ -276,6 +284,7 @@ export function connectCanvas(
 			loaded = true
 			handlers.onLinks?.({ all: data.links ?? [] })
 			handlers.onStatus?.({ all: data.busy ?? [] })
+			handlers.onAsking?.({ all: data.asking ?? [] })
 			handlers.onLoad(data.canvas, first)
 		} catch (e) {
 			if (closed) return
@@ -316,6 +325,9 @@ export function connectCanvas(
 			case 'status':
 				if (event.canvasId === canvasId) handlers.onStatus?.({ sessionId: event.sessionId, busy: event.busy })
 				return
+			case 'asking':
+				if (event.canvasId === canvasId) handlers.onAsking?.({ sessionId: event.sessionId, asking: event.asking })
+				return
 			case 'annotations_consumed':
 				if (event.canvasId === canvasId) editor.annotationsConsumed?.(event.ids, event.sessionId)
 				return
@@ -328,17 +340,23 @@ export function connectCanvas(
 	const report = () => {
 		clearInterval(reportTimer)
 		const ids = handlers.reportBusy?.peek()
-		if (!send || !ids) return
-		const message = JSON.stringify({ type: 'busy', sessionIds: ids })
-		send(message)
-		if (ids.length) reportTimer = window.setInterval(() => send?.(message), BUSY_REFRESH_MS)
+		const asking = handlers.reportAsking?.peek()
+		if (!send) return
+		const messages = [
+			...(ids ? [JSON.stringify({ type: 'busy', sessionIds: ids })] : []),
+			...(asking ? [JSON.stringify({ type: 'asking', sessionIds: asking })] : []),
+		]
+		for (const m of messages) send(m)
+		if (ids?.length || asking?.length) reportTimer = window.setInterval(() => messages.forEach((m) => send?.(m)), BUSY_REFRESH_MS)
 	}
-	const stopReport = handlers.reportBusy
-		? react(() => {
-				handlers.reportBusy!.get()
-				report()
-			})
-		: null
+	const stopReport =
+		handlers.reportBusy || handlers.reportAsking
+			? react(() => {
+					handlers.reportBusy?.get()
+					handlers.reportAsking?.get()
+					report()
+				})
+			: null
 
 	const startLive = (id: string) => {
 		stopLive = liveSocket(id, {

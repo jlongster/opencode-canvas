@@ -3,7 +3,7 @@ import { Editor, type ToolId } from '../editor/Editor'
 import { describeError, Renderer } from '../render/Renderer'
 import { atom, react } from '../state/signals'
 import { sessionColor } from '../../../shared/sessionColor'
-import type { Canvas, SessionLink } from '../../../shared/types'
+import type { Canvas, Session, SessionLink } from '../../../shared/types'
 import {
 	connectCanvas, deleteItem, deleteSession, editUrl, restoreDeleted, listUrl, renameCanvas, setSessionHidden, setSessionOrder, viewUrl, type CanvasLink,
 } from '../sync/client'
@@ -11,6 +11,7 @@ import { listenForPastedPages } from './pastePage'
 import { Attention } from '../multiplayer/Attention'
 import { SessionControl } from '../multiplayer/SessionControl'
 import { FrameSessions, liveSessions } from '../opencode/live'
+import { FrameSubagents } from '../opencode/subagents'
 import { PeerCursors } from '../multiplayer/PeerCursors'
 import { Presence } from '../multiplayer/Presence'
 import { SharedAnnotations } from '../multiplayer/SharedAnnotations'
@@ -95,6 +96,9 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 		// ...or this tab's paired OpenCodes, where they have the session; edit links report what they see for everyone.
 		const busy = atom<Set<string>>('busySessions', new Set(), sameSet)
 		const ownBusy = atom<string[]>('ownBusy', [], (a, b) => a.join() === b.join())
+		// Which subagents wait on an answer, the same way: as the canvas server says, or this tab's paired OpenCodes (see opencode/subagents.ts).
+		const reportedAsking = atom<Set<string>>('reportedAsking', new Set())
+		const ownAsking = atom<string[]>('ownAsking', [], (a, b) => a.join() === b.join())
 		disposers.push(
 			react(() => {
 				const { shown, own } = liveSessions.busyFrames(editor.sessionRecords.get(), reportedBusy.get())
@@ -173,7 +177,15 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					}
 					if (!sameSet(next, reportedBusy.peek())) reportedBusy.set(next)
 				},
-				...(link.role === 'edit' ? { reportBusy: ownBusy } : {}),
+				onAsking: (change) => {
+					const next = new Set('all' in change ? change.all : reportedAsking.peek())
+					if ('sessionId' in change) {
+						if (change.asking) next.add(change.sessionId)
+						else next.delete(change.sessionId)
+					}
+					if (!sameSet(next, reportedAsking.peek())) reportedAsking.set(next)
+				},
+				...(link.role === 'edit' ? { reportBusy: ownBusy, reportAsking: ownAsking } : {}),
 				onLoad: (c, first) => {
 					canvasTitle = c.title
 					setCanvas(c)
@@ -197,6 +209,9 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					const cursors = new PeerCursors(overlayRef.current!, editor, p)
 					// Every frame is an OpenCode session: what its OpenCode says about it, live (edit links tell everyone).
 					const frameSessions = new FrameSessions(editor, c.id, link.role === 'edit')
+					// Their subagents, as soon as they exist (posted anything or not): orbs on their titles.
+					const kids = new FrameSubagents(editor, c.id, link.role === 'edit')
+					const asking = (id: string) => kids.asking.peek().has(id) || reportedAsking.peek().has(id)
 					editor.frameChrome = {
 						status: (sessionId) => ({
 							color: sessionColor(sessionId),
@@ -205,11 +220,16 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 							ended: !!editor.sessions.get()[sessionId]?.opencode?.deleted,
 						}),
 						prompt: (sessionId, button) => control.toggle(sessionId, button && control.screenAnchor(button, 'below')),
-						subagent: (sessionId) => subagentState(sessionId, editor.parentOf(sessionId), control),
+						subagent: (sessionId) => subagentState(sessionId, editor.parentOf(sessionId), control, editor.sessions.peek()[sessionId], asking(sessionId)),
 					}
 					disposers.push(
 						() => (editor.frameChrome = null),
+						react(() => {
+							const records = editor.sessionRecords.get()
+							ownAsking.set([...kids.asking.get()].filter((id) => records[id]).sort())
+						}),
 						() => frameSessions.destroy(),
+						() => kids.destroy(),
 						() => cursors.destroy(),
 						() => control.destroy(),
 						() => notes.destroy(),
@@ -306,13 +326,13 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
  * tab follows its subagents: which wait on an answer, which failed), whether it's working as the busy
  * band says (LiveSessions.busyFrames), and this tab's paired OpenCode.
  */
-function subagentState(sessionId: string, parentId: string | null, control: SessionControl): 'running' | 'waiting' | 'failed' | 'done' {
+function subagentState(sessionId: string, parentId: string | null, control: SessionControl, session: Session | undefined, asking: boolean): 'running' | 'waiting' | 'failed' | 'done' {
 	const live = control.live.get()
 	const parent = parentId ? live.get(parentId) : undefined
 	const own = live.get(sessionId)
-	if (parent?.asking?.sessions?.includes(sessionId) || own?.asking?.count) return 'waiting'
+	if (asking || parent?.asking?.sessions?.includes(sessionId) || own?.asking?.count) return 'waiting'
 	if (control.busy.peek().has(sessionId)) return 'running'
-	if (parent?.failedSubagents?.includes(sessionId) || liveSessions.failed.peek().has(sessionId)) return 'failed'
+	if (parent?.failedSubagents?.includes(sessionId) || liveSessions.failed.peek().has(sessionId) || session?.opencode?.failed) return 'failed'
 	return 'done'
 }
 

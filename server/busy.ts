@@ -7,13 +7,15 @@
  * A tab's report goes when its socket closes (after CLOSE_GRACE_MS, so a refreshing tab's next
  * report takes over without the band flickering off), or when it isn't refreshed within
  * REPORT_TTL_MS (the tab refreshes it every 20s while anything is working).
+ *
+ * Which sessions wait on an answer (a question or a permission request: the subagents' orbs show it)
+ * is reported the same way ({"type": "asking", "sessionIds"}), by a second one of these.
  */
-import type { ServerEvent } from '../shared/types'
-
 export interface BusyDeps {
 	/** whether the canvas has a frame for the session (only those are reported) */
 	hasSession(canvasId: string, sessionId: string): boolean
-	broadcast(event: ServerEvent): void
+	/** a session started (on) or stopped being reported */
+	changed(canvasId: string, sessionId: string, on: boolean): void
 }
 
 const REPORT_TTL_MS = 60_000
@@ -41,8 +43,8 @@ export function createBusy(deps: BusyDeps) {
 		const before = busyOn(canvasId)
 		fn()
 		const after = busyOn(canvasId)
-		for (const id of after) if (!before.has(id)) deps.broadcast({ type: 'status', canvasId, sessionId: id, busy: true })
-		for (const id of before) if (!after.has(id)) deps.broadcast({ type: 'status', canvasId, sessionId: id, busy: false })
+		for (const id of after) if (!before.has(id)) deps.changed(canvasId, id, true)
+		for (const id of before) if (!after.has(id)) deps.changed(canvasId, id, false)
 	}
 
 	function drop(reporter: object) {

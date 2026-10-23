@@ -238,9 +238,15 @@ export class Editor {
 	readonly orderedSessions = computed<Session[]>('orderedSessions', () =>
 		orderSessions(Object.values(this.sessions.get()), this.frameDrag.get()?.order ?? this.sessionOrder.get()),
 	)
-	private readonly baseLayout = computed<Layout>('baseLayout', () =>
-		computeLayout(this.sessions.get(), this.items.get(), this.frameDrag.get()?.order ?? this.sessionOrder.get(), this.itemLimits.get(), this.families.get().parentOf),
-	)
+	private readonly baseLayout = computed<Layout>('baseLayout', () => {
+		const sessions = this.sessions.get()
+		const items = this.items.get()
+		const { parentOf } = this.families.get()
+		// (a subagent's frame with nothing in it is only there to be its orb: none while its parent's frame isn't shown)
+		const posted = new Set(Object.values(items).map((i) => i.sessionId))
+		const skip = { has: (id: string) => parentOf.has(id) || (!!sessions[id]?.opencode?.parentId && !posted.has(id)) }
+		return computeLayout(sessions, items, this.frameDrag.get()?.order ?? this.sessionOrder.get(), this.itemLimits.get(), skip)
+	})
 	/** Every subagent laid out as a frame of its own, for its drawer. */
 	private readonly kidLayout = computed<Layout>('kidLayout', () => {
 		const sessions = this.sessions.get()

@@ -280,15 +280,7 @@ class LiveSessions {
 		})
 		if (!this.streams.has(key)) return
 		const all = { ...this.sessions.peek() }
-		let changed = false
-		for (const s of found) {
-			const prev = all[s.id]
-			// An event told us about it after this fetch started: what it said is newer.
-			const next = prev && (this.touched.get(s.id) ?? 0) > startedAt ? { ...s, title: prev.title ?? s.title, ...(prev.deleted ? { deleted: true } : {}) } : s
-			if (prev && sameSession(prev, next)) continue
-			all[s.id] = next
-			changed = true
-		}
+		let changed = this.put(all, found, startedAt)
 		const missing = this.missing.get(key) ?? new Set<string>()
 		this.missing.set(key, missing)
 		for (const id of gone) {
@@ -305,6 +297,29 @@ class LiveSessions {
 			}
 		}
 		if (changed) this.sessions.set(all)
+	}
+
+	/** Sessions read in full from OpenCode, into `all` (what events said since `startedAt` kept): whether anything changed. */
+	private put(all: Record<string, KnownSession>, found: KnownSession[], startedAt: number) {
+		let changed = false
+		for (const s of found) {
+			const prev = all[s.id]
+			// An event told us about it after this fetch started: what it said is newer.
+			let next = prev && (this.touched.get(s.id) ?? 0) > startedAt ? { ...s, title: prev.title ?? s.title, ...(prev.deleted ? { deleted: true } : {}) } : s
+			// (how its last run ended isn't in the session: it stays as we heard)
+			if (prev?.failed !== undefined) next = { ...next, failed: prev.failed }
+			if (prev && sameSession(prev, next)) continue
+			all[s.id] = next
+			changed = true
+		}
+		return changed
+	}
+
+	/** A server's sessions as listed elsewhere (e.g. a frame's subagents, see subagents.ts), read in full when `startedAt`. */
+	noteSessions(key: string, list: SessionInfo[], startedAt: number) {
+		if (!this.streams.has(key) || !list.length) return
+		const all = { ...this.sessions.peek() }
+		if (this.put(all, list.map((s) => fromOpenCode(key, s)), startedAt)) this.sessions.set(all)
 	}
 
 	/** A server's recent sessions were listed (the Sessions panel, seeding): what we didn't know yet, or older than the list. */
@@ -418,7 +433,10 @@ class LiveSessions {
 		this.publishBusy()
 	}
 
-	private setFailed(id: string, failed: boolean) {
+	/** Whether a session's last run failed, as an event said or its last message (see subagents.ts). */
+	setFailed(id: string, failed: boolean) {
+		const prev = this.sessions.peek()[id]
+		if (prev && prev.failed !== failed) this.sessions.set({ ...this.sessions.peek(), [id]: { ...prev, failed } })
 		const now = this.failed.peek()
 		if (now.has(id) === failed) return
 		const next = new Set(now)
@@ -442,7 +460,8 @@ function sameSession(a: KnownSession, b: KnownSession) {
 		a.directory === b.directory &&
 		a.createdAt === b.createdAt &&
 		a.updatedAt === b.updatedAt &&
-		!!a.deleted === !!b.deleted
+		!!a.deleted === !!b.deleted &&
+		a.failed === b.failed
 	)
 }
 
@@ -452,7 +471,7 @@ export const liveSessions = new LiveSessions()
 
 /** The fields the canvas server keeps of a session (times aside: they alone aren't worth mirroring). */
 const mirrorKey = (serverKey: string, s: OpenCodeSessionInfo) =>
-	JSON.stringify([serverKey, s.title, s.parentId ?? null, s.agent ?? null, s.directory ?? null, !!s.deleted])
+	JSON.stringify([serverKey, s.title, s.parentId ?? null, s.agent ?? null, s.directory ?? null, !!s.deleted, !!s.failed])
 
 /**
  * One canvas page's frames as OpenCode sessions: keeps them fetched and followed (liveSessions),
@@ -540,7 +559,9 @@ export class FrameSessions {
 			live = { ...mirrored, serverKey }
 		} else {
 			const defined = Object.fromEntries(Object.entries(info).filter(([, v]) => v !== undefined)) as Partial<OpenCodeSessionInfo>
-			live = { title: '', ...(complete ? {} : mirrored), ...defined, serverKey }
+			// (how its last run ended, when this tab hasn't heard: as the canvas has it)
+			const failed = k.failed === undefined && mirrored?.failed && record.serverKey === serverKey ? { failed: true } : {}
+			live = { title: '', ...(complete ? {} : mirrored), ...failed, ...defined, serverKey }
 		}
 		this.shown.set(k, { record, live })
 		return live

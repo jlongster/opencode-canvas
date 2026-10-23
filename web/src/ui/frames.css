@@ -10,7 +10,7 @@
 	color: var(--text);
 }
 
-/* On the canvas: a small eye beside the close button on a hovered frame title (page-space, see .section-label .close). */
+/* On the canvas: a small eye on a hovered frame title (page-space). */
 .section-label .hide-frame {
 	flex: none;
 	display: inline-grid;
@@ -47,10 +47,6 @@
 	opacity: 1;
 	background: rgba(255, 255, 255, 0.08);
 	color: var(--text);
-}
-
-.section-label .hide-frame + .close {
-	margin-left: 0.15em;
 }
 
 .section-label.lifted {

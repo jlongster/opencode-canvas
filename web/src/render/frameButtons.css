@@ -1,5 +1,5 @@
 /*
- * A frame title's prompt, hide and remove buttons (see SectionLabels). The label is scaled with zoom; --u is
+ * A frame title's prompt and hide buttons (see SectionLabels). The label is scaled with zoom; --u is
  * page px per screen px (1 / its scale), so sizes written as `N * var(--u, 1)` stay N px on screen.
  * They sit at the right end of the title row, centred on its 48px (page-space) line, and only take
  * part in layout while the label is .roomy; otherwise they fade out of flow so the title keeps its width.
@@ -27,17 +27,12 @@
 }
 
 .section-label .frame-buttons .prompt-frame,
-.section-label .frame-buttons .hide-frame,
-.section-label .frame-buttons .close {
+.section-label .frame-buttons .hide-frame {
 	height: calc(24px * var(--u, 1));
 	min-width: calc(24px * var(--u, 1));
 	margin: 0;
 	font-size: 1em;
 	border-radius: calc(6px * var(--u, 1));
-}
-
-.section-label .frame-buttons .close {
-	font-size: calc(18px * var(--u, 1));
 }
 
 .section-label .frame-buttons .hide-frame svg,
@@ -80,18 +75,6 @@
 	opacity: 1;
 	color: var(--c);
 	background: color-mix(in srgb, var(--c) 16%, transparent);
-}
-
-.section-label .frame-buttons .hide-frame + .close {
-	margin-left: 0;
-}
-
-.section-label .frame-buttons .close.armed {
-	font-size: calc(12px * var(--u, 1));
-	height: calc(24px * var(--u, 1));
-	min-width: 0;
-	margin: 0;
-	padding: 0 calc(8px * var(--u, 1));
 }
 
 .section-label:not(.roomy) .frame-buttons button {

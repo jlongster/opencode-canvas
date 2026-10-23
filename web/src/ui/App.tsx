@@ -209,8 +209,8 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					const cursors = new PeerCursors(overlayRef.current!, editor, p)
 					// Every frame is an OpenCode session: what its OpenCode says about it, live (edit links tell everyone).
 					const frameSessions = new FrameSessions(editor, c.id, link.role === 'edit')
-					// Their subagents, as soon as they exist (posted anything or not): orbs on their titles.
-					const kids = new FrameSubagents(editor, c.id, link.role === 'edit')
+					// How their subagents (those with output: orbs on their titles) are doing: waiting, failed.
+					const kids = new FrameSubagents(editor)
 					const asking = (id: string) => kids.asking.peek().has(id) || reportedAsking.peek().has(id)
 					editor.frameChrome = {
 						status: (sessionId) => ({
@@ -225,8 +225,8 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					disposers.push(
 						() => (editor.frameChrome = null),
 						react(() => {
-							const records = editor.sessionRecords.get()
-							ownAsking.set([...kids.asking.get()].filter((id) => records[id]).sort())
+							const posted = editor.postedSessions.get()
+							ownAsking.set([...kids.asking.get()].filter((id) => posted.has(id)).sort())
 						}),
 						() => frameSessions.destroy(),
 						() => kids.destroy(),

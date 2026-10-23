@@ -1527,23 +1527,6 @@ class SectionLabels {
 				place(m, shift(s.more.box), z)
 				m.style.opacity = String(d.opacity)
 			}
-
-			// A subagent that hasn't posted anything yet (see opencode/subagents.ts): its drawer says so.
-			if (s.drawer && !s.itemIds.length) {
-				const key = `e:${s.id}`
-				seen.add(key)
-				let e = this.els.get(key)
-				if (!e) {
-					e = document.createElement('div')
-					e.className = 'frame-empty'
-					e.textContent = 'No output yet'
-					this.host.appendChild(e)
-					this.els.set(key, e)
-				}
-				const top = s.header.y + s.header.h
-				place(e, shift({ x: s.box.x, y: top, w: s.box.w, h: Math.max(0, s.box.y + s.box.h - top) }), z)
-				e.style.opacity = String(d.opacity)
-			}
 		}
 		for (const [id, el] of this.els) {
 			if (seen.has(id)) continue

@@ -997,24 +997,6 @@ function mirrorSessions(canvasId: string, entries: ReturnType<typeof mirrorEntry
 	return updated
 }
 
-const SUBAGENTS_MAX = 50
-
-/**
- * Subagents of the canvas's frames as a paired browser found them in OpenCode (POST …/subagents):
- * each gets a frame of its own, with no items, so it shows as an orb on its parent's title (see
- * web/src/editor/drawers.ts) before it has posted anything. Only children of a shown frame here.
- */
-function addSubagents(canvasId: string, entries: ReturnType<typeof mirrorEntry>[]): string[] {
-	const added: string[] = []
-	for (const { sessionId, serverKey, info } of entries.slice(0, SUBAGENTS_MAX)) {
-		const parent = info.parentId && db.sessions.get(sessionKey(canvasId, info.parentId))
-		if (!parent || parent.hidden || db.sessions.has(sessionKey(canvasId, sessionId))) continue
-		commitSession(withTitle({ id: sessionId, canvasId, title: '', serverKey, opencode: info, createdAt: Date.now() }))
-		added.push(sessionId)
-	}
-	return added
-}
-
 /** Marks a session populated from OpenCode (POST .../populate), or unmarks it. */
 function setPopulated(session: Session, populatedAt: number | undefined): Session {
 	const { populatedAt: _, ...rest } = session
@@ -1098,7 +1080,6 @@ function deleteItem(id: string, opts: { keepSession?: boolean } = {}) {
  * placed (say / highlight). Restoring the session doesn't bring those back: it can be linked again.
  */
 function deleteSession(session: Session) {
-	if (!db.sessions.has(sessionKey(session.canvasId, session.id))) return
 	const items = sessionItems(session.canvasId, session.id)
 	for (const item of items) deleteItem(item.id, { keepSession: true })
 	db.sessions.delete(sessionKey(session.canvasId, session.id))
@@ -1109,10 +1090,6 @@ function deleteSession(session: Session) {
 	links.drop(session.canvasId, session.id)
 	busy.forget(session.canvasId, session.id)
 	asking.forget(session.canvasId, session.id)
-	// Its subagents' frames with nothing in them were only there to show as its orbs (see addSubagents).
-	for (const kid of canvasSessions(session.canvasId)) {
-		if (kid.opencode?.parentId === session.id && !sessionItems(kid.canvasId, kid.id).length) deleteSession(kid)
-	}
 	// A canvas being deleted throws its whole room away.
 	if (db.canvases.has(session.canvasId)) {
 		attention.dropSession(session.canvasId, session.id).catch((e) => console.error('could not remove the session\'s notes:', e))
@@ -1202,6 +1179,30 @@ async function purgeTrash(opts: { canvasId?: string } = {}) {
 }
 
 await purgeTrash()
+dropEmptySubagents()
+
+/**
+ * Subagents only show once they have output: the frames with no items an earlier version gave them
+ * (to show them as orbs before they posted) go, with any of them in the trash.
+ */
+function dropEmptySubagents() {
+	const empty = (s: Session) =>
+		!!s.opencode?.parentId && !s.postedTitle && !s.populatedAt && !links.list(s.canvasId).some((l) => l.sessionId === s.id)
+	let dropped = 0
+	for (const [key, s] of [...db.sessions]) {
+		if (!empty(s) || sessionItems(s.canvasId, s.id).length) continue
+		db.sessions.delete(key)
+		dropped++
+	}
+	for (const [key, entry] of [...trash]) {
+		if (entry.kind !== 'session' || entry.itemIds.length || !empty(entry.session)) continue
+		trash.delete(key)
+		dropped++
+	}
+	if (!dropped) return
+	console.log(`dropped ${dropped} empty subagent frame(s)`)
+	save()
+}
 
 setInterval(() => purgeTrash().catch((e) => console.error('trash sweep failed:', e)), TRASH_SWEEP_MS)
 
@@ -1814,10 +1815,6 @@ const API_INDEX = {
 			'Paired browsers report the canvas\'s sessions as OpenCode has them: {"sessions": [{"sessionId", "serverKey", ' +
 			'"title", "parentId"?, "agent"?, "directory"?, "createdAt"?, "updatedAt"?, "deleted"?, "failed"?}]}. Saved on the frames ' +
 			'(sessions without one are ignored) and broadcast. Returns {"updated": [sessionId, …]}',
-		'POST /api/canvases/:cid/subagents':
-			'Paired browsers add the subagents (child sessions) of the canvas\'s frames that have no frame yet, so they show as ' +
-			'orbs on their parent\'s title even before they post anything. Same body as PUT …/opencode; each needs a "parentId" ' +
-			'with a shown frame here (others are ignored). Returns {"added": [sessionId, …]}',
 		'GET /api/canvases/:cid/order': 'The frames\' order, left to right: {"sessionIds"} (hidden sessions included)',
 		'PUT /api/canvases/:cid/order':
 			'Arrange the frames. Body: {"sessionIds": [...]} left to right; sessions left out follow, oldest first, and new ' +
@@ -2178,15 +2175,6 @@ async function handle(req: Request): Promise<Response> {
 		if (!Array.isArray(body?.sessions)) throw new HttpError(400, 'send {"sessions": [{"sessionId", "serverKey", "title", …}]}')
 		if (body.sessions.length > 500) throw new HttpError(400, 'at most 500 sessions at a time')
 		return json({ updated: mirrorSessions(canvas.id, body.sessions.map(mirrorEntry)) })
-	}
-
-	m = /^\/api\/canvases\/([^/]+)\/subagents$/.exec(p)
-	if (m && method === 'POST') {
-		const canvas = getCanvas(decodeURIComponent(m[1]))
-		const body = (await req.json().catch(() => null)) as { sessions?: unknown } | null
-		if (!Array.isArray(body?.sessions)) throw new HttpError(400, 'send {"sessions": [{"sessionId", "serverKey", "title", "parentId", …}]}')
-		if (body.sessions.length > SUBAGENTS_MAX) throw new HttpError(400, `at most ${SUBAGENTS_MAX} sessions at a time`)
-		return json({ added: addSubagents(canvas.id, body.sessions.map(mirrorEntry)) })
 	}
 
 	m = /^\/api\/canvases\/([^/]+)\/order$/.exec(p)

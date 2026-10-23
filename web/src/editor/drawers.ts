@@ -29,14 +29,15 @@ const MAX_DEPTH = 8
  * Who's whose subagent: a frame whose session's parent (from OpenCode: mirrored on the canvas, or
  * known to this tab) is a shown frame here belongs to it; a subagent of a subagent belongs to the
  * top-most one shown. `known`: parents this tab's paired OpenCode knows, of sessions without a frame
- * too (so a grandchild finds its way past a parent that has none).
+ * too (so a grandchild finds its way past a parent that has none). Only subagents with output count
+ * (`posted`: the sessions with items here): the others show nothing.
  */
-export function subagentFamilies(sessions: Record<string, Session>, known: Readonly<Record<string, string>>): Families {
+export function subagentFamilies(sessions: Record<string, Session>, known: Readonly<Record<string, string>>, posted: ReadonlySet<string>): Families {
 	const parentOf = new Map<string, string>()
 	const kids = new Map<string, string[]>()
 	const parentIdOf = (id: string) => sessions[id]?.opencode?.parentId || known[id] || undefined
 	for (const s of Object.values(sessions)) {
-		if (s.hidden) continue
+		if (s.hidden || !posted.has(s.id)) continue
 		let root: string | null = null
 		let at = parentIdOf(s.id)
 		for (let i = 0; at && i < MAX_DEPTH && at !== s.id; i++) {

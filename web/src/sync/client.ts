@@ -50,10 +50,6 @@ export const addSessionFrame = (canvasId: string, id: string, meta: { title?: st
 export const mirrorSessions = (canvasId: string, sessions: ({ sessionId: string; serverKey: string } & OpenCodeSessionInfo)[]) =>
 	request<{ updated: string[] }>(`/api/canvases/${encodeURIComponent(canvasId)}/opencode`, json('PUT', { sessions }))
 
-/** Gives the frames' subagents that have none a frame (no items: they show as orbs on their parent's title). */
-export const addSubagents = (canvasId: string, sessions: ({ sessionId: string; serverKey: string } & OpenCodeSessionInfo)[]) =>
-	request<{ added: string[] }>(`/api/canvases/${encodeURIComponent(canvasId)}/subagents`, json('POST', { sessions }))
-
 /** Hides or shows a session's frame for everyone. */
 export const setSessionHidden = (canvasId: string, id: string, hidden: boolean) =>
 	request<unknown>(`/api/canvases/${encodeURIComponent(canvasId)}/sessions/${encodeURIComponent(id)}`, json('PATCH', { hidden }))

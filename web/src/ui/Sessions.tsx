@@ -120,6 +120,8 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 	const recentFrames = useMemo(() => {
 		const latest = JSON.parse(latestItems) as Record<string, number>
 		const all = Object.values(frames)
+			// (a subagent with no output shows nothing)
+			.filter((s) => latest[s.id] || !s.opencode?.parentId)
 			.map((s) => ({
 				id: s.id,
 				title: s.title.trim() && s.title !== s.id ? s.title : '',

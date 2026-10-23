@@ -232,8 +232,14 @@ export class Editor {
 	readonly drawers = new Drawers()
 
 	// --- derived ---
+	/** The sessions with at least one item here. */
+	readonly postedSessions = computed<ReadonlySet<string>>(
+		'postedSessions',
+		() => new Set(Object.values(this.items.get()).map((i) => i.sessionId)),
+		(a, b) => a.size === b.size && [...a].every((id) => b.has(id)),
+	)
 	/** Which frames are subagents of which (they show as orbs on their parent's title, and open in drawers there). */
-	readonly families = computed<Families>('families', () => subagentFamilies(this.sessions.get(), this.knownParents.get()), familiesEqual)
+	readonly families = computed<Families>('families', () => subagentFamilies(this.sessions.get(), this.knownParents.get(), this.postedSessions.get()), familiesEqual)
 	/** Every session (hidden ones too) left to right, as arranged; while a frame is dragged, as it would drop. */
 	readonly orderedSessions = computed<Session[]>('orderedSessions', () =>
 		orderSessions(Object.values(this.sessions.get()), this.frameDrag.get()?.order ?? this.sessionOrder.get()),
@@ -242,8 +248,8 @@ export class Editor {
 		const sessions = this.sessions.get()
 		const items = this.items.get()
 		const { parentOf } = this.families.get()
-		// (a subagent's frame with nothing in it is only there to be its orb: none while its parent's frame isn't shown)
-		const posted = new Set(Object.values(items).map((i) => i.sessionId))
+		// (a subagent with no output shows nothing)
+		const posted = this.postedSessions.get()
 		const skip = { has: (id: string) => parentOf.has(id) || (!!sessions[id]?.opencode?.parentId && !posted.has(id)) }
 		return computeLayout(sessions, items, this.frameDrag.get()?.order ?? this.sessionOrder.get(), this.itemLimits.get(), skip)
 	})

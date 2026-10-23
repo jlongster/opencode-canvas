@@ -315,13 +315,6 @@ class LiveSessions {
 		return changed
 	}
 
-	/** A server's sessions as listed elsewhere (e.g. a frame's subagents, see subagents.ts), read in full when `startedAt`. */
-	noteSessions(key: string, list: SessionInfo[], startedAt: number) {
-		if (!this.streams.has(key) || !list.length) return
-		const all = { ...this.sessions.peek() }
-		if (this.put(all, list.map((s) => fromOpenCode(key, s)), startedAt)) this.sessions.set(all)
-	}
-
 	/** A server's recent sessions were listed (the Sessions panel, seeding): what we didn't know yet, or older than the list. */
 	private noteListed(key: string, list: OpenCodeSessionSummary[], startedAt: number) {
 		if (!this.streams.has(key)) return

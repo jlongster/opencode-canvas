@@ -668,7 +668,8 @@ export class Editor {
 	/** Whether an event is on the canvas itself, not on UI inside the container (notes, labels, buttons). */
 	private isOnSurface(e: Event) {
 		const t = e.target
-		return !!t && (t === this.container || (t as Node).parentNode === this.container)
+		// data-surface: transparent layers over the canvas that only exist to catch input (see HtmlItems).
+		return !!t && (t === this.container || (t as Node).parentNode === this.container || (t as HTMLElement).dataset?.surface !== undefined)
 	}
 
 	// ---------- camera ----------

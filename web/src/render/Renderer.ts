@@ -911,12 +911,22 @@ interface HtmlFrame {
 class HtmlItems {
 	private frames = new Map<string, HtmlFrame>()
 	readonly host: HTMLDivElement
+	/**
+	 * Covers the iframes so touches land on the canvas, not in their documents. iOS Safari hit-tests
+	 * gestures into an iframe despite pointer-events: none, where touch-action is auto again, so it
+	 * would scroll the iframe's document (or the page) instead of letting the canvas pan.
+	 */
+	private shield: HTMLDivElement
 
 	constructor(parent: HTMLElement) {
 		this.host = document.createElement('div')
 		this.host.className = 'html-items'
+		this.shield = document.createElement('div')
+		this.shield.className = 'html-items-shield'
+		this.shield.dataset.surface = ''
+		this.shield.hidden = true
 		// First in the overlay, so titles, buttons, notes and cursors all sit above.
-		parent.prepend(this.host)
+		parent.prepend(this.host, this.shield)
 		window.addEventListener('message', this.onMessage)
 	}
 
@@ -1003,6 +1013,7 @@ class HtmlItems {
 			f.wrap.remove()
 			this.frames.delete(id)
 		}
+		this.shield.hidden = this.frames.size === 0
 		return seen
 	}
 
@@ -1063,6 +1074,7 @@ class HtmlItems {
 	destroy() {
 		window.removeEventListener('message', this.onMessage)
 		this.host.remove()
+		this.shield.remove()
 	}
 }
 

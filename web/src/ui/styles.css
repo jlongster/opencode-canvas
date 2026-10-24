@@ -198,6 +198,16 @@ body,
 	transition: opacity 220ms;
 }
 
+/* Over the iframes, so iOS hit-tests touches here (touch-action: none) and not into their documents
+   (see HtmlItems in Renderer.ts). Its own layer, so it stays in front of the iframes' layers. */
+.html-items-shield {
+	position: absolute;
+	inset: 0;
+	pointer-events: auto;
+	touch-action: none;
+	will-change: transform;
+}
+
 /* The hovered link in an HTML item, and its URL (see LinkHover in render/HtmlLinks.ts). */
 .html-link-hover {
 	position: absolute;

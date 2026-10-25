@@ -15,11 +15,12 @@
  * server, which saves it on the frames and broadcasts it: everyone else (view links, people without a
  * pairing, this browser with no paired tab open) sees that.
  */
-import type { OpenCodeSessionInfo, OpenCodeSessionSummary, Session } from '../../../shared/types'
+import type { OpenCodeSessionInfo, OpenCodeSessionSummary, Session, SessionActivity } from '../../../shared/types'
 import type { Editor, LiveSession } from '../editor/Editor'
 import { atom, react } from '../state/signals'
 import { mirrorSessions } from '../sync/client'
 import { PASTED_SESSION_ID } from '../ui/pastePage'
+import { shortModel, summariseTool } from './activity'
 import { onOpenCodeEvents, type OpenCodeEvent } from './events'
 import { pairing, pairings, withServer, type OpenCodeClient } from './pairings'
 import { onSessionsListed } from './sessions'
@@ -95,6 +96,14 @@ class LiveSessions {
 	readonly failed = atom<ReadonlySet<string>>('openCodeFailed', new Set(), setEquals)
 	/** bumped when sessions came or went on a server (or its stream reconnected): lists of them may be out of date */
 	readonly listVersion = atom<number>('openCodeListVersion', 0)
+	/**
+	 * What sessions are doing, as the paired servers' event streams say (live): the model and agent
+	 * of their latest step (or latest message, read with them), the tool call they're on, and since
+	 * when they work. For frames' title blocks and printouts.
+	 */
+	readonly activity = atom<Record<string, SessionActivity>>('openCodeActivity', {})
+	/** tool calls being made: call id → its tool's name (its input comes after) */
+	private toolNames = new Map<string, string>()
 
 	/** each consumer's wanted sessions: id → the server it's said to be on (a hint), if any */
 	private wants = new Map<object, Map<string, string | undefined>>()
@@ -208,7 +217,11 @@ class LiveSessions {
 			.then((active) => {
 				if (!this.streams.has(key)) return
 				this.busyBy.set(key, new Set(Object.keys(active)))
+				const working = Object.keys(active).filter((id) => this.wanted().has(id))
+				for (const id of working) if (!this.activity.peek()[id]?.busySince) this.patchActivity(id, { busySince: Date.now() })
 				this.publishBusy()
+				// (since when they work, and what they're on: their latest messages say)
+				void this.readMessages(key, working)
 			})
 			.catch(() => {})
 	}
@@ -279,6 +292,7 @@ class LiveSessions {
 			// Unreachable (noted in the servers list): its stream reconnecting asks again.
 		})
 		if (!this.streams.has(key)) return
+		void this.readMessages(key, found.map((f) => f.id))
 		const all = { ...this.sessions.peek() }
 		let changed = this.put(all, found, startedAt)
 		const missing = this.missing.get(key) ?? new Set<string>()
@@ -394,8 +408,76 @@ class LiveSessions {
 			case 'session.execution.interrupted':
 			case 'session.idle':
 				return this.setBusy(key, id, false, at)
+			case 'session.step.started': {
+				const model = (data.model as { id?: unknown } | undefined)?.id
+				const agent = text(data.agent)
+				return this.patchActivity(id, { ...(typeof model === 'string' && model ? { model: shortModel(model) } : {}), ...(agent ? { agent } : {}) })
+			}
+			case 'session.model.selected': {
+				const model = (data.model as { id?: unknown } | undefined)?.id
+				return typeof model === 'string' && model ? this.patchActivity(id, { model: shortModel(model) }) : undefined
+			}
+			case 'session.tool.input.started': {
+				const name = text(data.name) ?? ''
+				if (typeof data.id === 'string') this.toolNames.set(data.id, name)
+				if (this.toolNames.size > 200) this.toolNames.delete(this.toolNames.keys().next().value!)
+				return this.patchActivity(id, { step: summariseTool(name, undefined), stepAt: at })
+			}
+			case 'session.tool.called': {
+				const name = typeof data.id === 'string' ? (this.toolNames.get(data.id) ?? '') : ''
+				const directory = this.sessions.peek()[id]?.directory
+				return this.patchActivity(id, { step: summariseTool(name, data.input as Record<string, unknown> | undefined, directory), stepAt: at })
+			}
 		}
 	}
+
+	/** What a session is doing changed (undefined fields: no longer known). */
+	private patchActivity(id: string, changes: Partial<SessionActivity>) {
+		const all = this.activity.peek()
+		const next: SessionActivity = { ...all[id] }
+		for (const [k, v] of Object.entries(changes) as [keyof SessionActivity, never][]) {
+			if (v === undefined) delete next[k]
+			else next[k] = v
+		}
+		if (JSON.stringify(next) === JSON.stringify(all[id] ?? {})) return
+		const out = { ...all }
+		if (Object.keys(next).length) out[id] = next
+		else delete out[id]
+		this.activity.set(out)
+	}
+
+	/**
+	 * What a session's latest messages say, for its title block and printout before its next event:
+	 * the model and agent of its latest step, and, while it works, since when (its run's prompt) and
+	 * the tool call it's on.
+	 */
+	private async readMessages(key: string, ids: string[]) {
+		type Message = { type?: string; agent?: string; model?: { id?: string }; time?: { created?: number }; content?: { type?: string; name?: string; state?: { status?: string; input?: Record<string, unknown> }; time?: { created?: number } }[] }
+		await withServer(key, (c) =>
+			pool(ids, GET_CONCURRENCY, async (sessionID) => {
+				const busy = !!this.busyBy.get(key)?.has(sessionID)
+				const known = this.activity.peek()[sessionID]
+				if (known?.model && (!busy || known.step)) return
+				const res = await c.message.list({ sessionID, limit: 12, order: 'desc' }, { signal: AbortSignal.timeout(REQUEST_MS) }).catch(() => null)
+				const list = (res?.data ?? []) as Message[]
+				const last = list.find((m) => m.type === 'assistant')
+				const changes: Partial<SessionActivity> = {}
+				if (last?.model?.id && !this.activity.peek()[sessionID]?.model) changes.model = shortModel(last.model.id)
+				if (last?.agent && !this.activity.peek()[sessionID]?.agent) changes.agent = last.agent
+				if (busy && this.busyBy.get(key)?.has(sessionID)) {
+					const prompt = list.find((m) => m.type === 'user')
+					if (prompt?.time?.created) changes.busySince = prompt.time.created
+					const tool = [...(last?.content ?? [])].reverse().find((p) => p.type === 'tool')
+					if (tool?.name && !this.activity.peek()[sessionID]?.step) {
+						changes.step = summariseTool(tool.name, tool.state?.input, this.sessions.peek()[sessionID]?.directory)
+						if (tool.time?.created) changes.stepAt = tool.time.created
+					}
+				}
+				if (Object.keys(changes).length) this.patchActivity(sessionID, changes)
+			}),
+		).catch(() => {})
+	}
+
 
 	/**
 	 * What an event said about a session, merged into what we know. Sessions we know nothing about
@@ -421,6 +503,7 @@ class LiveSessions {
 		if (!set || set.has(id) === busy) return
 		if (busy) set.add(id)
 		else set.delete(id)
+		this.patchActivity(id, busy ? { busySince: at ?? Date.now() } : { busySince: undefined, step: undefined, stepAt: undefined })
 		const prev = this.sessions.peek()[id]
 		if (at && prev && (prev.updatedAt ?? 0) < at) this.sessions.set({ ...this.sessions.peek(), [id]: { ...prev, updatedAt: at } })
 		this.publishBusy()
@@ -511,6 +594,18 @@ export class FrameSessions {
 				liveSessions.want(this, wanted)
 			}),
 			react(() => this.show(editor.sessionRecords.get(), liveSessions.sessions.get())),
+			// What the frames' sessions are doing, here (and, on edit links, for everyone: see sync/client.ts).
+			react(() => {
+				const records = editor.sessionRecords.get()
+				const known = liveSessions.sessions.get()
+				const all = liveSessions.activity.get()
+				const own: Record<string, SessionActivity> = {}
+				for (const id of Object.keys(records)) {
+					const a = all[id]
+					if (a && known[id] && isOpenCodeSession(id)) own[id] = a
+				}
+				editor.ownActivity.set(own)
+			}),
 			react(() => {
 				const parents: Record<string, string> = {}
 				for (const k of Object.values(liveSessions.sessions.get())) if (k.parentId) parents[k.id] = k.parentId
@@ -525,6 +620,7 @@ export class FrameSessions {
 		clearTimeout(this.retryTimer)
 		for (const d of this.disposers.splice(0)) d()
 		this.editor.setLiveSessions({})
+		this.editor.ownActivity.set({})
 	}
 
 	private show(records: Record<string, Session>, known: Record<string, KnownSession>) {

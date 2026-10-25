@@ -1,9 +1,9 @@
 import type { Item } from '../../../shared/types'
-import { GROUP_OUTLINE_PADDING, opensInDrawer, type Editor, type FrameStatus, type HtmlLink } from '../editor/Editor'
+import { GROUP_OUTLINE_PADDING, opensInDrawer, type Editor, type HtmlLink } from '../editor/Editor'
 import { Box, clamp } from '../editor/geometry'
-import { LAYOUT, type SectionLayout } from '../editor/layout'
+import { LAYOUT } from '../editor/layout'
 import { frameKey } from '../editor/selection'
-import { blockShader, imageShader, rectShader, videoShader } from './shaders'
+import { imageShader, rectShader, videoShader } from './shaders'
 import { TextureCache } from './TextureCache'
 import { VideoPool } from './VideoPool'
 import { EXTRACT_ICON, VideoControls } from './VideoControls'
@@ -13,14 +13,12 @@ import { ItemBadges } from './ItemBadges'
 import { linkCardUrl } from './linkCard'
 import { url as withBase } from '../base'
 import { THEME } from '../theme'
-import { BLOCK_FLOATS, BRAIN, BRAIN_STILL, BrainBlocks, type BrainFrame } from './busy/brain'
-import { DONE, ENTER_S, doneDuration, envelope, frameSeed, type BusyState } from './busy/envelope'
-import './frameButtons.css'
-import { TitleOrbs } from './subagents/titleOrbs'
+import { SheetHeads } from './SheetHeads'
 
 const THUMB_SIZE = 512
-const ITEM_RADIUS = 6
-const SECTION_RADIUS = 20
+/** Sheets and items are square-cornered (the Reference Manual). */
+const ITEM_RADIUS = 0
+const SECTION_RADIUS = 0
 const EASE_MS = 90 // time constant for layout motion
 const FADE_MS = 220
 /** A focused group's outline shows this long, fading out over the last GROUP_FLASH_FADE_MS. */
@@ -35,24 +33,36 @@ const MIN_HTML_PX = 24
 
 const RECT_FLOATS = 16
 const IMAGE_FLOATS = 8
-/** Busy bands redraw at most at this rate (ms per frame) while nothing else moves. */
-const BUSY_FRAME_MS = 1000 / 30
-const NO_SESSIONS: ReadonlySet<string> = new Set()
-const WHITE = [1, 1, 1] as const
+/** rect patterns (see rectShader) */
+const DITHER = 1
+const PINSTRIPE = 2
+const PLUS_MARKS = 3
 
 type RGBA = [number, number, number, number]
 const [BG_R, BG_G, BG_B] = hexToRgba(THEME.canvas)
 const BG: GPUColor = { r: BG_R, g: BG_G, b: BG_B, a: 1 }
-const ACCENT: RGBA = [0.34, 0.56, 1, 1]
-/** Frames: a sheet of paper on the ground, ruled with a hairline */
+/** Selection, hover and every rule that matters: ink. Nothing glows. */
+const INK: RGBA = hexToRgba(THEME.ink)
+/** Frames: a sheet of paper on the ground, edged with a hairline */
 const SECTION_FILL: RGBA = hexToRgba(THEME.frame)
-const SECTION_STROKE: RGBA = hexToRgba(THEME.rule)
-const PLACEHOLDER: RGBA = [0, 0, 0, 0.06]
+const SECTION_STROKE: RGBA = hexToRgba(THEME.rule2)
+/** a subagent's drawer, unfolded in its parent's sheet */
+const DRAWER_FILL: RGBA = hexToRgba('#f3f1ea')
+/** the running sheet's spine */
+const BLUE: RGBA = hexToRgba(THEME.blue)
+/** the canvas's plus-marks */
+const PLUS: RGBA = hexToRgba('#c9c5b9')
+/** an item's edge */
+const ITEM_EDGE: RGBA = [0, 0, 0, 0.12]
+/** under an item until its picture's ready: the sheet, dithered (loading) or pinstriped (queued) */
+const PLACEHOLDER: RGBA = hexToRgba(THEME.frame)
+const DITHER_INK: RGBA = [21 / 255, 21 / 255, 21 / 255, 0.28]
+const PINSTRIPE_INK: RGBA = hexToRgba('#bdb8ac')
 const NONE: RGBA = [0, 0, 0, 0]
-/** A frame picked up by its title: opaque (so nothing shows through it), over a soft shadow */
+/** A frame picked up by its title: opaque (so nothing shows through it), over a hard offset shadow */
 const LIFTED_FILL: RGBA = hexToRgba(THEME.frame)
-const LIFTED_STROKE: RGBA = hexToRgba(THEME.rule2)
-const SHADOW: RGBA = [0, 0, 0, 0.14]
+const LIFTED_STROKE: RGBA = hexToRgba(THEME.ink)
+const SHADOW: RGBA = [21 / 255, 21 / 255, 21 / 255, 0.14]
 
 export interface RendererOptions {
 	/** Hide editing controls (view-only links) */
@@ -63,7 +73,7 @@ export interface RendererOptions {
 	onDeviceLost?: (message: string) => void
 	/** Frames drawn last, back to front, each opaque over a soft shadow (0–1), so they can overlap like a stack (a dragged frame goes on top). */
 	getRaisedSections?: () => readonly { id: string; shadow: number }[]
-	/** The sessions working right now (see SessionControl.busy): their frames get the busy band. */
+	/** The sessions working right now (see SessionControl.busy): their sheets get a blue spine. */
 	busySessions?: () => ReadonlySet<string>
 	/**
 	 * false: frames and items are drawn exactly where the layout puts them, at its opacity
@@ -94,7 +104,6 @@ export class Renderer {
 	private rectPipeline: GPURenderPipeline
 	private imagePipeline: GPURenderPipeline
 	private videoPipeline: GPURenderPipeline
-	private blockPipeline: GPURenderPipeline
 	private videoLayout: GPUBindGroupLayout
 	private imageLayout: GPUBindGroupLayout
 	/** Zero-copy video via importExternalTexture; false once it's missing or has failed, then frames are copied. */
@@ -105,26 +114,18 @@ export class Renderer {
 	private rectData = new Float32Array(RECT_FLOATS * 256) as Float32Array<ArrayBuffer>
 	private imageBuffer: GPUBuffer | null = null
 	private imageData = new Float32Array(IMAGE_FLOATS * 256) as Float32Array<ArrayBuffer>
-	private blockBuffer: GPUBuffer | null = null
-	private blocks = new BrainBlocks()
-	/** each session's busy band, while it works and as it resolves after (see trackBusy) */
-	private busy = new Map<string, BusyState & { seed: number; offset: number }>()
-	/** whether a busy band in view is coming or going, when it was last drawn, and when one next steps (ms) */
-	private busySettling = false
-	private busyDrawnAt = 0
-	private busyNextAt = Infinity
-	private reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+	private busyKey = ''
 	private textures: TextureCache
 	private videos: VideoPool
-	private labels: SectionLabels
-	/** subagents' orbs on frame titles (null without WebGL2) */
-	private titleOrbs: TitleOrbs | null = null
+	private labels: SheetHeads
 	private actions: ItemActions
 	private videoControls: VideoControls
 	private titles: ItemTitles
 	private html: HtmlItems
 	private linkHover: LinkHover
-	private openButton: HtmlOpenButton
+	private hoverBar: HoverBar
+	/** what each item in view shows while its picture isn't ready: loading or queued */
+	private itemStates = new Map<string, 'loading' | 'queued'>()
 	private pageBadges: PageBadges
 	private itemBadges: ItemBadges
 
@@ -241,7 +242,6 @@ export class Renderer {
 		this.rectPipeline = pipeline(rectShader, [globalsLayout], [0, 1, 2, 3].map(vec4), RECT_FLOATS * 4)
 		this.imagePipeline = pipeline(imageShader, [globalsLayout, imageLayout], [0, 1].map(vec4), IMAGE_FLOATS * 4)
 		this.videoPipeline = pipeline(videoShader, [globalsLayout, this.videoLayout], [0, 1].map(vec4), IMAGE_FLOATS * 4)
-		this.blockPipeline = pipeline(blockShader, [globalsLayout], [0, 1].map(vec4), BLOCK_FLOATS * 4)
 
 		this.imageLayout = imageLayout
 		this.textures = new TextureCache(device, imageLayout)
@@ -249,17 +249,13 @@ export class Renderer {
 		this.html = new HtmlItems(overlay)
 		this.linkHover = new LinkHover(this.html.host)
 		editor.linkAt = (point) => this.html.linkAt(point)
-		this.labels = new SectionLabels(
+		this.labels = new SheetHeads(
 			overlay,
+			editor,
 			options.readOnly ? null : (id) => editor.setFrameHidden(id, true),
 			(id, count) => editor.showMoreItems(id, count),
 			(id) => editor.drawers.set(id, false),
 		)
-		try {
-			this.titleOrbs = this.labels.orbs = new TitleOrbs(overlay, editor)
-		} catch (e) {
-			console.warn('no subagent orbs:', describeError(e))
-		}
 		this.titles = new ItemTitles(overlay)
 		this.videoControls = new VideoControls(overlay, this.videos, editor, !!options.readOnly)
 		this.pageBadges = new PageBadges(overlay, (item) => editor.openHtmlDrawer(item.id))
@@ -267,7 +263,7 @@ export class Renderer {
 		// HTML items and pages both open in the side drawer (a page: its live web page).
 		const open = (id: string) => editor.openHtmlDrawer(id)
 		this.actions = new ItemActions(overlay, options.readOnly ? null : this.videoControls, open)
-		this.openButton = new HtmlOpenButton(overlay, open)
+		this.hoverBar = new HoverBar(overlay, open)
 
 		const ro = new ResizeObserver(([entry]) => {
 			const size = entry.devicePixelContentBoxSize?.[0]
@@ -312,8 +308,6 @@ export class Renderer {
 
 	private frame(now: number, elapsed: number) {
 		this.draw(now, elapsed)
-		// (every frame: the orbs move on their own; from where this frame put the titles)
-		this.titleOrbs?.frame(now, this.canvas)
 	}
 
 	private draw(now: number, elapsed: number) {
@@ -341,13 +335,15 @@ export class Renderer {
 
 		const uploaded = this.textures.update()
 		const epoch = editor.getEpoch()
-		const busyChanged = this.trackBusy(this.options.busySessions?.() ?? NO_SESSIONS, now / 1000)
+		const busy = this.options.busySessions?.() ?? editor.busy.peek()
+		const busyKey = [...busy].sort().join()
+		const busyChanged = busyKey !== this.busyKey
+		this.busyKey = busyKey
 		const needsFrame =
 			epoch !== this.lastEpoch ||
 			this.animating ||
 			uploaded ||
 			busyChanged ||
-			((this.busySettling || now >= this.busyNextAt) && now - this.busyDrawnAt >= BUSY_FRAME_MS) ||
 			this.videos.takeDirty() ||
 			this.videos.isPlaying ||
 			editor.isCameraMoving()
@@ -368,18 +364,43 @@ export class Renderer {
 		this.device.queue.writeBuffer(this.globals, 0, this.globalsData)
 
 		const cull = Box.expand(viewBounds, 64 / camera.z)
-		const blocks = this.busyBands(layout.sections, camera, now)
+		const unit = 1 / camera.z
 
 		// ---- build instance data ----
 		let rects = 0
-		const pushRect = (b: Box, fill: RGBA, stroke: RGBA, strokeWidth: number, radius: number, screen: boolean) => {
+		const pushRect = (b: Box, fill: RGBA, stroke: RGBA, strokeWidth: number, radius: number, screen: boolean, pattern = 0) => {
 			this.rectData = ensure(this.rectData, (rects + 1) * RECT_FLOATS)
 			const o = rects++ * RECT_FLOATS
 			const d = this.rectData
 			d[o] = b.x; d[o + 1] = b.y; d[o + 2] = b.w; d[o + 3] = b.h
 			premul(d, o + 4, fill)
 			premul(d, o + 8, stroke)
-			d[o + 12] = strokeWidth; d[o + 13] = radius; d[o + 14] = screen ? 1 : 0; d[o + 15] = 0
+			d[o + 12] = pattern ? 0 : strokeWidth; d[o + 13] = radius; d[o + 14] = screen ? 1 : 0; d[o + 15] = pattern
+		}
+		// The ground: plus-marks, anchored to the page.
+		pushRect({ x: 0, y: 0, w: vw, h: vh }, NONE, PLUS, 0, 0, true, PLUS_MARKS)
+		/** A 1 screen px ring, gap px outside a box. */
+		const ring = (b: Box, gap: number, color: RGBA) => pushRect(Box.expand(b, gap * unit), NONE, color, 1, 0, false)
+		/** Where a sheet is drawn: its frame, and its head where that grows up out of it (zoomed out, see frameTitleBox). */
+		const minScale = LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx
+		const sheetOf = (section: (typeof layout.sections)[number], d: Displayed): Box => {
+			if (section.drawer) return d
+			const grow = Math.max(1, minScale / camera.z)
+			const bottom = d.y + section.header.y - section.box.y + section.header.h
+			const top = Math.min(d.y, bottom - section.header.h * grow)
+			return { x: d.x, y: top, w: d.w, h: d.y + d.h - top }
+		}
+		const pushSheet = (section: (typeof layout.sections)[number], d: Displayed, fill: RGBA, stroke: RGBA) => {
+			if (section.drawer) {
+				// a band across its parent's sheet, ruled off in ink below
+				pushRect(d, DRAWER_FILL, NONE, 0, 0, false)
+				pushRect({ x: d.x, y: d.y + d.h - unit, w: d.w, h: unit }, INK, NONE, 0, 0, false)
+				return
+			}
+			const b = sheetOf(section, d)
+			pushRect(b, withAlpha(fill, d.opacity), withAlpha(stroke, d.opacity), 1, SECTION_RADIUS, false)
+			// running: a 4 px blue spine down its left edge
+			if (busy.has(section.id)) pushRect({ x: b.x - 5 * unit, y: b.y - unit, w: 4 * unit, h: b.h + 2 * unit }, withAlpha(BLUE, d.opacity), NONE, 0, 0, false)
 		}
 
 		const overlays: (() => void)[] = []
@@ -393,17 +414,18 @@ export class Renderer {
 		const liftedId = editor.frameDrag.get()?.sessionId ?? null
 		const raised = [...(this.options.getRaisedSections?.() ?? []).filter((r) => r.id !== liftedId), ...(liftedId ? [{ id: liftedId, shadow: 1 }] : [])]
 		const raisedIds = new Set(raised.map((r) => r.id))
-		for (const section of layout.sections) {
+		// (parents before their drawers: a band lies across its parent's sheet)
+		const drawn = [...layout.sections].sort((a, b) => Number(!!a.drawer) - Number(!!b.drawer))
+		for (const section of drawn) {
 			const d = this.displayedSections.get(section.id)
-			if (!d || !Box.intersects(d, cull) || raisedIds.has(section.id)) continue
-			pushRect(d, withAlpha(SECTION_FILL, d.opacity), withAlpha(SECTION_STROKE, d.opacity), 1, SECTION_RADIUS, false)
+			if (!d || raisedIds.has(section.id)) continue
+			const sheet = sheetOf(section, d)
+			if (!Box.intersects(sheet, cull)) continue
+			pushSheet(section, d, SECTION_FILL, SECTION_STROKE)
 			const key = frameKey(section.id)
 			const remote = remoteSelected.get(key)
-			if (remote) {
-				const r = Box.expand(d, 4 / camera.z)
-				overlays.push(() => pushRect(r, NONE, remote, 2.5, SECTION_RADIUS + 4 / camera.z, false))
-			}
-			if (selected.has(key)) overlays.push(() => pushRect(d, NONE, ACCENT, 2, SECTION_RADIUS, false))
+			if (remote) overlays.push(() => pushRect(Box.expand(sheet, 7 * unit), NONE, remote, 2, 0, false))
+			if (selected.has(key)) overlays.push(() => ring(sheet, 3, INK))
 		}
 
 		// A hovered heading gets a faint outline around its group; a just-focused group a fading one.
@@ -419,8 +441,8 @@ export class Renderer {
 			if (!section || !d) continue
 			const pad = GROUP_OUTLINE_PADDING
 			const b = { x: group.box.x + d.x - section.box.x - pad, y: group.box.y + d.y - section.box.y - pad, w: group.box.w + pad * 2, h: group.box.h + pad * 2 }
-			const stroke = flashing ? withAlpha(ACCENT, Math.max(flashAlpha, 0.35)) : withAlpha(ACCENT, 0.35)
-			overlays.push(() => pushRect(b, NONE, stroke, flashing ? 2 : 1, ITEM_RADIUS + pad, false))
+			const stroke = flashing ? withAlpha(INK, Math.max(flashAlpha, 0.5)) : withAlpha(INK, 0.5)
+			overlays.push(() => pushRect(b, NONE, stroke, 1, 0, false))
 		}
 
 		let images = 0
@@ -443,7 +465,6 @@ export class Renderer {
 			this.displayedItems,
 			Box.expand(viewBounds, HTML_MARGIN_PX / camera.z),
 			editor,
-			{ selected, hovered, remote: remoteSelected },
 		)
 		const link = editor.hoveredLink.get()
 		this.linkHover.update(link, link && this.html.transform(link.itemId), editor.viewport.get())
@@ -472,17 +493,37 @@ export class Renderer {
 					imageDraws.push({ video: false, bindGroup: entry.bindGroup! })
 				}
 			}
-			if (texAlpha < 1) pushRect(d, withAlpha(PLACEHOLDER, d.opacity * (1 - texAlpha)), NONE, 0, ITEM_RADIUS, false)
+			// Not ready yet: a 50% dither while it loads, pinstripes while it's queued (no picture made yet). Never a shimmer.
+			const loading = item.kind === 'html' ? !this.html.isLoaded(id) : texAlpha < 1
+			if (loading) {
+				const queued = !item.thumb && item.kind !== 'page' && item.kind !== 'html'
+				this.itemStates.set(id, queued ? 'queued' : 'loading')
+				const a = d.opacity * (item.kind === 'html' ? 1 : 1 - texAlpha)
+				pushRect(d, withAlpha(PLACEHOLDER, a), withAlpha(queued ? PINSTRIPE_INK : DITHER_INK, a), 0, ITEM_RADIUS, false, queued ? PINSTRIPE : DITHER)
+			}
 
-			if (htmlMounted.has(id)) return
 			// (easeLayout false: an item fading with its frame takes its outlines with it)
 			const fade = this.options.easeLayout === false ? d.opacity : 1
 			// Someone else's selection sits outside ours, so both stay visible.
 			const remote = remoteSelected.get(id)
-			if (remote) overlays.push(() => pushRect(Box.expand(d, 3 / camera.z), NONE, withAlpha(remote, fade), 2.5, ITEM_RADIUS + 3 / camera.z, false))
-			if (selected.has(id)) overlays.push(() => pushRect(d, NONE, withAlpha(ACCENT, fade), 2, ITEM_RADIUS, false))
-			else if (hovered === id) overlays.push(() => pushRect(d, NONE, withAlpha(ACCENT, 0.7 * fade), 1.5, ITEM_RADIUS, false))
+			if (remote) overlays.push(() => pushRect(Box.expand(d, 7 * unit), NONE, withAlpha(remote, fade), 2, 0, false))
+			if (selected.has(id)) {
+				// selected: an ink edge, a ring 3 px out, and square handles at its corners
+				overlays.push(() => {
+					pushRect(d, NONE, withAlpha(INK, fade), 1, 0, false)
+					ring(d, 3, withAlpha(INK, fade))
+					const tl = editor.pageToScreen(d)
+					const br = editor.pageToScreen({ x: d.x + d.w, y: d.y + d.h })
+					for (const [x, y] of [[tl.x - 8, tl.y - 8], [br.x + 1, tl.y - 8], [tl.x - 8, br.y + 1], [br.x + 1, br.y + 1]]) {
+						pushRect({ x: Math.round(x), y: Math.round(y), w: 7, h: 7 }, withAlpha(INK, fade), NONE, 0, 0, true)
+					}
+				})
+			} else {
+				// hovered: an ink rule; at rest, a faint edge
+				overlays.push(() => pushRect(d, NONE, hovered === id ? withAlpha(INK, fade) : withAlpha(ITEM_EDGE, fade * d.opacity), 1, 0, false))
+			}
 		}
+		this.itemStates.clear()
 		for (const [id, d] of this.displayedItems) if (!raisedIds.has(layout.sectionOf.get(id)!)) pushItem(id, d)
 
 		// Raised frames, in order: each a soft shadow (stacked translucent rects), the opaque frame, then its items.
@@ -491,14 +532,12 @@ export class Renderer {
 			const lifted = this.displayedSections.get(r.id)
 			if (!lifted) continue
 			const from = [rects, images]
-			const unit = 1 / camera.z
-			for (let i = 4; i >= 1 && r.shadow > 0; i--) {
-				const spread = i * 6 * unit
-				const b = { x: lifted.x - spread, y: lifted.y - spread + 10 * unit, w: lifted.w + spread * 2, h: lifted.h + spread * 2 }
-				pushRect(b, withAlpha(SHADOW, r.shadow * lifted.opacity), NONE, 0, SECTION_RADIUS + spread, false)
-			}
-			pushRect(lifted, withAlpha(LIFTED_FILL, lifted.opacity), withAlpha(r.id === liftedId ? LIFTED_STROKE : SECTION_STROKE, lifted.opacity), 1, SECTION_RADIUS, false)
-			if (selected.has(frameKey(r.id))) overlays.push(() => pushRect(lifted, NONE, ACCENT, 2, SECTION_RADIUS, false))
+			const section = layout.sections.find((s) => s.id === r.id)!
+			const sheet = sheetOf(section, lifted)
+			// a hard offset shadow, like paper lifted off the desk
+			if (r.shadow > 0) pushRect({ x: sheet.x + 5 * unit, y: sheet.y + 5 * unit, w: sheet.w, h: sheet.h }, withAlpha(SHADOW, r.shadow * lifted.opacity), NONE, 0, 0, false)
+			pushSheet(section, lifted, LIFTED_FILL, r.id === liftedId ? LIFTED_STROKE : SECTION_STROKE)
+			if (selected.has(frameKey(r.id))) overlays.push(() => ring(sheet, 3, INK))
 			for (const [id, d] of this.displayedItems) if (layout.sectionOf.get(id) === r.id) pushItem(id, d)
 			layers.push([from[0], rects, from[1], images])
 		}
@@ -512,8 +551,8 @@ export class Renderer {
 			const tl = editor.pageToScreen(brush)
 			pushRect(
 				{ x: tl.x, y: tl.y, w: brush.w * camera.z, h: brush.h * camera.z },
-				withAlpha(ACCENT, 0.08),
-				withAlpha(ACCENT, 0.6),
+				withAlpha(INK, 0.04),
+				withAlpha(INK, 0.7),
 				1,
 				0,
 				true,
@@ -523,7 +562,6 @@ export class Renderer {
 		// ---- upload & draw ----
 		this.rectBuffer = this.upload(this.rectBuffer, this.rectData, rects * RECT_FLOATS)
 		this.imageBuffer = this.upload(this.imageBuffer, this.imageData, images * IMAGE_FLOATS)
-		this.blockBuffer = this.upload(this.blockBuffer, blocks.data as Float32Array<ArrayBuffer>, blocks.n * BLOCK_FLOATS)
 
 		const encoder = this.device.createCommandEncoder()
 		const pass = encoder.beginRenderPass({
@@ -532,13 +570,6 @@ export class Renderer {
 			],
 		})
 		pass.setBindGroup(0, this.globalsBindGroup)
-
-		// Busy bands first: behind every frame and what's in it.
-		if (blocks.n) {
-			pass.setPipeline(this.blockPipeline)
-			pass.setVertexBuffer(0, this.blockBuffer)
-			pass.draw(6, blocks.n)
-		}
 
 		const drawRects = (from: number, to: number) => {
 			if (to <= from) return
@@ -575,80 +606,20 @@ export class Renderer {
 		pass.end()
 		this.device.queue.submit([encoder.finish()])
 
-		this.labels.update(layout.sections, this.displayedSections, editor, liftedId)
-		this.titles.update(items, this.displayedItems, cull, editor)
+		this.labels.update(layout.sections, this.displayedSections, liftedId)
+		this.titles.update(items, this.displayedItems, cull, editor, this.itemStates)
 		this.videoControls.update(items, this.displayedItems, viewBounds)
 		this.pageBadges.update(items, this.displayedItems, viewBounds, editor)
 		this.itemBadges.update(items, this.displayedItems, viewBounds, editor)
-		const showDownload = hovered && editor.isShiftDown.get()
+		// Shift (or ⋯ on its hover bar) shows a hovered item's file actions; else its hover bar: Open ↗ and ⋯.
+		const showDownload = hovered && (editor.isShiftDown.get() || this.hoverBar.moreFor === hovered)
 		this.actions.update(showDownload ? items[hovered] : undefined, showDownload ? this.displayedItems.get(hovered) : undefined, editor)
-		// Without shift, a hovered HTML item or page gets just the button that opens it in the drawer.
-		const openable = hovered ? items[hovered] : undefined
-		const showOpen = hovered && !showDownload && !editor.inputs.isPointing && opensInDrawer(openable)
-		this.openButton.update(showOpen ? openable! : null, showOpen ? this.displayedItems.get(hovered) : undefined, editor)
+		const hoveredItem = hovered ? items[hovered] : undefined
+		const showBar = hovered && !showDownload && !editor.inputs.isPointing
+		this.hoverBar.update(showBar ? (hoveredItem ?? null) : null, showBar ? this.displayedItems.get(hovered) : undefined, editor, hovered)
 
 		this.frameTimes.push(performance.now() - t0)
 		if (this.frameTimes.length > 120) this.frameTimes.shift()
-	}
-
-	/**
-	 * Keeps each session's band state in step with which sessions are working: a session that starts
-	 * works from now; one that stops resolves (done) from now, and is forgotten once that's over.
-	 * Returns whether anything changed.
-	 */
-	private trackBusy(working: ReadonlySet<string>, now: number) {
-		let changed = false
-		for (const id of working) {
-			const b = this.busy.get(id)
-			if (b?.working) continue
-			this.busy.set(id, { ...(b ?? frameSeed(id)), working: true, since: now, finished: false })
-			changed = true
-		}
-		const over = doneDuration(DONE, this.reducedMotion.matches)
-		for (const [id, b] of this.busy) {
-			if (b.working && !working.has(id)) {
-				b.working = false
-				b.finished = true
-				b.since = now
-				changed = true
-			} else if (!b.working && now - b.since > over) {
-				this.busy.delete(id)
-				changed = true
-			}
-		}
-		return changed
-	}
-
-	/**
-	 * The busy bands of the frames in view (see render/busy/brain.ts), following the frames' eased
-	 * boxes: white cells, out of phase per session. Reduced motion stops the automaton (the bands
-	 * still come and go).
-	 */
-	private busyBands(sections: SectionLayout[], camera: { x: number; y: number; z: number }, now: number) {
-		const blocks = this.blocks
-		const reduced = this.reducedMotion.matches
-		const t = now / 1000
-		const frames: BrainFrame[] = []
-		let settling = false
-		for (const s of sections) {
-			// (a subagent in its drawer shows that it works on its orb)
-			const b = !s.drawer && this.busy.get(s.id)
-			const d = b && this.displayedSections.get(s.id)
-			if (!b || !d) continue
-			// (coming or going: animates even while it's still at nothing, the moment it starts)
-			if (!b.working || t - b.since < ENTER_S) settling = true
-			const [presence, fill] = envelope(b, t, DONE, reduced)
-			if (presence <= 0.001) continue
-			frames.push({ key: s.id, box: d, color: WHITE, offset: b.offset, seed: b.seed, presence: presence * d.opacity, fill })
-		}
-		const { w, h } = this.editor.viewport.peek()
-		// Snapped to the drawing buffer's own pixels (see globals).
-		const dpr = this.canvas.width / w
-		blocks.fill({ x: camera.x * camera.z, y: camera.y * camera.z, z: camera.z, width: w, height: h, dpr }, frames, BRAIN, reduced ? BRAIN_STILL : t * BRAIN.speed)
-		this.busySettling = settling
-		this.busyNextAt = reduced ? Infinity : (blocks.nextT / BRAIN.speed) * 1000
-		this.busyDrawnAt = now
-		return blocks
 	}
 
 	/**
@@ -818,9 +789,8 @@ export class Renderer {
 		this.videoCopies.clear()
 		this.videos.destroy()
 		this.labels.destroy()
-		this.titleOrbs?.destroy()
 		this.actions.destroy()
-		this.openButton.destroy()
+		this.hoverBar.destroy()
 		this.pageBadges.destroy()
 		this.itemBadges.destroy()
 		this.videoControls.destroy()
@@ -833,11 +803,13 @@ export class Renderer {
 }
 
 /**
- * Item titles as DOM text in the strip the layout reserves above each titled item.
- * The text scales with zoom like the images do, and only on-screen titles exist in the DOM.
+ * Item labels as DOM text in the strip the layout reserves above each titled item: its name, and
+ * its type on the right (PNG, HTML, LINK, MP4; LOADING or QUEUED until its picture's ready). A
+ * selected item's name is in inverse video. The text scales with zoom like the images do, and only
+ * on-screen labels exist in the DOM.
  */
 class ItemTitles {
-	private els = new Map<string, HTMLDivElement>()
+	private els = new Map<string, { el: HTMLDivElement; name: HTMLElement; kind: HTMLElement }>()
 	private host: HTMLDivElement
 
 	constructor(parent: HTMLElement) {
@@ -846,36 +818,43 @@ class ItemTitles {
 		parent.appendChild(this.host)
 	}
 
-	update(items: Record<string, Item>, displayed: Map<string, Displayed>, view: Box, editor: Editor) {
+	update(items: Record<string, Item>, displayed: Map<string, Displayed>, view: Box, editor: Editor, states: ReadonlyMap<string, 'loading' | 'queued'>) {
 		const z = editor.camera.peek().z
+		const selected = editor.selectedSet.get()
 		const strip = LAYOUT.titleHeight
 		// Scales with zoom, but never past MAX_ITEM_TITLE_PX on screen.
-		const fontSize = Math.min(13 * z, MAX_ITEM_TITLE_PX)
+		const fontSize = Math.min(26 * z, MAX_ITEM_TITLE_PX)
 		const seen = new Set<string>()
-		{
-			for (const [id, d] of displayed) {
-				const title = items[id]?.title
-				if (!title || !Box.intersects({ x: d.x, y: d.y - strip, w: d.w, h: strip }, view)) continue
-				seen.add(id)
-				let el = this.els.get(id)
-				if (!el) {
-					el = document.createElement('div')
-					el.className = 'item-title'
-					this.host.appendChild(el)
-					this.els.set(id, el)
-				}
-				if (el.textContent !== title) el.textContent = title
-				const p = editor.pageToScreen({ x: d.x, y: d.y - strip })
-				el.style.transform = `translate(${p.x}px, ${p.y}px)`
-				el.style.width = `${d.w * z}px`
-				el.style.height = `${strip * z}px`
-				el.style.fontSize = `${fontSize}px`
-				el.style.opacity = String(d.opacity)
+		for (const [id, d] of displayed) {
+			const item = items[id]
+			const title = item?.title
+			if (!title || !Box.intersects({ x: d.x, y: d.y - strip, w: d.w, h: strip }, view)) continue
+			seen.add(id)
+			let entry = this.els.get(id)
+			if (!entry) {
+				const el = document.createElement('div')
+				el.className = 'item-title'
+				el.innerHTML = '<span class="nm"></span><span class="kd"></span>'
+				this.host.appendChild(el)
+				entry = { el, name: el.children[0] as HTMLElement, kind: el.children[1] as HTMLElement }
+				this.els.set(id, entry)
 			}
+			if (entry.name.textContent !== title) entry.name.textContent = title
+			const state = states.get(id)
+			const kind = state ? state.toUpperCase() : kindTag(item)
+			if (entry.kind.textContent !== kind) entry.kind.textContent = kind
+			entry.el.classList.toggle('selected', selected.has(id))
+			const el = entry.el
+			const p = editor.pageToScreen({ x: d.x, y: d.y - strip })
+			el.style.transform = `translate(${p.x}px, ${p.y}px)`
+			el.style.width = `${d.w * z}px`
+			el.style.height = `${strip * z}px`
+			el.style.fontSize = `${fontSize}px`
+			el.style.opacity = String(d.opacity)
 		}
-		for (const [id, el] of this.els) {
+		for (const [id, entry] of this.els) {
 			if (seen.has(id)) continue
-			el.remove()
+			entry.el.remove()
 			this.els.delete(id)
 		}
 	}
@@ -883,6 +862,16 @@ class ItemTitles {
 	destroy() {
 		this.host.remove()
 	}
+}
+
+/** An item's type, as its label shows it: its file's extension, LINK for a page, HTML. */
+function kindTag(item: Item) {
+	if (item.kind === 'page') return 'LINK'
+	if (item.kind === 'html') return 'HTML'
+	const ext = /\.([a-z0-9]{2,4})(?:[?#]|$)/i.exec(item.name || '')?.[1] ?? /\.([a-z0-9]{2,4})(?:[?#]|$)/i.exec(item.src)?.[1]
+	if (!ext) return item.kind === 'video' ? 'VIDEO' : 'IMAGE'
+	const up = ext.toUpperCase()
+	return up === 'JPEG' ? 'JPG' : up
 }
 
 interface HtmlFrame {
@@ -906,7 +895,7 @@ interface HtmlFrame {
  * their links are reported by a script injected into each document (see HtmlLinks.ts) and opened
  * by the editor.
  * Only items in or near the viewport get an iframe, at most MAX_HTML_FRAMES, biggest on screen first.
- * Since they cover the WebGPU canvas, their selection/hover outlines are drawn here too.
+ * Their edges, selection rings and handles are drawn on the WebGPU canvas, just outside them.
  */
 class HtmlItems {
 	private frames = new Map<string, HtmlFrame>()
@@ -940,6 +929,11 @@ class HtmlItems {
 		}
 	}
 
+	/** Whether the item is mounted and its document has loaded. */
+	isLoaded(id: string) {
+		return !!this.frames.get(id)?.loaded
+	}
+
 	/** Where the item's document is on screen, if it's mounted. */
 	transform(id: string): FrameTransform | null {
 		return this.frames.get(id)?.transform ?? null
@@ -969,7 +963,6 @@ class HtmlItems {
 		displayed: Map<string, Displayed>,
 		view: Box,
 		editor: Editor,
-		marks: { selected: Set<string>; hovered: string | null; remote: Map<string, RGBA> },
 	): Set<string> {
 		const z = editor.camera.peek().z
 		const wanted: { item: Item; d: Displayed; area: number }[] = []
@@ -988,16 +981,8 @@ class HtmlItems {
 			const src = withBase(item.src)
 			if (f.src !== src) this.load(f, src)
 			const p = editor.pageToScreen(d)
-			const remote = marks.remote.get(item.id)
-			const shadow = marks.selected.has(item.id)
-				? `0 0 0 2px ${css(ACCENT)}`
-				: marks.hovered === item.id
-					? `0 0 0 1.5px ${css(withAlpha(ACCENT, 0.7))}`
-					: 'none'
-			const style =
-				`transform:translate(${p.x}px,${p.y}px);width:${d.w * z}px;height:${d.h * z}px;` +
-				`border-radius:${ITEM_RADIUS * z}px;box-shadow:${shadow};` +
-				(remote ? `outline:2.5px solid ${css(remote)};outline-offset:3px;` : '')
+			// (their edges, selection rings and handles are drawn on the canvas, outside them)
+			const style = `transform:translate(${p.x}px,${p.y}px);width:${d.w * z}px;height:${d.h * z}px;`
 			if (f.style !== style) {
 				f.style = style
 				f.wrap.style.cssText = style
@@ -1087,29 +1072,41 @@ export const OPEN_DRAWER_ICON =
 const COPIED_MS = 1400
 
 /**
- * "Open" at the top-right corner of the hovered HTML item or page (at a constant size on screen),
- * which opens it in the side drawer where it takes input (a page: the live web page).
- * Shift shows ItemActions there instead.
+ * Over the hovered item's top-right corner, at a constant size on screen: plain-text commands on a
+ * ruled strip. "Open ↗" on an HTML item or page opens it in the side drawer, where it takes input
+ * (a page: the live web page); "⋯" shows its file actions (ItemActions, as shift does).
  */
-class HtmlOpenButton {
-	private el: HTMLButtonElement
+class HoverBar {
+	private el: HTMLDivElement
+	private open: HTMLButtonElement
 	private itemId: string | null = null
+	/** the item whose file actions ⋯ showed (until the pointer leaves it) */
+	moreFor: string | null = null
 
 	constructor(parent: HTMLElement, onOpen: (id: string) => void) {
-		this.el = document.createElement('button')
-		this.el.className = 'item-action html-open'
-		this.el.style.display = 'none'
-		this.el.innerHTML = `${OPEN_DRAWER_ICON}<span>Open</span>`
+		this.el = document.createElement('div')
+		this.el.className = 'hover-bar'
+		this.open = document.createElement('button')
+		this.open.textContent = 'Open ↗'
+		const more = document.createElement('button')
+		more.textContent = '⋯'
+		more.title = 'Copy its link, download it (or hold shift)'
+		this.el.append(this.open, more)
 		this.el.addEventListener('pointerdown', (e) => e.stopPropagation())
 		this.el.addEventListener('dblclick', (e) => e.stopPropagation())
-		this.el.addEventListener('click', (e) => {
+		this.open.addEventListener('click', (e) => {
 			e.stopPropagation()
 			if (this.itemId) onOpen(this.itemId)
+		})
+		more.addEventListener('click', (e) => {
+			e.stopPropagation()
+			this.moreFor = this.itemId
 		})
 		parent.appendChild(this.el)
 	}
 
-	update(item: Item | null, box: Displayed | undefined, editor: Editor) {
+	update(item: Item | null, box: Displayed | undefined, editor: Editor, hovered: string | null) {
+		if (this.moreFor && this.moreFor !== hovered) this.moreFor = null
 		const z = editor.camera.peek().z
 		if (!item || !box || box.w * z < 120 || box.h * z < 64) {
 			if (this.itemId !== null) this.el.style.display = 'none'
@@ -1117,10 +1114,12 @@ class HtmlOpenButton {
 			return
 		}
 		this.itemId = item.id
-		this.el.title = drawerTitle(item)
+		const openable = opensInDrawer(item)
+		this.open.hidden = !openable
+		if (openable) this.open.title = drawerTitle(item)
 		const p = editor.pageToScreen({ x: box.x + box.w, y: box.y })
 		this.el.style.display = 'flex'
-		this.el.style.transform = `translate(calc(${p.x - 8}px - 100%), ${p.y + 8}px)`
+		this.el.style.transform = `translate(calc(${Math.round(p.x - 4)}px - 100%), ${Math.round(p.y + 4)}px)`
 	}
 
 	destroy() {
@@ -1263,296 +1262,7 @@ function downloadName(item: Item) {
 	return base + ext
 }
 
-const MAX_ITEM_TITLE_PX = 15
-
-const EYE_OFF_ICON =
-	'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-	'<path d="M10.7 5.1a10.7 10.7 0 0 1 11.2 6.6 1 1 0 0 1 0 .7 10.7 10.7 0 0 1-1.4 2.5"/><path d="M14.1 14.2a3 3 0 0 1-4.2-4.2"/>' +
-	'<path d="M17.5 17.5a10.8 10.8 0 0 1-15.4-5.2 1 1 0 0 1 0-.7 10.8 10.8 0 0 1 4.4-5.1"/><path d="m2 2 20 20"/></svg>'
-
-/** On-screen size of a frame title's prompt and hide buttons (keep in step with frameButtons.css). */
-const BUTTON_PX = 24
-const PROMPT_ICON =
-	'<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-	'<path d="M20 12.5a7.5 7.5 0 0 1-11.1 6.6L4 20l1-4.4A7.5 7.5 0 1 1 20 12.5z"/><path d="M9 11.5h6M9 14.5h3.5"/></svg>'
-/** Page-space height of the title line: 1.2 × LAYOUT.frameTitlePx. */
-const TITLE_LINE_PX = 48
-const MIN_FRAME_PX_FOR_BUTTONS = 220
-/** How much of the title (on screen) must stay visible beside the buttons, if it is that long. */
-const MIN_TITLE_PX_BESIDE_BUTTONS = 96
-
-/** Section titles as DOM text, positioned in screen space so they stay crisp and readable at any zoom. */
-class SectionLabels {
-	private els = new Map<string, HTMLDivElement>()
-	private titleWidths = new Map<string, number>()
-	private host: HTMLDivElement
-	/** subagents' orbs after the titles, set when there's WebGL2 for them */
-	orbs: TitleOrbs | null = null
-
-	constructor(
-		parent: HTMLElement,
-		/** null hides the hide buttons (read-only views) */
-		private onHide: ((sectionId: string) => void) | null,
-		private onShowMore: (sectionId: string, count: number) => void,
-		/** a subagent's drawer's × */
-		private onCloseDrawer: (sectionId: string) => void,
-	) {
-		this.host = document.createElement('div')
-		this.host.className = 'section-labels'
-		parent.appendChild(this.host)
-	}
-
-	private createLabel(id: string, editor: Editor, drawer: boolean) {
-		const el = document.createElement('div')
-		el.className = drawer ? 'section-label in-drawer' : 'section-label'
-		el.dataset.session = id
-		el.innerHTML = '<span class="title"></span>'
-		if (drawer) return this.drawerButtons(el, id, editor)
-		if (!this.onHide) return el
-		// Screen-space buttons at the end of the title row (see frameButtons.css and update's room rule).
-		const buttons = document.createElement('span')
-		buttons.className = 'frame-buttons'
-		el.appendChild(buttons)
-		buttons.appendChild(this.promptButton(id, editor))
-		const onHide = this.onHide
-		const hide = document.createElement('button')
-		hide.className = 'hide-frame'
-		hide.title = 'Hide this frame (for everyone; show it again from Sessions, top right)'
-		hide.innerHTML = EYE_OFF_ICON
-		hide.addEventListener('pointerdown', (e) => e.stopPropagation())
-		hide.addEventListener('dblclick', (e) => e.stopPropagation())
-		hide.addEventListener('click', (e) => {
-			e.stopPropagation()
-			onHide(id)
-		})
-		buttons.appendChild(hide)
-		return el
-	}
-
-	/** The prompt button: opens the session's prompt under it. */
-	private promptButton(id: string, editor: Editor) {
-		const prompt = document.createElement('button')
-		prompt.className = 'prompt-frame'
-		prompt.hidden = true
-		prompt.innerHTML = PROMPT_ICON
-		prompt.addEventListener('pointerdown', (e) => e.stopPropagation())
-		prompt.addEventListener('dblclick', (e) => e.stopPropagation())
-		prompt.addEventListener('click', (e) => {
-			e.stopPropagation()
-			const r = prompt.getBoundingClientRect()
-			const origin = this.host.parentElement!.getBoundingClientRect()
-			editor.frameChrome?.prompt(id, { x: r.left - origin.left, top: r.top - origin.top, bottom: r.bottom - origin.top })
-		})
-		return prompt
-	}
-
-	/** A subagent's frame in its drawer: its prompt button (it prompts the subagent), and hide to close the drawer. */
-	private drawerButtons(el: HTMLDivElement, id: string, editor: Editor) {
-		const buttons = document.createElement('span')
-		buttons.className = 'frame-buttons'
-		el.appendChild(buttons)
-		const button = (cls: string, html: string, title: string, onClick: () => void) => {
-			const b = document.createElement('button')
-			b.className = cls
-			b.innerHTML = html
-			if (title) b.title = title
-			b.addEventListener('pointerdown', (e) => e.stopPropagation())
-			b.addEventListener('dblclick', (e) => e.stopPropagation())
-			b.addEventListener('click', (e) => {
-				e.stopPropagation()
-				onClick()
-			})
-			buttons.appendChild(b)
-			return b
-		}
-		buttons.appendChild(this.promptButton(id, editor))
-		button('hide-frame close-drawer', EYE_OFF_ICON, 'Hide (Esc)', () => this.onCloseDrawer(id))
-		return el
-	}
-
-	/** The session's prompt button, as its FrameChrome status says. */
-	private showStatus(el: HTMLElement, status: FrameStatus | null) {
-		const prompt = el.querySelector<HTMLButtonElement>('.prompt-frame')
-		if (!prompt) return
-		prompt.hidden = !status?.canPrompt
-		if (!status?.canPrompt) return
-		prompt.title = status.prompting ? 'Close its prompt (Esc)' : 'Prompt this session (C)'
-		prompt.classList.toggle('active', status.prompting)
-		prompt.style.setProperty('--c', status.color)
-	}
-
-	/** The row under a frame's groups: how many older items it leaves out, and buttons to show them. */
-	private createMore(id: string) {
-		const el = document.createElement('div')
-		el.className = 'frame-more'
-		el.innerHTML = '<span class="count"></span><button class="show-more"></button><button class="show-all">Show all</button>'
-		const [, more, all] = el.children as unknown as [HTMLElement, HTMLButtonElement, HTMLButtonElement]
-		for (const [button, count] of [[more, LAYOUT.showMoreStep], [all, Infinity]] as const) {
-			button.addEventListener('pointerdown', (e) => e.stopPropagation())
-			button.addEventListener('dblclick', (e) => e.stopPropagation())
-			button.addEventListener('click', (e) => {
-				e.stopPropagation()
-				this.onShowMore(id, count)
-			})
-		}
-		return el
-	}
-
-	/**
-	 * Session titles sit inside the top of each frame and group headings above each group. Both are
-	 * page-space text that scales with zoom like the images. Session titles never shrink below a
-	 * readable size; when zoomed far out they grow upward out of the frame instead.
-	 */
-	update(sections: SectionLayout[], displayed: Map<string, Displayed>, editor: Editor, liftedId: string | null) {
-		const seen = new Set<string>()
-		const z = editor.camera.peek().z
-		const hoveredGroupId = editor.hoveredGroupId.peek()
-		const hoveredFrameId = editor.hoveredFrameId.peek()
-		const linkedGroupId = editor.linkedGroup.get()?.id
-		const place = (el: HTMLElement, box: Box, scale: number) => {
-			// Anchor at the bottom-left of the box, scaling up from there.
-			const b = editor.pageToScreen({ x: box.x, y: box.y + box.h })
-			el.style.width = `${(box.w * z) / scale}px`
-			el.style.height = `${box.h}px`
-			el.style.transform = `translate(${b.x}px, ${b.y - box.h}px) scale(${scale})`
-		}
-
-		for (const s of sections) {
-			const d = displayed.get(s.id)
-			if (!d) continue
-			// Follow the frame's eased position while the layout animates.
-			const dx = d.x - s.box.x
-			const dy = d.y - s.box.y
-			const shift = (b: Box): Box => ({ x: b.x + dx, y: b.y + dy, w: b.w, h: b.h })
-
-			seen.add(s.id)
-			let el = this.els.get(s.id)
-			// (a frame going into a drawer, or out of one, gets the other kind of label)
-			if (el && el.classList.contains('in-drawer') !== !!s.drawer) {
-				el.remove()
-				el = undefined
-			}
-			if (!el) {
-				el = this.createLabel(s.id, editor, !!s.drawer)
-				this.host.appendChild(el)
-				this.els.set(s.id, el)
-			}
-			const title = el.children[0] as HTMLElement
-			const status = editor.frameChrome?.status(s.id) ?? null
-			this.showStatus(el, status)
-			el.classList.toggle('ended', !!status?.ended)
-			// Sessions posted without a title (or titled with their id) get a placeholder; the id shows on hover.
-			const untitled = !s.title.trim() || s.title === s.id
-			const label = untitled ? 'Untitled session' : s.title
-			if (title.textContent !== label) {
-				title.textContent = label
-				title.title = untitled ? s.id : ''
-				title.style.opacity = untitled ? '0.6' : ''
-				// Page-space width of the whole title (its font size is fixed, so this only changes with the text).
-				this.titleWidths.set(s.id, title.scrollWidth)
-			}
-			// (a subagent's title in its drawer scales with it: zoomed out, it would grow over its parent's)
-			const scale = s.drawer ? z : Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx)
-			const header = shift(s.header)
-			place(el, header, scale)
-			// The buttons keep a constant screen size inside the scaled label.
-			el.style.setProperty('--u', String(1 / scale))
-			if (s.drawer) {
-				// (its hide button stays reachable however small its title gets)
-				el.classList.toggle('roomy', s.box.w * z >= MIN_FRAME_PX_FOR_BUTTONS)
-			} else if (this.onHide) {
-				// The buttons only show when the frame is wide enough, the title line is tall enough, and
-				// the title keeps enough room.
-				const width = s.header.w * z
-				const buttons = (status?.canPrompt ? BUTTON_PX + 2 : 0) + BUTTON_PX + 16 * scale
-				const titleWidth = (this.titleWidths.get(s.id) ?? 0) * scale
-				const roomy =
-					s.box.w * z >= MIN_FRAME_PX_FOR_BUTTONS &&
-					TITLE_LINE_PX * scale >= BUTTON_PX &&
-					width - buttons >= Math.min(titleWidth, MIN_TITLE_PX_BESIDE_BUTTONS)
-				el.classList.toggle('roomy', roomy)
-			}
-			// The subagents' orbs after the title (constant size on screen), in the room the buttons leave.
-			const orbs = !s.drawer && this.orbs
-			if (orbs) {
-				const roomy = el.classList.contains('roomy')
-				const buttons = roomy ? (status?.canPrompt ? BUTTON_PX + 2 : 0) + (this.onHide ? BUTTON_PX : 0) + 16 * scale : 0
-				const bottom = editor.pageToScreen({ x: header.x, y: header.y + header.h })
-				const top = bottom.y - header.h * scale
-				const shown = orbs.title(
-					s.id,
-					{
-						left: bottom.x,
-						y: top + (4 + TITLE_LINE_PX / 2) * scale,
-						w: s.header.w * z - buttons,
-						titleW: (this.titleWidths.get(s.id) ?? 0) * scale,
-						// (more room after a bigger title)
-						gap: Math.round(6 + 0.3 * LAYOUT.frameTitlePx * scale),
-						opacity: d.opacity,
-					},
-					performance.now(),
-				)
-				const max = shown === null ? '' : `${Math.max(0, shown / scale)}px`
-				if (title.style.maxWidth !== max) title.style.maxWidth = max
-			}
-			el.style.opacity = String(d.opacity)
-			el.classList.toggle('hovered', s.id === hoveredFrameId && !liftedId)
-			el.classList.toggle('lifted', s.id === liftedId)
-
-			for (const g of s.groups) {
-				if (!g.heading) continue
-				const key = `g:${g.id}`
-				seen.add(key)
-				let h = this.els.get(key)
-				if (!h) {
-					h = document.createElement('div')
-					h.className = 'group-heading'
-					h.innerHTML = '<span class="name"></span>'
-					this.host.appendChild(h)
-					this.els.set(key, h)
-				}
-				const name = h.children[0] as HTMLElement
-				if (name.textContent !== g.name) name.textContent = g.name
-				place(h, shift(g.heading), z)
-				h.style.opacity = String(d.opacity)
-				h.classList.toggle('hovered', g.id === hoveredGroupId)
-				h.classList.toggle('linked', g.id === linkedGroupId)
-			}
-
-			if (s.more) {
-				const key = `m:${s.id}`
-				seen.add(key)
-				let m = this.els.get(key)
-				if (!m) {
-					m = this.createMore(s.id)
-					this.host.appendChild(m)
-					this.els.set(key, m)
-				}
-				const { hidden } = s.more
-				const [count, more, all] = m.children as unknown as HTMLElement[]
-				const label = `${hidden} older ${hidden === 1 ? 'item' : 'items'} hidden`
-				if (count.textContent !== label) {
-					count.textContent = label
-					more.textContent = `Show ${Math.min(hidden, LAYOUT.showMoreStep)} more`
-					all.hidden = hidden <= LAYOUT.showMoreStep
-				}
-				place(m, shift(s.more.box), z)
-				m.style.opacity = String(d.opacity)
-			}
-		}
-		for (const [id, el] of this.els) {
-			if (seen.has(id)) continue
-			el.remove()
-			this.els.delete(id)
-			this.titleWidths.delete(id)
-		}
-		this.orbs?.placedAll()
-	}
-
-	destroy() {
-		this.host.remove()
-	}
-}
+const MAX_ITEM_TITLE_PX = 14
 
 /** Runs one startup step, prefixing any error with what was being done and the error's name. */
 function step<T>(what: string, fn: () => T): T {
@@ -1629,11 +1339,6 @@ function premul(out: Float32Array, o: number, [r, g, b, a]: RGBA) {
 function hexToRgba(hex: string): RGBA {
 	const n = parseInt(hex.replace('#', ''), 16)
 	return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, 1]
-}
-
-/** How much white over `base` makes `target` (both grey enough that one alpha does for every channel). */
-function css([r, g, b, a]: RGBA) {
-	return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${a})`
 }
 
 function withAlpha([r, g, b, a]: RGBA, k: number): RGBA {

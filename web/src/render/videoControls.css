@@ -14,23 +14,20 @@
 	will-change: transform;
 }
 
+/* its timecode, in seven segments on ink */
 .video-badge {
 	position: absolute;
-	left: 6px;
-	bottom: 6px;
+	right: 6px;
+	top: 6px;
 	display: flex;
 	align-items: center;
-	gap: 4px;
-	height: 18px;
-	padding: 0 6px;
-	border-radius: 5px;
-	background: rgb(var(--canvas-rgb) / 0.62);
-	color: rgba(255, 255, 255, 0.92);
-	font-size: 11px;
-	font-weight: 600;
-	font-variant-numeric: tabular-nums;
-	line-height: 1;
-	backdrop-filter: blur(6px);
+	padding: 2px 4px;
+	background: var(--rm-ink);
+	line-height: 0;
+}
+
+.video-badge .seg {
+	display: block;
 }
 
 .video-badge span:empty {
@@ -46,10 +43,8 @@
 	margin: -23px 0 0 -23px;
 	display: grid;
 	place-items: center;
-	border-radius: 50%;
-	background: rgb(var(--canvas-rgb) / 0.42);
-	color: rgba(255, 255, 255, 0.82);
-	backdrop-filter: blur(4px);
+	color: var(--rm-sheet);
+	filter: drop-shadow(0 0 1px rgb(21 21 21 / 0.6));
 }
 
 .video-glyph svg {
@@ -68,15 +63,14 @@
 	top: 0;
 	display: none;
 	align-items: center;
-	gap: 4px;
-	height: 34px;
-	padding: 0 5px;
-	border-radius: 9px;
-	background: rgb(var(--canvas-rgb) / 0.72);
-	color: rgba(255, 255, 255, 0.9);
-	font-size: 11.5px;
+	gap: 2px;
+	height: 30px;
+	padding: 0 3px;
+	background: var(--rm-sheet);
+	border: 1px solid var(--rm-ink);
+	color: var(--rm-ink);
+	font: 11px var(--rm-font-mono);
 	font-variant-numeric: tabular-nums;
-	backdrop-filter: blur(10px);
 	pointer-events: auto;
 	cursor: default;
 	will-change: transform;
@@ -92,18 +86,17 @@
 	gap: 5px;
 	padding: 0 5px;
 	border: 0;
-	border-radius: 6px;
+	border-radius: 0;
 	background: transparent;
 	color: inherit;
-	font: inherit;
-	font-weight: 500;
+	font: 600 10.5px var(--rm-font-sans);
 	white-space: nowrap;
 	cursor: pointer;
 }
 
 .vc-button:hover:not(:disabled) {
-	background: rgba(255, 255, 255, 0.12);
-	color: white;
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
 }
 
 .vc-button:disabled {
@@ -113,21 +106,17 @@
 
 .vc-extract {
 	padding: 0 8px;
-	background: rgba(87, 143, 255, 0.22);
-}
-
-.vc-extract:hover:not(:disabled) {
-	background: rgba(87, 143, 255, 0.4);
+	border-left: 1px solid var(--rm-rule);
 }
 
 .vc-extract.failed {
-	background: rgba(239, 68, 68, 0.3);
+	color: var(--rm-red);
 }
 
 .vc-time {
 	flex: none;
 	padding: 0 4px;
-	color: rgba(255, 255, 255, 0.78);
+	color: var(--rm-ink-2);
 	white-space: nowrap;
 }
 
@@ -145,9 +134,9 @@
 .vc-track {
 	position: relative;
 	width: 100%;
-	height: 4px;
-	border-radius: 2px;
-	background: rgba(255, 255, 255, 0.22);
+	height: 3px;
+	border-radius: 0;
+	background: var(--rm-rule);
 	transition: height 0.12s;
 }
 
@@ -162,7 +151,7 @@
 	top: 0;
 	bottom: 0;
 	border-radius: inherit;
-	background: #578fff;
+	background: var(--rm-ink);
 }
 
 .vc-fill::after {
@@ -170,12 +159,12 @@
 	position: absolute;
 	right: -6px;
 	top: 50%;
-	width: 12px;
-	height: 12px;
-	margin-top: -6px;
-	border-radius: 50%;
-	background: white;
-	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+	width: 7px;
+	height: 11px;
+	margin-top: -5.5px;
+	right: -3.5px;
+	border-radius: 0;
+	background: var(--rm-ink);
 	opacity: 0;
 	transition: opacity 0.12s;
 }
@@ -202,6 +191,6 @@
 }
 
 .vc-button:focus-visible {
-	outline: 1.5px solid #578fff;
+	outline: 1px solid var(--rm-ink);
 	outline-offset: -1px;
 }

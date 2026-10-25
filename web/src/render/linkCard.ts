@@ -6,8 +6,8 @@ import type { Item } from '../../../shared/types'
  * the item's size so they stay crisp zoomed in.
  */
 const SCALE = 2
-const FONT = '"Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", sans-serif'
-const MONO = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace'
+const FONT = 'Archivo, system-ui, -apple-system, "Segoe UI", sans-serif'
+const MONO = '"Courier Prime", ui-monospace, Menlo, Consolas, monospace'
 
 /** Where the "Open" pill sits on the card, as fractions of its width and height (PageBadges puts a button there). */
 export function linkCardOpenBox(width: number, height: number) {
@@ -22,7 +22,7 @@ const cards = new Map<string, string>()
 export function linkCardUrl(item: Pick<Item, 'width' | 'height' | 'title' | 'pageUrl' | 'page'>): string {
 	const url = item.pageUrl ?? item.page?.url ?? ''
 	// drawn again once the app's font has loaded
-	const fontReady = typeof document.fonts?.check === 'function' && document.fonts.check('16px "Inter Variable"')
+	const fontReady = typeof document.fonts?.check === 'function' && document.fonts.check('16px Archivo')
 	const key = `${fontReady ? 1 : 0}|${item.width}x${item.height}|${item.title ?? ''}|${url}`
 	let card = cards.get(key)
 	if (!card) {
@@ -52,31 +52,19 @@ function drawCard(width: number, height: number, title: string, url: string): st
 	const cx = width / 2
 	const cy = height / 2
 
-	const bg = c.createLinearGradient(0, 0, 0, height)
-	// a little lighter than its frame at the top, a little darker at the bottom (see THEME.frame)
-	bg.addColorStop(0, '#2a2b32')
-	bg.addColorStop(1, '#1e1f24')
-	c.fillStyle = bg
+	// a sheet of paper, its address ruled off along the top
+	c.fillStyle = '#fbfaf6'
 	c.fillRect(0, 0, width, height)
-	const glow = c.createRadialGradient(cx, cy - 70 * u, 0, cx, cy - 70 * u, 320 * u)
-	glow.addColorStop(0, 'rgba(87, 143, 255, 0.10)')
-	glow.addColorStop(1, 'rgba(87, 143, 255, 0)')
-	c.fillStyle = glow
-	c.fillRect(0, 0, width, height)
+	c.fillStyle = '#e9e6de'
+	c.fillRect(0, 0, width, 34 * u)
+	c.fillStyle = '#151515'
+	c.fillRect(0, 34 * u, width, Math.max(1, u))
 
-	// globe
+	// globe, in ink
 	const gy = cy - 78 * u
-	c.beginPath()
-	c.arc(cx, gy, 40 * u, 0, Math.PI * 2)
-	c.fillStyle = 'rgba(255, 255, 255, 0.05)'
-	c.fill()
-	c.strokeStyle = 'rgba(255, 255, 255, 0.12)'
-	c.lineWidth = 1.5 * u
-	c.stroke()
-	const r = 20 * u
-	c.strokeStyle = 'rgba(160, 190, 255, 0.9)'
-	c.lineWidth = 2.4 * u
-	c.lineCap = 'round'
+	const r = 22 * u
+	c.strokeStyle = '#151515'
+	c.lineWidth = 1.6 * u
 	c.beginPath()
 	c.arc(cx, gy, r, 0, Math.PI * 2)
 	c.moveTo(cx - r, gy)
@@ -89,12 +77,17 @@ function drawCard(width: number, height: number, title: string, url: string): st
 	c.textAlign = 'center'
 	c.textBaseline = 'middle'
 	const maxW = width - 96 * u
-	c.fillStyle = 'rgba(255, 255, 255, 0.94)'
+	c.fillStyle = '#151515'
 	c.font = `600 ${30 * u}px ${FONT}`
 	c.fillText(fit(c, title, maxW), cx, cy + 4 * u)
-	c.fillStyle = 'rgba(255, 255, 255, 0.45)'
+	c.fillStyle = '#8a877f'
 	c.font = `${15 * u}px ${MONO}`
 	c.fillText(fit(c, url, maxW), cx, cy + 46 * u)
+	c.textAlign = 'left'
+	c.fillStyle = '#4f4d48'
+	c.font = `${14 * u}px ${MONO}`
+	c.fillText(fit(c, hostOf(url).toUpperCase(), width - 32 * u), 16 * u, 17 * u)
+	c.textAlign = 'center'
 
 	// "Open" (a real button sits on it, see PageBadges)
 	const box = linkCardOpenBox(width, height)
@@ -102,16 +95,14 @@ function drawCard(width: number, height: number, title: string, url: string): st
 	const py = box.y * height
 	const pw = box.w * width
 	const ph = box.h * height
-	c.beginPath()
-	c.roundRect(px, py, pw, ph, ph / 2)
-	c.fillStyle = 'rgba(255, 255, 255, 0.08)'
-	c.fill()
-	c.strokeStyle = 'rgba(255, 255, 255, 0.16)'
-	c.lineWidth = 1 * u
-	c.stroke()
-	c.fillStyle = 'rgba(255, 255, 255, 0.9)'
-	c.font = `500 ${16 * u}px ${FONT}`
-	c.fillText('Open', cx, py + ph / 2 + 0.5 * u)
+	c.fillStyle = '#fbfaf6'
+	c.fillRect(px, py, pw, ph)
+	c.strokeStyle = '#151515'
+	c.lineWidth = 1.5 * u
+	c.strokeRect(px, py, pw, ph)
+	c.fillStyle = '#151515'
+	c.font = `600 ${16 * u}px ${FONT}`
+	c.fillText('Open ↗', cx, py + ph / 2 + 0.5 * u)
 
 	return canvas.toDataURL('image/png')
 }

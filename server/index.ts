@@ -9,7 +9,7 @@ import type {
 } from '../shared/types'
 import { computeLayout, orderSessions } from '../web/src/editor/layout'
 import { AttentionError, createAttention, noteFrom } from './attention'
-import { createBusy } from './busy'
+import { createActivity, createBusy } from './busy'
 import { imageSize } from './imageSize'
 import { createLinks, LinkError } from './links'
 import { createCanvasMcp } from './mcp'
@@ -171,6 +171,11 @@ const busy = createBusy({
 const asking = createBusy({
 	hasSession: (canvasId, sessionId) => db.sessions.has(sessionKey(canvasId, sessionId)),
 	changed: (canvasId, sessionId, on) => broadcast({ type: 'asking', canvasId, sessionId, asking: on }),
+})
+/** What the sessions are doing (their frames' title blocks and printouts), reported the same way. */
+const activity = createActivity({
+	hasSession: (canvasId, sessionId) => db.sessions.has(sessionKey(canvasId, sessionId)),
+	changed: (canvasId, sessionId, a) => broadcast({ type: 'activity', canvasId, sessionId, activity: a }),
 })
 
 /** Agent sticky notes (MCP say / highlight), kept in each canvas's room document (see attention.ts). */
@@ -432,6 +437,7 @@ function canvasData(canvas: Canvas): CanvasData {
 		links: sessionLinks(canvas.id),
 		busy: busy.list(canvas.id),
 		asking: asking.list(canvas.id),
+		activity: activity.list(canvas.id),
 	}
 }
 
@@ -1090,6 +1096,7 @@ function deleteSession(session: Session) {
 	links.drop(session.canvasId, session.id)
 	busy.forget(session.canvasId, session.id)
 	asking.forget(session.canvasId, session.id)
+	activity.forget(session.canvasId, session.id)
 	// A canvas being deleted throws its whole room away.
 	if (db.canvases.has(session.canvasId)) {
 		attention.dropSession(session.canvasId, session.id).catch((e) => console.error('could not remove the session\'s notes:', e))
@@ -1245,6 +1252,7 @@ async function deleteCanvas(canvas: Canvas) {
 	links.dropCanvas(canvas.id)
 	busy.forget(canvas.id)
 	asking.forget(canvas.id)
+	activity.forget(canvas.id)
 	for (const session of canvasSessions(canvas.id)) deleteSession(session)
 	// items whose session record is missing, just in case
 	for (const item of [...db.items.values()]) if (item.canvasId === canvas.id) deleteItem(item.id)
@@ -1795,7 +1803,8 @@ const API_INDEX = {
 	endpoints: {
 		'GET /api/canvases': 'All canvases, newest first, with session/item counts and preview thumbnails',
 		'POST /api/canvases': 'Create a canvas. Body: {"title"} (optional). Returns it, with its id and viewKey',
-		'GET /api/canvases/:cid': 'One canvas with all its sessions and items, its links, and "busy": the sessions working right now',
+		'GET /api/canvases/:cid':
+			'One canvas with all its sessions and items, its links, "busy": the sessions working right now, and "activity": what they\'re doing ({sessionId: {"model", "agent", "step", "stepAt", "busySince"}}, as paired browsers report it)',
 		'PATCH /api/canvases/:cid': 'Rename a canvas. Body: {"title"}',
 		'DELETE /api/canvases/:cid': 'Delete a canvas with all its sessions, items and notes',
 		'GET /api/view/:viewKey': 'A canvas by its view-only key (same body as GET /api/canvases/:cid)',
@@ -2452,6 +2461,7 @@ Bun.serve<SocketData, never>({
 				liveSockets.delete(ws)
 				busy.closed(ws)
 				asking.closed(ws)
+				activity.closed(ws)
 			}
 			else roomSockets.close(ws as ServerWebSocket<RoomSocketData & { kind: 'room' }>)
 		},
@@ -2476,12 +2486,13 @@ Bun.serve<SocketData, never>({
 })
 
 function busyReport(ws: object, canvasId: string, message: string) {
-	let data: { type?: unknown; sessionIds?: unknown } | null = null
+	let data: { type?: unknown; sessionIds?: unknown; sessions?: unknown } | null = null
 	try {
 		data = JSON.parse(message)
 	} catch {}
 	if (data?.type === 'busy') busy.report(ws, canvasId, data.sessionIds)
 	else if (data?.type === 'asking') asking.report(ws, canvasId, data.sessionIds)
+	else if (data?.type === 'activity') activity.report(ws, canvasId, data.sessions)
 }
 
 /** Everything but /mcp and preflights: WebSocket upgrades (undefined once upgraded), then the HTTP API and files. */

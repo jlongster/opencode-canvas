@@ -44,11 +44,35 @@ export interface Layout {
 	bounds: Box | null
 }
 
+/**
+ * The Reference Manual's sheet head (see render/sheet.css), in design px: the mockup's own sizes.
+ * On the page they're SHEET.k times bigger (a design px is k page px), so a head reads like the
+ * mockup's beside items of the usual size.
+ */
+export const SHEET = {
+	k: 2.5,
+	/** the title row */
+	head: 34,
+	/** the title block: AGENT, MODEL, ITEMS, UPDATED, STATUS */
+	block: 31,
+	/** the subagents' row of documents (frames with subagents) */
+	tray: 76,
+	/** the printout (while it works) */
+	printout: 37,
+	/** a subagent's drawer's head */
+	drawerHead: 32,
+}
+
+/** The page height of a frame's sheet head: its title row and title block, and its subagents' row and printout when it has them. */
+export function sheetHeadHeight(o: { subagents?: boolean; busy?: boolean } = {}) {
+	return (SHEET.head + SHEET.block + (o.subagents ? SHEET.tray : 0) + (o.busy ? SHEET.printout : 0)) * SHEET.k
+}
+
 export const LAYOUT = {
 	/** widest a row of images gets before wrapping */
 	maxRowWidth: 2400,
 	rowHeight: 320,
-	gap: 16,
+	gap: 24,
 	/**
 	 * Items that would be unreadable squeezed into a row get one of their own: HTML always, and
 	 * images and videos whose aspect is extreme (taller than minRowAspect, wider than maxRowAspect)
@@ -62,16 +86,16 @@ export const LAYOUT = {
 	/** ...and at most this tall, unless that would make it narrower than tallMinWidth */
 	tallMaxHeight: 2400,
 	tallMinWidth: 600,
-	/** space reserved above a row that has a titled item (the text scales with zoom) */
-	titleHeight: 26,
-	framePadding: 40,
-	/** the session title strip at the top of a frame */
-	frameHeaderHeight: 96,
+	/** space reserved above a row that has a titled item, for its name and type tag (the text scales with zoom) */
+	titleHeight: 42,
+	framePadding: 32,
+	/** the sheet head at the top of a frame, without subagents or a printout (see sheetHeadHeight) */
+	frameHeaderHeight: sheetHeadHeight(),
 	frameGap: 160,
-	/** the heading above a named group */
-	groupHeadingHeight: 52,
-	groupGap: 56,
-	minFrameWidth: 480,
+	/** the heading above a named group, its rule included */
+	groupHeadingHeight: 64,
+	groupGap: 48,
+	minFrameWidth: 1000,
 	emptyFrameHeight: 160,
 	/** a frame shows only its newest items, this many unless the viewer asks for more... */
 	visibleItems: 50,
@@ -80,10 +104,10 @@ export const LAYOUT = {
 	/** the row under the groups that says how many older items are hidden */
 	moreHeight: 64,
 	moreGap: 40,
-	/** page-space font size of session titles (see .section-label in styles.css) */
-	frameTitlePx: 40,
-	/** session titles stay at least this big on screen; zoomed far out they grow upward out of the frame */
-	minFrameTitlePx: 13,
+	/** page-space font size of session titles: the sheet head's 14 design px */
+	frameTitlePx: 14 * SHEET.k,
+	/** session titles stay at least this big on screen; zoomed far out the sheet head grows upward out of the frame */
+	minFrameTitlePx: 12,
 }
 
 /**
@@ -134,6 +158,8 @@ export function computeLayout(
 	limits?: Readonly<Record<string, number>>,
 	/** sessions not laid out as frames of their own (subagents, see drawers.ts) */
 	skip?: { has(sessionId: string): boolean },
+	/** each frame's sheet head height (page px; see sheetHeadHeight) */
+	headHeight?: (sessionId: string) => number,
 ): Layout {
 	const L = LAYOUT
 	const bySession = new Map<string, Item[]>()
@@ -161,8 +187,9 @@ export function computeLayout(
 		}
 
 		// Lay out each group relative to the frame's content origin, then shift into place.
+		const headH = headHeight?.(session.id) ?? L.frameHeaderHeight
 		const contentX = frameX + L.framePadding
-		const contentY = L.framePadding + L.frameHeaderHeight
+		const contentY = headH + L.framePadding
 		let y = contentY
 		let contentWidth = 0
 		const sectionGroups: GroupLayout[] = []
@@ -197,7 +224,7 @@ export function computeLayout(
 			more = { box: { x: contentX, y: contentY + contentHeight + L.moreGap, w: innerWidth, h: L.moreHeight }, hidden }
 			contentHeight += L.moreGap + L.moreHeight
 		}
-		const box = { x: frameX, y: 0, w: innerWidth + L.framePadding * 2, h: L.frameHeaderHeight + contentHeight + L.framePadding * 2 }
+		const box = { x: frameX, y: 0, w: innerWidth + L.framePadding * 2, h: headH + contentHeight + L.framePadding * 2 }
 		// Headings span the frame so long group names have room.
 		for (const g of sectionGroups) if (g.heading) g.heading.w = innerWidth
 
@@ -205,7 +232,7 @@ export function computeLayout(
 			id: session.id,
 			title: session.title,
 			box,
-			header: { x: contentX, y: L.framePadding, w: innerWidth, h: L.frameHeaderHeight },
+			header: { x: frameX, y: 0, w: box.w, h: headH },
 			groups: sectionGroups,
 			itemIds: sectionGroups.flatMap((g) => g.itemIds),
 			more,

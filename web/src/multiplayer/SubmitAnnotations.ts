@@ -4,7 +4,7 @@ import { sessionColor } from '../../../shared/sessionColor'
 import { url as withBase } from '../base'
 import type { Editor } from '../editor/Editor'
 import type { Box } from '../editor/geometry'
-import { LAYOUT, type SectionLayout } from '../editor/layout'
+import { LAYOUT, SHEET, type SectionLayout } from '../editor/layout'
 import { ownerId, pairing, pairings, withServer } from '../opencode/pairings'
 import { react } from '../state/signals'
 import { consumeAnnotations, markDelivered, peekAnnotations } from '../sync/client'
@@ -15,8 +15,8 @@ import '../ui/submitAnnotations.css'
 
 /** Screen px kept clear: between the pill and the screen or frame edge, and below the top bar when pinned. */
 const MARGIN = 10
-/** Page px from the top of a frame's header to the middle of its title line (see .section-label: 4px padding, 48px line). */
-const TITLE_MID = 28
+/** Page px from the top of a frame's head to the middle of its title row (see render/sheet.css). */
+const TITLE_MID = (SHEET.head / 2) * SHEET.k
 const HEADER = `Feedback from the canvas on your posted items. By default, update the annotated items in place with update_item (keep their ids); only post new items if a note explicitly asks for something new.`
 /** the header when any annotated item was added by a person (a reference, not the session's output) */
 const HEADER_PERSON = `Feedback from the canvas. Items you posted: update them in place with update_item (keep their ids) unless a note asks for something new. Items marked "added by": references people gave you — don't replace them; post what you make as new items.`
@@ -203,9 +203,9 @@ export class SubmitAnnotations {
 		return fresh
 	}
 
-	/** A frame's title text (see SectionLabels in Renderer.ts). */
+	/** A frame's title text (see render/SheetHeads.ts). */
 	private titleOf(sessionId: string) {
-		return document.querySelector<HTMLElement>(`.section-label[data-session="${CSS.escape(sessionId)}"] .title`)
+		return document.querySelector<HTMLElement>(`.sheet-head[data-session="${CSS.escape(sessionId)}"] .title`)
 	}
 
 	/**
@@ -225,7 +225,7 @@ export class SubmitAnnotations {
 		const scale = Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx)
 		const mid = header.y + header.h - section.header.h * scale + TITLE_MID * scale
 		const title = this.titleOf(section.id)
-		const reserve = `${Math.ceil((w + 2 * MARGIN) / scale)}px`
+		const reserve = `${Math.ceil((w + 2 * MARGIN) / (scale * SHEET.k))}px`
 		if (title && title.style.marginRight !== reserve) title.style.marginRight = reserve
 		const buttons = title?.parentElement?.querySelector('.frame-buttons')
 		const shownButtons = buttons && title!.parentElement!.classList.contains('roomy') ? buttons.getBoundingClientRect() : null

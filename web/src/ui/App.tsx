@@ -103,6 +103,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 			react(() => {
 				const { shown, own } = liveSessions.busyFrames(editor.sessionRecords.get(), reportedBusy.get())
 				busy.set(shown)
+				editor.busy.set(shown)
 				ownBusy.set(own)
 			}),
 		)
@@ -218,6 +219,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 							canPrompt: control.canOpen(sessionId),
 							prompting: control.prompting.get() === sessionId,
 							ended: !!editor.sessions.get()[sessionId]?.opencode?.deleted,
+							asking: asking(sessionId) || !!control.live.get().get(sessionId)?.asking?.count,
 						}),
 						prompt: (sessionId, button) => control.toggle(sessionId, button && control.screenAnchor(button, 'below')),
 						subagent: (sessionId) => subagentState(sessionId, editor.parentOf(sessionId), control, editor.sessions.peek()[sessionId], asking(sessionId)),

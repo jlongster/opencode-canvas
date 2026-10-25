@@ -13,16 +13,13 @@
 	display: flex;
 	align-items: center;
 	gap: 5px;
-	padding: 3px 8px 3px 8px;
-	border-radius: 999px;
-	background: rgb(var(--canvas-rgb) / 0.78);
-	border: 1px solid var(--border-strong);
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-	backdrop-filter: blur(8px);
-	color: rgba(255, 255, 255, 0.9);
-	font-size: 11.5px;
-	font-weight: 500;
-	line-height: 1.3;
+	padding: 3px 6px;
+	border-radius: 0;
+	background: var(--rm-sheet);
+	border: 1px solid var(--rm-ink);
+	color: var(--rm-ink);
+	font: 10.5px/1.3 var(--rm-font-mono);
+	text-transform: uppercase;
 	white-space: nowrap;
 	overflow: hidden;
 	will-change: transform;
@@ -45,7 +42,7 @@
 	top: 0;
 	padding: 0;
 	border: 0;
-	border-radius: 999px;
+	border-radius: 0;
 	background: transparent;
 	cursor: pointer;
 	pointer-events: auto;
@@ -53,10 +50,10 @@
 }
 
 .page-card-open:hover {
-	background: rgba(255, 255, 255, 0.08);
+	background: rgb(21 21 21 / 0.08);
 }
 
 .page-card-open:focus-visible {
-	outline: 2px solid rgba(87, 143, 255, 0.9);
+	outline: 1px solid var(--rm-ink);
 	outline-offset: 2px;
 }

@@ -1,0 +1,609 @@
+/*
+ * The Reference Manual on the canvas: sheet heads, group headings, item labels and the controls over
+ * items (see SheetHeads.ts and Renderer.ts). Heads, headings and "older items" rows are laid out in
+ * design px (the mockup's sizes) and scaled onto the page; --hair is one screen px in their units,
+ * so rules stay hairlines at any zoom.
+ */
+
+.sheet-heads {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+}
+
+.sheet-head {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: flex;
+	flex-direction: column;
+	transform-origin: 0 100%;
+	container-type: inline-size;
+	color: var(--rm-ink);
+	font: 400 13px/1.4 var(--rm-font-sans);
+	white-space: nowrap;
+	pointer-events: none;
+	will-change: transform;
+	--hair: 1px;
+}
+
+.sheet-head.lifted {
+	z-index: 1;
+}
+
+.sheet-head button {
+	font: inherit;
+	color: inherit;
+	pointer-events: auto;
+	cursor: pointer;
+}
+
+.sheet-head button[hidden] {
+	display: none;
+}
+
+/* the title row */
+.sh-row {
+	flex: none;
+	display: flex;
+	align-items: stretch;
+	height: 34px;
+	border-bottom: var(--hair) solid var(--rm-ink);
+}
+
+.sh-row .title {
+	flex: 1;
+	min-width: 0;
+	padding: 0 10px;
+	font: 600 14px/34px var(--rm-font-sans);
+	letter-spacing: -0.005em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sh-row .title.untitled {
+	color: var(--rm-ink-3);
+}
+
+.sheet-head.ended .sh-row .title {
+	color: var(--rm-ink-3);
+}
+
+.sheet-head.ended .sh-row .title::before {
+	content: 'Ended · ';
+	font-weight: 400;
+}
+
+.sh-act {
+	flex: none;
+	display: none;
+	align-items: center;
+	gap: 2px;
+	padding-right: 4px;
+}
+
+.sh-row.roomy .sh-act {
+	display: flex;
+}
+
+/* the prompt keycap, always next to its action */
+.sh-key {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 17px;
+	height: 17px;
+	margin-right: 4px;
+	padding: 0 4px;
+	border: var(--hair) solid var(--rm-ink);
+	border-bottom-width: calc(var(--hair) * 2);
+	border-radius: 3px;
+	background: var(--rm-sheet);
+	font: 700 10px/1 var(--rm-font-sans) !important;
+}
+
+.sh-ico {
+	display: grid;
+	place-items: center;
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--rm-ink-2) !important;
+}
+
+.sh-ico svg {
+	width: 15px;
+	height: 15px;
+}
+
+.sh-key:hover,
+.sh-key.active,
+.sh-ico:hover,
+.sh-ico.active {
+	background: var(--rm-ink);
+	color: var(--rm-sheet) !important;
+}
+
+/* the title block: small spaced capitals over monospaced values */
+.sh-block {
+	flex: none;
+	display: flex;
+	height: 31px;
+	border-bottom: var(--hair) solid var(--rm-ink);
+	overflow: hidden;
+}
+
+.sh-block .f {
+	flex: none;
+	min-width: 50px;
+	padding: 4px 7px 5px;
+	border-right: var(--hair) solid var(--rm-rule);
+}
+
+.sh-block .f-status {
+	flex: 1;
+	border-right: 0;
+}
+
+.sheet-head .k {
+	font: 600 7.5px/9px var(--rm-font-sans);
+	letter-spacing: 0.16em;
+	text-transform: uppercase;
+	color: var(--rm-ink-2);
+}
+
+.sh-block .v {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	height: 16px;
+	font: 12px/16px var(--rm-font-mono);
+	overflow: hidden;
+}
+
+.sh-block .st-run {
+	background: var(--rm-blue);
+	color: #fff;
+}
+
+.sh-block .st-run .k {
+	color: #bcd0e0;
+}
+
+.sh-block .st-ask {
+	background: var(--rm-red);
+	color: #fff;
+}
+
+.sh-block .st-ask .k {
+	color: #f3c7bd;
+}
+
+.sh-block .clk {
+	display: inline-flex;
+}
+
+.sh-block .clk-small {
+	display: none;
+}
+
+@container (max-width: 430px) {
+	.sh-block .f-model {
+		display: none;
+	}
+}
+
+@container (max-width: 340px) {
+	.sh-block .f-updated {
+		display: none;
+	}
+}
+
+@container (max-width: 260px) {
+	.sh-block .f-agent {
+		display: none;
+	}
+	.sh-block .st-run .st-word,
+	.sh-block .st-run .clk {
+		display: none;
+	}
+	.sh-block .st-run .clk-small {
+		display: inline;
+	}
+	.sh-block .st-run .v::before {
+		content: 'RUN';
+	}
+}
+
+/* zoomed out: the head stops shrinking, and its title row turns to ink */
+.sheet-head.far .sh-row {
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
+}
+
+.sheet-head.far .sh-row .title {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	align-self: center;
+	padding: 0 8px;
+	font: 700 13px/15px var(--rm-font-sans);
+	white-space: normal;
+}
+
+.sheet-head.far .sh-act {
+	display: none;
+}
+
+.sheet-head.far .sh-block .f-agent,
+.sheet-head.far .sh-block .f-model,
+.sheet-head.far .sh-block .f-updated {
+	display: none;
+}
+
+/* subagents as documents */
+.sh-tray {
+	flex: none;
+	height: 76px;
+	padding: 4px 7px 7px;
+	border-bottom: var(--hair) solid var(--rm-ink);
+	overflow: hidden;
+}
+
+.sh-tray .k {
+	margin-bottom: 4px;
+}
+
+.sh-tray .docs {
+	display: flex;
+	gap: 6px;
+	align-items: flex-end;
+}
+
+.sh-tray .doc {
+	position: relative;
+	flex: none;
+	width: 48px;
+	height: 52px;
+	padding: 0;
+	border: 0;
+	background: none;
+}
+
+.sh-tray .doc svg {
+	display: block;
+}
+
+.sh-tray .doc:hover .pg {
+	stroke-width: 1.6;
+}
+
+.sh-tray .doc .lbl {
+	position: absolute;
+	left: 4.5px;
+	right: 3px;
+	bottom: 4px;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	overflow: hidden;
+	font: 600 8px/9px var(--rm-font-sans);
+	text-align: left;
+	white-space: normal;
+	word-break: break-word;
+	color: var(--rm-ink);
+}
+
+.sh-tray .doc.open .lbl {
+	color: var(--rm-sheet);
+}
+
+/* the printout: what it's doing now, fed like a chain printer */
+.sh-printout {
+	flex: none;
+	position: relative;
+	height: 37px;
+	overflow: hidden;
+	border-bottom: var(--hair) solid var(--rm-rule);
+	background: linear-gradient(var(--rm-bar) 0 18px, transparent 18px 36px);
+	font: 11px/18px var(--rm-font-mono);
+	text-transform: uppercase;
+}
+
+.sh-printout .ln {
+	display: flex;
+	gap: 10px;
+	height: 18px;
+	padding: 0 9px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sh-printout .ln.old {
+	color: var(--rm-ink-3);
+}
+
+.sh-printout .ln .t {
+	flex: none;
+	color: var(--rm-blue);
+	font-weight: 700;
+}
+
+.sh-printout .ln.old .t {
+	color: var(--rm-ink-3);
+	font-weight: 400;
+}
+
+.sh-printout .roll.feed {
+	animation: sh-feed 120ms steps(2) both;
+}
+
+@keyframes sh-feed {
+	from {
+		transform: translateY(18px);
+	}
+	to {
+		transform: none;
+	}
+}
+
+/* where the open drawer unfolds from */
+.sh-notch {
+	position: absolute;
+	top: calc(100% - var(--hair));
+	overflow: visible;
+	z-index: 1;
+}
+
+/* a subagent's head, in its drawer */
+.sheet-drawer-head {
+	overflow: hidden;
+}
+
+.sheet-drawer-head .sh-row {
+	height: 32px;
+	align-items: center;
+	gap: 10px;
+	padding-left: 10px;
+	border-bottom: var(--hair) solid var(--rm-rule);
+	font: 12px var(--rm-font-sans);
+}
+
+.sheet-drawer-head .sw {
+	flex: none;
+	width: 9px;
+	height: 9px;
+}
+
+.sheet-drawer-head .sh-row .title {
+	flex: 0 1 auto;
+	padding: 0;
+	font: 600 12.5px/32px var(--rm-font-sans);
+}
+
+.sheet-drawer-head .sh-meta {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	overflow: hidden;
+}
+
+.sheet-drawer-head .sh-meta .m {
+	font: 10.5px var(--rm-font-mono);
+	color: var(--rm-ink-2);
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sheet-drawer-head .sh-meta .st-waiting,
+.sheet-drawer-head .sh-meta .st-failed {
+	color: var(--rm-red);
+}
+
+.sheet-drawer-head .sh-meta .st-running {
+	color: var(--rm-blue);
+}
+
+.sheet-drawer-head .sh-act {
+	display: flex;
+}
+
+/* group headings: spaced small capitals, a count on the right */
+.sheet-group {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	padding-top: 3px;
+	transform-origin: 0 0;
+	font: 400 11px/14px var(--rm-font-mono);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--rm-ink);
+	white-space: nowrap;
+	pointer-events: none;
+	will-change: transform;
+	--hair: 1px;
+}
+
+.sheet-group::after {
+	content: '';
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: 6px;
+	border-bottom: var(--hair) solid var(--rm-rule);
+}
+
+.sheet-group .name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sheet-group .count {
+	margin-left: auto;
+	font-weight: 400;
+	color: var(--rm-ink-3);
+}
+
+.sheet-group.hovered .name,
+.sheet-group.linked .name {
+	margin-left: -4px;
+	padding: 0 4px;
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
+}
+
+/* under a frame's groups when it leaves older items out */
+.sheet-more {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 10px;
+	transform-origin: 0 0;
+	border-top: var(--hair) dashed var(--rm-rule-2);
+	font: 10.5px var(--rm-font-mono);
+	text-transform: uppercase;
+	color: var(--rm-ink-2);
+	white-space: nowrap;
+	pointer-events: none;
+	will-change: transform;
+	--hair: 1px;
+}
+
+.sheet-more button {
+	padding: 2px 8px;
+	border: var(--hair) solid var(--rm-ink);
+	background: var(--rm-sheet);
+	color: var(--rm-ink);
+	font: 600 10px var(--rm-font-sans);
+	text-transform: none;
+	pointer-events: auto;
+	cursor: pointer;
+}
+
+.sheet-more button:hover {
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
+}
+
+.sheet-more button[hidden] {
+	display: none;
+}
+
+/* item labels: the name, and its type on the right */
+.overlay .item-title {
+	display: flex;
+	align-items: flex-end;
+	gap: 0.55em;
+	padding: 0 0 0.3em;
+	color: var(--rm-ink-2);
+	font-family: var(--rm-font-sans);
+	font-weight: 400;
+	line-height: 1.3;
+}
+
+.overlay .item-title .nm {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.overlay .item-title .kd {
+	flex: none;
+	margin-left: auto;
+	font-family: var(--rm-font-mono);
+	font-size: 0.9em;
+	text-transform: uppercase;
+	color: var(--rm-ink-3);
+}
+
+.overlay .item-title.selected .nm {
+	margin-left: -0.38em;
+	padding: 0 0.38em;
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
+}
+
+/* over the hovered item: plain-text commands on a ruled strip */
+.hover-bar {
+	position: absolute;
+	left: 0;
+	top: 0;
+	display: none;
+	background: var(--rm-sheet);
+	border: 1px solid var(--rm-ink);
+	font: 600 10.5px/1 var(--rm-font-sans);
+	pointer-events: auto;
+	will-change: transform;
+}
+
+.hover-bar button {
+	padding: 4px 7px;
+	border: 0;
+	border-right: 1px solid var(--rm-rule);
+	background: none;
+	color: var(--rm-ink);
+	font: inherit;
+	cursor: pointer;
+}
+
+.hover-bar button:last-child {
+	border-right: 0;
+}
+
+.hover-bar button:hover {
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
+}
+
+.hover-bar button[hidden] {
+	display: none;
+}
+
+/* shift (or ⋯) on an item: its file's link, download, extract */
+.overlay .item-actions {
+	gap: 0;
+	background: var(--rm-sheet);
+	border: 1px solid var(--rm-ink);
+}
+
+.overlay .item-action {
+	width: 26px;
+	height: 24px;
+	border-radius: 0;
+	border-right: 1px solid var(--rm-rule);
+	background: none;
+	color: var(--rm-ink);
+	backdrop-filter: none;
+}
+
+.overlay .item-action:last-child {
+	border-right: 0;
+}
+
+.overlay .item-action:hover {
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
+}
+
+.overlay .item-link.copied {
+	color: var(--rm-blue);
+}
+
+.overlay .item-link.copied::after {
+	border-radius: 0;
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
+	font: 600 10.5px/1.3 var(--rm-font-sans);
+}

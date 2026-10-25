@@ -45,6 +45,25 @@ export interface CanvasData {
 	busy?: string[]
 	/** the sessions waiting on an answer (a question or a permission request), reported the same way */
 	asking?: string[]
+	/** what the sessions are doing (their frames' title blocks and printouts), reported the same way, by session id */
+	activity?: Record<string, SessionActivity>
+}
+
+/**
+ * What a session is doing, as the edit tabs paired with its OpenCode see it: its frame's title block
+ * (model, agent) and printout (the step it's on). Every field is optional: a frame shows what's known.
+ */
+export interface SessionActivity {
+	/** the model its latest step ran on ("opus-5.5") */
+	model?: string
+	/** the agent its latest step ran as */
+	agent?: string
+	/** what it's doing right now, summarised: "READ web/src/App.tsx", "BASH bun test" */
+	step?: string
+	/** when that step started (ms) */
+	stepAt?: number
+	/** when it started working (ms), while it works */
+	busySince?: number
 }
 
 /**
@@ -351,6 +370,8 @@ export type ServerEvent =
 	| { type: 'status'; canvasId: string; sessionId: string; busy: boolean }
 	/** a session started or stopped waiting on an answer */
 	| { type: 'asking'; canvasId: string; sessionId: string; asking: boolean }
+	/** what a session is doing changed (null: nothing's known any more) */
+	| { type: 'activity'; canvasId: string; sessionId: string; activity: SessionActivity | null }
 	/**
 	 * Annotations an agent just read, sent right before they're removed from the room document, so
 	 * open canvases can animate them away (into the reading session's frame).

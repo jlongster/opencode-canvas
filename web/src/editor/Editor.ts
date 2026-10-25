@@ -1,10 +1,10 @@
 import { frameTitle } from '../../../shared/sessionTitle'
-import type { Item, OpenCodeSessionInfo, Session } from '../../../shared/types'
+import type { Item, OpenCodeSessionInfo, Session, SessionActivity } from '../../../shared/types'
 import { atom, computed, getGlobalEpoch, react, transact } from '../state/signals'
 import { Box, clamp, easeInOutCubic, lerp, Vec } from './geometry'
 import { Deletions } from './Deletions'
 import { applyDrawers, Drawers, familiesEqual, subagentFamilies, type Families } from './drawers'
-import { computeLayout, frameTitleBox, itemsToReveal, LAYOUT, newestFirst, orderSessions, shiftSection, type GroupLayout, type Layout } from './layout'
+import { computeLayout, frameTitleBox, itemsToReveal, LAYOUT, newestFirst, orderSessions, sheetHeadHeight, shiftSection, type GroupLayout, type Layout } from './layout'
 import { groupKey, noteKey, parseSelectionId, type SelectionKind } from './selection'
 import { StateNode } from './StateNode'
 import { PENCIL_CURSOR, PencilTool } from './tools/PencilTool'
@@ -81,6 +81,8 @@ export interface FrameStatus {
 	prompting: boolean
 	/** OpenCode deleted its session: the frame stays, marked as ended */
 	ended: boolean
+	/** it waits on an answer from you: a question or a permission request */
+	asking?: boolean
 }
 
 /** What OpenCode says about a frame's session, as this tab read it from the server it's on (see opencode/live.ts). */
@@ -186,6 +188,18 @@ export class Editor {
 	 * frame included (see opencode/live.ts): how a subagent's subagent finds its way to a frame.
 	 */
 	readonly knownParents = atom<Record<string, string>>('knownParents', {}, recordEquals)
+	/** The sessions working right now (see LiveSessions.busyFrames): their sheets get a printout and a blue status cell. */
+	readonly busy = atom<ReadonlySet<string>>('busy', new Set(), (a, b) => a.size === b.size && [...a].every((id) => b.has(id)))
+	/** What the sessions are doing as the canvas server says (other tabs' reports, see server/busy.ts), by session id. */
+	readonly reportedActivity = atom<Record<string, SessionActivity>>('reportedActivity', {})
+	/** What this tab's paired OpenCodes say the frames' sessions are doing (see opencode/live.ts); edit links report it for everyone. */
+	readonly ownActivity = atom<Record<string, SessionActivity>>('ownActivity', {}, activityEquals)
+	/** What each frame's session is doing: this tab's own word over the canvas server's. */
+	readonly activity = computed<Record<string, SessionActivity>>('activity', () => {
+		const own = this.ownActivity.get()
+		const reported = this.reportedActivity.get()
+		return Object.keys(own).length ? { ...reported, ...own } : reported
+	})
 	/** Sticky notes' page boxes (ignoring their slight tilt), kept up to date by SharedNotes. */
 	readonly noteBoxes = atom<Record<string, Box>>('noteBoxes', {}, boxRecordEquals)
 
@@ -251,7 +265,10 @@ export class Editor {
 		// (a subagent with no output shows nothing)
 		const posted = this.postedSessions.get()
 		const skip = { has: (id: string) => parentOf.has(id) || (!!sessions[id]?.opencode?.parentId && !posted.has(id)) }
-		return computeLayout(sessions, items, this.frameDrag.get()?.order ?? this.sessionOrder.get(), this.itemLimits.get(), skip)
+		const { kids } = this.families.get()
+		const busy = this.busy.get()
+		const headHeight = (id: string) => sheetHeadHeight({ subagents: !!kids.get(id)?.length, busy: busy.has(id) })
+		return computeLayout(sessions, items, this.frameDrag.get()?.order ?? this.sessionOrder.get(), this.itemLimits.get(), skip, headHeight)
 	})
 	/** Every subagent laid out as a frame of its own, for its drawer. */
 	private readonly kidLayout = computed<Layout>('kidLayout', () => {
@@ -355,6 +372,14 @@ export class Editor {
 	}
 
 	/** What this tab's paired OpenCode servers say about the frames' sessions, by session id (see opencode/live.ts). */
+	/** What a session is doing changed, as the canvas server says (null: nothing's known any more). */
+	putReportedActivity(sessionId: string, activity: SessionActivity | null) {
+		const all = { ...this.reportedActivity.peek() }
+		if (activity) all[sessionId] = activity
+		else delete all[sessionId]
+		this.reportedActivity.set(all)
+	}
+
 	setLiveSessions(live: Record<string, LiveSession>) {
 		transact(() => {
 			this.liveSessions.set(live)
@@ -1453,6 +1478,10 @@ function linkEquals(a: HtmlLink | null, b: HtmlLink | null) {
 	if (a === b) return true
 	if (!a || !b || a.itemId !== b.itemId || a.href !== b.href || a.rects.length !== b.rects.length) return false
 	return a.rects.every((r, i) => Box.equals(r, b.rects[i]))
+}
+
+function activityEquals(a: Record<string, SessionActivity>, b: Record<string, SessionActivity>) {
+	return JSON.stringify(a) === JSON.stringify(b)
 }
 
 function recordEquals(a: Record<string, string>, b: Record<string, string>) {

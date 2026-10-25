@@ -140,6 +140,8 @@ const HEARTBEAT_MS = 4_000
 const DEAD_AFTER_MS = 12_000
 /** while any session we report is working, the report is sent again this often (the server drops one a minute old) */
 const BUSY_REFRESH_MS = 20_000
+/** what a tab sees its sessions doing goes to the canvas server at most this often */
+const ACTIVITY_THROTTLE_MS = 1_000
 
 /**
  * A live event socket at /api/live (optionally for one canvas) that keeps itself alive. onOpen runs
@@ -281,6 +283,7 @@ export function connectCanvas(
 			handlers.onLinks?.({ all: data.links ?? [] })
 			handlers.onStatus?.({ all: data.busy ?? [] })
 			handlers.onAsking?.({ all: data.asking ?? [] })
+			editor.reportedActivity.set(data.activity ?? {})
 			handlers.onLoad(data.canvas, first)
 		} catch (e) {
 			if (closed) return
@@ -324,6 +327,9 @@ export function connectCanvas(
 			case 'asking':
 				if (event.canvasId === canvasId) handlers.onAsking?.({ sessionId: event.sessionId, asking: event.asking })
 				return
+			case 'activity':
+				if (event.canvasId === canvasId) editor.putReportedActivity(event.sessionId, event.activity)
+				return
 			case 'annotations_consumed':
 				if (event.canvasId === canvasId) editor.annotationsConsumed?.(event.ids, event.sessionId)
 				return
@@ -354,11 +360,36 @@ export function connectCanvas(
 				})
 			: null
 
+	// What this tab sees its sessions doing (edit links): on every connection and change, at most every
+	// ACTIVITY_THROTTLE_MS, and every BUSY_REFRESH_MS while there's anything to say.
+	let activityTimer = 0
+	let activityRefresh = 0
+	let activitySentAt = 0
+	const reportActivity = () => {
+		clearTimeout(activityTimer)
+		activityTimer = 0
+		clearInterval(activityRefresh)
+		if (!send) return
+		const message = JSON.stringify({ type: 'activity', sessions: editor.ownActivity.peek() })
+		send(message)
+		activitySentAt = performance.now()
+		if (Object.keys(editor.ownActivity.peek()).length) activityRefresh = window.setInterval(() => send?.(message), BUSY_REFRESH_MS)
+	}
+	const stopActivity =
+		link.role === 'edit'
+			? react(() => {
+					editor.ownActivity.get()
+					if (activityTimer) return
+					activityTimer = window.setTimeout(reportActivity, Math.max(0, ACTIVITY_THROTTLE_MS - (performance.now() - activitySentAt)))
+				})
+			: null
+
 	const startLive = (id: string) => {
 		stopLive = liveSocket(id, {
 			onOpen: (sendOn) => {
 				send = sendOn
 				report()
+				if (stopActivity) reportActivity()
 				void load()
 			},
 			onEvent: apply,
@@ -378,5 +409,8 @@ export function connectCanvas(
 		stopLive?.()
 		stopReport?.()
 		clearInterval(reportTimer)
+		stopActivity?.()
+		clearTimeout(activityTimer)
+		clearInterval(activityRefresh)
 	}
 }

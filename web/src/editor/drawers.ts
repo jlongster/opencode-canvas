@@ -1,9 +1,8 @@
 import type { Session } from '../../../shared/types'
-import { bezier } from '../render/busy/envelope'
 import { clamp01 } from '../render/subagents/field'
 import { atom } from '../state/signals'
 import { Box } from './geometry'
-import { LAYOUT, type GroupLayout, type Layout, type SectionLayout } from './layout'
+import { LAYOUT, SHEET, type GroupLayout, type Layout, type SectionLayout } from './layout'
 
 /*
  * Subagents on the canvas. A frame whose session is a subagent (its OpenCode session has a parent)
@@ -70,9 +69,10 @@ export function familiesEqual(a: Families, b: Families) {
 
 // ---------- open and closed ----------
 
-/** How long a drawer takes to open or close (ms), and its easing: restrained, no overshoot. */
-export const DRAWER_MS = 360
-const ease = bezier(0.4, 0, 0.2, 1)
+/** How long a drawer takes to open or close (ms), and its easing: in four steps, like a sheet unfolding (the Reference Manual's 220 ms · steps(4)). */
+export const DRAWER_MS = 220
+const DRAWER_STEPS = 4
+const ease = (p: number) => Math.ceil(p * DRAWER_STEPS - 1e-6) / DRAWER_STEPS
 
 interface Open {
 	from: number
@@ -205,15 +205,12 @@ export class Drawers {
 
 // ---------- the layout ----------
 
-/** Page px: a drawer's band starts this far below its parent's title row's top... */
-const BAND_TOP = 64
-/** ...stacked bands are this far apart, and the parent's content follows the last one this far below */
-const BAND_GAP = 20
-const CONTENT_GAP = LAYOUT.framePadding
-/** in a band: the subagent's title strip (its frame's is frameHeaderHeight), from the band's top */
-export const DRAWER_TITLE = { top: 16, h: 48 }
+/** in a band: the subagent's head (its title, how it ended, its items, time and model), from the band's top */
+export const DRAWER_TITLE = { top: 0, h: SHEET.drawerHead * SHEET.k }
+/** in a band: from its head to its content */
+const DRAWER_PAD = 24
 /** how much higher a subagent's content sits in its band than in a frame of its own */
-const LIFT = LAYOUT.frameHeaderHeight + LAYOUT.framePadding - (DRAWER_TITLE.top + DRAWER_TITLE.h + 16)
+const liftOf = (c: SectionLayout) => c.header.y + c.header.h - c.box.y + LAYOUT.framePadding - (DRAWER_TITLE.h + DRAWER_PAD)
 
 /**
  * The canvas with its subagents' drawers open: each parent with open drawers gets their bands under
@@ -240,7 +237,7 @@ export function applyDrawers(base: Layout, kids: Layout, families: Families, dra
 		const r = bands(parent, open, kidSections, kids, out)
 		const moved = shift(parent, 0, r.room, out.items)
 		const animating = open.some((k) => k.open !== k.to)
-		const grown: SectionLayout = { ...moved, box: { ...parent.box, w: Math.max(parent.box.w, r.width), h: parent.box.h + r.room }, header: { ...parent.header, w: Math.max(parent.header.w, r.width - LAYOUT.framePadding * 2) }, ...(animating || pushing ? { snap: true } : {}) }
+		const grown: SectionLayout = { ...moved, box: { ...parent.box, w: Math.max(parent.box.w, r.width), h: parent.box.h + r.room }, header: { ...parent.header, w: Math.max(parent.header.w, r.width) }, ...(animating || pushing ? { snap: true } : {}) }
 		for (const k of r.sections) if (animating) k.snap = true
 		out.sections.push(...r.sections, grown)
 		shiftX += grown.box.w - parent.box.w
@@ -252,18 +249,19 @@ export function applyDrawers(base: Layout, kids: Layout, families: Families, dra
 	return out
 }
 
-/** A parent's open drawers: their frames, how far its content moves down, and how wide it gets. */
+/**
+ * A parent's open drawers: their frames, how far its content moves down, and how wide it gets. The
+ * bands span the sheet edge to edge, right under its head, stacked.
+ */
 function bands(s: SectionLayout, open: DrawerKid[], kidSections: Map<string, SectionLayout>, kids: Layout, out: Layout) {
-	const inset = LAYOUT.framePadding
-	const left = s.box.x + inset
-	const top0 = s.header.y + BAND_TOP
-	const contentY = s.header.y + s.header.h
+	const left = s.box.x
+	const top0 = s.header.y + s.header.h
 	const slots = open.map((kid) => {
 		const c = kidSections.get(kid.id)!
-		return { kid, c, w: c.box.w, h: c.box.h - LIFT }
+		const lift = liftOf(c)
+		return { kid, c, lift, w: c.box.w, h: c.box.h - lift }
 	})
-	const bandW = Math.max(s.box.w - inset * 2, ...slots.map((t) => t.w))
-	const width = bandW + inset * 2
+	const bandW = Math.max(s.box.w, ...slots.map((t) => t.w))
 	const sections: SectionLayout[] = []
 
 	// switching: the one band changes height as one subagent's content gives way to the next's
@@ -272,40 +270,35 @@ function bands(s: SectionLayout, open: DrawerKid[], kidSections: Map<string, Sec
 	if (to && from) {
 		const e = to.kid.open
 		const box: Box = { x: left, y: top0, w: bandW, h: from.h + (to.h - from.h) * e }
-		const inA = clamp01((e - 0.1) / 0.5)
-		const outA = 1 - clamp01((e - 0.6) / 0.25)
-		for (const [t, opacity] of [[to, inA], [from, outA]] as const) {
+		for (const [t, opacity] of [[to, e >= 0.5 ? 1 : 0], [from, e >= 0.5 ? 0 : 1]] as const) {
 			const k = Math.min(1, box.h / t.h)
-			const sec = place(t.c, s.id, kids, box, k, out)
+			const sec = place(t.c, t.lift, s.id, kids, box, k, out)
 			sec.opacity = opacity
 			sections.push(sec)
 		}
-		return { sections, room: box.y + box.h + CONTENT_GAP - contentY, width }
+		return { sections, room: box.h, width: bandW }
 	}
 
 	let y = top0
-	let most = 0
 	for (const t of slots) {
-		const e = t.kid.open
-		const unfold = 1 - (1 - clamp01(e / 0.75)) ** 2
+		const unfold = t.kid.open
 		const box: Box = { x: left, y, w: bandW, h: t.h * unfold }
-		const sec = place(t.c, s.id, kids, box, 1, out)
-		sec.opacity = e >= 1 ? 1 : clamp01((e - 0.55) / 0.45)
+		const sec = place(t.c, t.lift, s.id, kids, box, 1, out)
+		sec.opacity = unfold >= 1 ? 1 : 0
 		sections.push(sec)
-		y += (box.h + BAND_GAP) * unfold
-		most = Math.max(most, unfold)
+		y += box.h
 	}
 	// (front to back: the ones opening over the ones closing)
 	const order = sections.map((sec, i) => ({ sec, to: slots[i].kid.to, i })).sort((a, b) => b.to - a.to || a.i - b.i)
-	return { sections: order.map((o) => o.sec), room: Math.max(0, y - top0 + (top0 - BAND_GAP + CONTENT_GAP - contentY) * most), width }
+	return { sections: order.map((o) => o.sec), room: Math.max(0, y - top0), width: bandW }
 }
 
 /**
- * A subagent's frame in a band (its box): its title strip in the band's top, its content under it,
+ * A subagent's frame in a band (its box): its head in the band's top, its content under it,
  * scaled by k about the band's top-left. Its items go into `out`.
  */
-function place(c: SectionLayout, parentId: string, kids: Layout, band: Box, k: number, out: Layout): SectionLayout {
-	const t = (b: Box): Box => ({ x: band.x + (b.x - c.box.x) * k, y: band.y + (b.y - c.box.y - LIFT) * k, w: b.w * k, h: b.h * k })
+function place(c: SectionLayout, lift: number, parentId: string, kids: Layout, band: Box, k: number, out: Layout): SectionLayout {
+	const t = (b: Box): Box => ({ x: band.x + (b.x - c.box.x) * k, y: band.y + (b.y - c.box.y - lift) * k, w: b.w * k, h: b.h * k })
 	for (const id of c.itemIds) {
 		const b = kids.items.get(id)
 		if (!b) continue
@@ -318,7 +311,7 @@ function place(c: SectionLayout, parentId: string, kids: Layout, band: Box, k: n
 	return {
 		...c,
 		box: band,
-		header: { x: band.x + LAYOUT.framePadding * k, y: band.y + DRAWER_TITLE.top * k, w: Math.max(0, band.w - LAYOUT.framePadding * 2 * k), h: DRAWER_TITLE.h * k },
+		header: { x: band.x, y: band.y + DRAWER_TITLE.top * k, w: band.w, h: Math.min(band.h, DRAWER_TITLE.h * k) },
 		groups,
 		more: c.more && { ...c.more, box: t(c.more.box) },
 		drawer: { parentId },

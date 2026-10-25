@@ -32,7 +32,12 @@ fn roundedBoxSdf(p: vec2f, halfSize: vec2f, r: f32) -> f32 {
 }
 `
 
-/** Rounded rectangles with fill and an outside stroke, in page or screen space. */
+/**
+ * Rounded rectangles with fill and an outside stroke, in page or screen space. A pattern instead of
+ * the stroke (params.w; the stroke colour is then the pattern's ink): 1 a 50% dither (loading), 2
+ * pinstripes (queued), 3 the canvas's plus-marks every 96 page px, finer ones fading out as they
+ * close up, drawn on whole device pixels.
+ */
 export const rectShader = /* wgsl */ `
 ${common}
 
@@ -40,7 +45,7 @@ struct RectIn {
   @location(0) rect: vec4f,    // x, y, w, h
   @location(1) fill: vec4f,    // premultiplied rgba
   @location(2) stroke: vec4f,  // premultiplied rgba
-  @location(3) params: vec4f,  // strokeWidth (screen px), radius, space (0 page, 1 screen), unused
+  @location(3) params: vec4f,  // strokeWidth (screen px), radius, space (0 page, 1 screen), pattern
 };
 
 struct RectOut {
@@ -50,6 +55,7 @@ struct RectOut {
   @location(2) fill: vec4f,
   @location(3) stroke: vec4f,
   @location(4) sr: vec2f,
+  @location(5) @interpolate(flat) pattern: f32,
 };
 
 @vertex fn vs(@builtin(vertex_index) vi: u32, r: RectIn) -> RectOut {
@@ -73,12 +79,45 @@ struct RectOut {
   out.fill = r.fill;
   out.stroke = r.stroke;
   out.sr = vec2f(r.params.x, radius);
+  out.pattern = r.params.w;
   return out;
+}
+
+// One level of plus-marks, spacing page px apart: 1 where a mark covers this device pixel.
+fn plusMark(px: vec2f, spacing: f32) -> f32 {
+  let dpr = g.camera.w;
+  let page = px / dpr / g.camera.z - g.camera.xy;
+  let gp = round(page / spacing) * spacing;
+  let c = floor((gp + g.camera.xy) * g.camera.z * dpr) + 0.5;
+  let d = px - c;
+  let t = max(1.0, round(dpr));
+  let arm = round(4.0 * dpr);
+  let h = select(0.0, 1.0, abs(d.x) <= arm && d.y >= 0.0 && d.y < t);
+  let v = select(0.0, 1.0, abs(d.y) <= arm && d.x >= 0.0 && d.x < t);
+  return max(h, v);
 }
 
 @fragment fn fs(i: RectOut) -> @location(0) vec4f {
   let d = roundedBoxSdf(i.local, i.halfSize, i.sr.y);
   let inner = clamp(0.5 - d, 0.0, 1.0);
+  if (i.pattern > 0.5) {
+    let css = floor(i.pos.xy / g.camera.w);
+    var on = 0.0;
+    if (i.pattern < 1.5) {
+      on = select(0.0, 1.0, (u32(css.x) + u32(css.y)) % 2u == 0u);
+    } else if (i.pattern < 2.5) {
+      on = select(0.0, 1.0, u32(css.y) % 3u == 0u);
+    } else {
+      // the finest level that's at least 40 css px apart on screen, fading in from 40 to 80
+      let base = 96.0;
+      let n = max(0.0, ceil(log2(40.0 / (base * g.camera.z)) / 2.0));
+      let spacing = base * pow(4.0, n);
+      let fade = smoothstep(40.0, 80.0, spacing * g.camera.z);
+      on = max(plusMark(i.pos.xy, spacing) * fade, plusMark(i.pos.xy, spacing * 4.0));
+    }
+    let c = i.stroke * on;
+    return (c + i.fill * (1.0 - c.a)) * inner;
+  }
   let outer = clamp(0.5 - (d - i.sr.x), 0.0, 1.0);
   return i.fill * inner + i.stroke * (outer - inner);
 }

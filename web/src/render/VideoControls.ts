@@ -3,6 +3,7 @@ import type { Editor } from '../editor/Editor'
 import { Box } from '../editor/geometry'
 import { parseSelectionId } from '../editor/selection'
 import { extractFrame, formatTime } from './extractFrame'
+import { clock, segments } from './segments'
 import type { VideoPool } from './VideoPool'
 import './videoControls.css'
 
@@ -29,6 +30,8 @@ interface Marks {
 	duration: HTMLSpanElement
 	glyph: HTMLDivElement
 	style: string
+	/** the timecode shown */
+	text: string
 }
 
 /**
@@ -175,12 +178,18 @@ export class VideoControls {
 			const m = this.marks.get(id) ?? this.mountMarks(id)
 			const state = this.pool.state(item)
 			const duration = state.duration
-			const text = duration !== undefined ? formatTime(duration) : ''
-			if (m.duration.textContent !== text) m.duration.textContent = text
+			// its timecode in seven segments: where it is once played, else how long it is
+			const at = state.time > 0 ? state.time : duration
+			const text = at !== undefined ? clock(at * 1000) : ''
+			if (m.text !== text) {
+				m.text = text
+				m.duration.innerHTML = text ? segments(text, 9) : ''
+				m.badge.hidden = !text
+			}
 			const p = editor.pageToScreen(d)
 			const style = `transform:translate(${p.x}px,${p.y}px);width:${sw}px;height:${sh}px;opacity:${d.opacity}`
 			if (m.style !== style) m.el.style.cssText = m.style = style
-			m.badge.hidden = id === barId
+			m.badge.hidden = id === barId || !text
 			m.glyph.hidden = state.playing || Math.min(sw, sh) < GLYPH_MIN
 		}
 		for (const [id, m] of this.marks) {
@@ -226,7 +235,6 @@ export class VideoControls {
 		el.className = 'video-marks'
 		const badge = document.createElement('div')
 		badge.className = 'video-badge'
-		badge.innerHTML = '<svg viewBox="0 0 24 24" width="9" height="9" fill="currentColor"><path d="M7 4.5v15l13-7.5Z"/></svg>'
 		const duration = document.createElement('span')
 		badge.appendChild(duration)
 		const glyph = document.createElement('div')
@@ -234,7 +242,7 @@ export class VideoControls {
 		glyph.innerHTML = PLAY_ICON.replace(/width="14" height="14"/, 'width="22" height="22"')
 		el.append(glyph, badge)
 		this.host.insertBefore(el, this.bar)
-		const m: Marks = { el, badge, duration, glyph, style: '' }
+		const m: Marks = { el, badge, duration, glyph, style: '', text: '' }
 		this.marks.set(id, m)
 		return m
 	}

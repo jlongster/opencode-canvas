@@ -33,7 +33,7 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 					<button
 						key={p.id}
 						className={`avatar${following === p.id ? ' following' : ''}`}
-						style={{ background: p.color, ['--ring' as string]: p.color }}
+						style={{ ['--who' as string]: shade(p.color), ['--ring' as string]: p.color }}
 						title={following === p.id ? `Stop following ${p.name}` : `Follow ${p.name}`}
 						onClick={() => presence.toggleFollow(p.id)}
 					>
@@ -43,7 +43,7 @@ export function PresenceBar({ presence }: { presence: Presence }) {
 				{hidden > 0 && <div className="avatar more">+{hidden}</div>}
 				<button
 					className="avatar me"
-					style={{ background: me.color }}
+					style={{ ['--who' as string]: shade(me.color) }}
 					title={`You (${me.name}): click to change your name`}
 					onClick={() => setEditing((v) => !v)}
 				>
@@ -92,12 +92,15 @@ function NameEditor({ presence, onDone }: { presence: Presence; onDone: () => vo
 					/>
 				))}
 			</div>
-			<button className="save" onClick={save}>
+			<button className="save rm-ringed" onClick={save}>
 				Save
 			</button>
 		</div>
 	)
 }
+
+/** A person's colour, deepened toward ink so white initials read on it (squares, as the manual sets them). */
+const shade = (color: string) => `color-mix(in srgb, ${color} 72%, #151515)`
 
 /** A coloured frame around the screen while following someone. */
 export function FollowIndicator({ presence }: { presence: Presence }) {

@@ -1,58 +1,134 @@
-/* ---------- the empty canvas's "Add a session" button ---------- */
+/* ---------- an empty canvas, laid out like a manual's cover (EmptyState.tsx) ---------- */
+
+.empty-state {
+	position: absolute;
+	inset: 0;
+	z-index: 4;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 48px;
+	padding: 96px calc(84px + var(--safe-right)) 96px calc(118px + var(--safe-left));
+	pointer-events: none;
+	color: var(--rm-ink);
+}
+
+/* A faint sheet where the first session's frame lands: a dashed head, a dithered body. */
+.empty-sheet {
+	width: 300px;
+	border: 1px dashed var(--rm-rule-2);
+}
+
+.empty-sheet-head {
+	height: 34px;
+	padding: 0 10px;
+	border-bottom: 1px dashed var(--rm-rule-2);
+	color: var(--rm-ink-2);
+	font: italic 15px/32px var(--rm-font-serif);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.empty-sheet-body {
+	height: 120px;
+	opacity: 0.5;
+	background: repeating-conic-gradient(var(--rm-dither) 0 25%, transparent 0 50%) 0 0 / 2px 2px;
+}
+
+.empty-cover {
+	width: min(470px, 100%);
+}
+
+.empty-title {
+	margin: 0;
+	font-weight: 800;
+	font-size: 40px;
+	line-height: 1;
+	letter-spacing: -0.01em;
+	text-transform: uppercase;
+}
+
+.empty-sub {
+	margin-top: 4px;
+	font: 300 34px/1.1 var(--rm-font-sans);
+	letter-spacing: -0.02em;
+}
+
+.empty-text {
+	max-width: 400px;
+	margin: 18px 0 22px;
+	color: var(--rm-ink-2);
+	font: 15px/1.45 var(--rm-font-sans);
+}
 
 .empty-add {
-	position: absolute;
-	left: 50%;
-	top: 50%;
-	transform: translate(-50%, -50%);
-	z-index: 4;
-}
-
-.empty-add-button {
-	display: inline-flex;
+	display: flex;
 	align-items: center;
-	gap: 9px;
-	height: 48px;
-	padding: 0 24px 0 20px;
-	border: 1px solid rgba(255, 255, 255, 0.12);
-	border-radius: 999px;
-	background: rgba(32, 32, 38, 0.92);
-	color: #f4f4f5;
-	font: inherit;
-	font-size: 15px;
-	font-weight: 600;
-	letter-spacing: 0.01em;
-	cursor: pointer;
-	backdrop-filter: blur(12px);
-	box-shadow:
-		0 1px 0 rgba(255, 255, 255, 0.06) inset,
-		0 10px 40px rgba(0, 0, 0, 0.45);
-	transition:
-		background 0.15s,
-		border-color 0.15s,
-		transform 0.15s,
-		box-shadow 0.15s;
+	gap: 16px;
+	pointer-events: auto;
 }
 
-.empty-add-button svg {
-	color: #a5b4fc;
+.empty-add .empty-add-button {
+	height: 34px;
+	padding: 0 16px;
+	font: 600 14px var(--rm-font-sans);
 }
 
-.empty-add-button:hover {
-	background: rgba(44, 44, 52, 0.96);
-	border-color: rgba(165, 180, 252, 0.45);
-	transform: translateY(-1px);
-	box-shadow:
-		0 1px 0 rgba(255, 255, 255, 0.08) inset,
-		0 14px 44px rgba(0, 0, 0, 0.5),
-		0 0 0 4px rgba(165, 180, 252, 0.08);
+.empty-add-hint {
+	color: var(--rm-ink-2);
+	font-size: 12px;
 }
 
-.empty-add-button:active {
-	transform: translateY(0);
+.empty-facts {
+	margin-top: 44px;
+	border-top: 1px solid var(--rm-ink);
+	font-size: 11.5px;
 }
 
-.empty-add-button:focus-visible {
-	outline: 2px solid rgba(165, 180, 252, 0.7);
-	outline-offset: 3px;
+.empty-fact {
+	display: flex;
+	justify-content: space-between;
+	gap: 16px;
+	padding: 7px 0 8px;
+	border-bottom: 1px solid var(--rm-ink);
+	pointer-events: auto;
+	user-select: text;
+}
+
+.empty-fact-k {
+	flex: none;
+	font: 600 10px var(--rm-font-sans);
+	letter-spacing: 0.16em;
+	text-transform: uppercase;
+}
+
+.empty-fact > span:last-child {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.empty-fact-mono {
+	font: 11px var(--rm-font-mono);
+}
+
+@media (max-width: 640px) {
+	.empty-state {
+		padding: 88px 20px 88px;
+		gap: 28px;
+	}
+
+	.empty-sheet {
+		display: none;
+	}
+
+	.empty-title {
+		font-size: 30px;
+	}
+
+	.empty-sub {
+		font-size: 26px;
+	}
 }

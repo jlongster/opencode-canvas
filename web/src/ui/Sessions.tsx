@@ -45,18 +45,27 @@ export function SessionsButton({ editor, sessions }: { editor: Editor; sessions:
 				aria-pressed={open}
 				onClick={() => sessionsPopover.set(open ? null : {})}
 			>
-				<TerminalIcon />
-				<span className="wide-only">Sessions</span>
+				<span>Sessions</span>
+				<FrameCount editor={editor} />
 			</button>
 			{open && <SessionsPopover editor={editor} sessions={sessions} onClose={() => sessionsPopover.set(null)} />}
 		</span>
 	)
 }
 
+/** How many frames (top-level sessions) are on this canvas, beside "Sessions". */
+function FrameCount({ editor }: { editor: Editor }) {
+	const n = useValue(() => Object.values(editor.sessions.get()).filter((s) => !s.opencode?.parentId).length, [editor])
+	return <span className="sp-trigger-n">{String(n).padStart(2, '0')}</span>
+}
+
 interface Row extends OpenCodeSessionSummary {
 	here: boolean
 	hidden: boolean
 }
+
+type RowState = 'running' | 'asking' | 'failed' | 'done' | 'idle'
+const STATE_LABEL: Record<RowState, string> = { running: 'Running', asking: 'Asking', failed: 'Failed', done: 'Done', idle: 'Idle' }
 
 function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessions: SessionControl; onClose: () => void }) {
 	const { servers, byServer, errors, reload, retry } = useOpenCode()
@@ -68,6 +77,11 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 	const known = useValue(() => liveSessions.sessions.get())
 	const listVersion = useValue(() => liveSessions.listVersion.get())
 	const frames = useValue(() => editor.sessions.get(), [editor])
+	const running = useValue(() => liveSessions.busy.get())
+	const failed = useValue(() => liveSessions.failed.get())
+	const askingIds = useValue(() => [...sessions.live.get()].filter(([, p]) => p.asking?.count).map(([id]) => id).join(' '), [sessions])
+	/** sessions seen working while the popover was open: done once they stop */
+	const seenRunning = useRef(new Set<string>())
 	const rootRef = useRef<HTMLDivElement>(null)
 	const inputRef = useRef<HTMLInputElement>(null)
 
@@ -107,6 +121,15 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 		}
 		return list.sort((a, b) => b.updatedAt - a.updatedAt)
 	}, [servers, byServer, known, frames])
+	const stateOf = (r: Row): RowState => {
+		if (askingIds.split(' ').includes(r.id)) return 'asking'
+		if (r.busy || running.has(r.id)) {
+			seenRunning.current.add(r.id)
+			return 'running'
+		}
+		if (failed.has(r.id)) return 'failed'
+		return seenRunning.current.has(r.id) ? 'done' : 'idle'
+	}
 	const shown = q ? rows.filter((s) => [s.title, projectName(s.directory)].some((f) => f.toLowerCase().includes(q)) || s.id.toLowerCase() === q) : rows
 
 	// each frame's newest item
@@ -165,6 +188,10 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 			e.stopPropagation()
 			return onClose()
 		}
+		if (e.key === '/' && document.activeElement !== inputRef.current) {
+			e.preventDefault()
+			return inputRef.current?.focus()
+		}
 		if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
 		const stops = [inputRef.current, ...(rootRef.current?.querySelectorAll<HTMLElement>('.sp-row:not(:disabled)') ?? [])].filter(Boolean) as HTMLElement[]
 		const at = stops.indexOf(document.activeElement as HTMLElement)
@@ -176,8 +203,13 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 	return (
 		<div className="sp" ref={rootRef} role="dialog" aria-label="Sessions" onKeyDown={onKeyDown} onWheel={(e) => e.stopPropagation()}>
 			<div className="sp-head">
-				<span className="sp-title">Sessions</span>
-				{answered && <span className="sp-count">{rows.length}</span>}
+				<span className="sp-title rm-wide">Sessions</span>
+				{servers.length > 0 && (
+					<span className="sp-meta">
+						{servers.length} paired OpenCode{servers.length === 1 ? '' : 's'}
+						{answered && ` · ${rows.length} session${rows.length === 1 ? '' : 's'}`}
+					</span>
+				)}
 				<button className="sp-close" title="Close (Esc)" aria-label="Close" onClick={onClose}>
 					<CloseIcon />
 				</button>
@@ -189,23 +221,32 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 				</div>
 			) : (
 				<>
-					<label className="sp-search">
-						<SearchIcon />
-						<input
-							ref={inputRef}
-							autoFocus
-							placeholder="Search sessions and projects"
-							aria-label="Search sessions"
-							spellCheck={false}
-							autoComplete="off"
-							value={query}
-							onChange={(e) => setQuery(e.target.value)}
-							onKeyDown={(e) => {
-								if (e.key === 'Enter' && shown[0] && pending === null) pick(shown[0])
-							}}
-						/>
-					</label>
+					<div className="sp-search-wrap">
+						<label className="sp-search">
+							<input
+								ref={inputRef}
+								autoFocus
+								placeholder="Find a session or directory"
+								aria-label="Search sessions"
+								spellCheck={false}
+								autoComplete="off"
+								value={query}
+								onChange={(e) => setQuery(e.target.value)}
+								onKeyDown={(e) => {
+									if (e.key === 'Enter' && shown[0] && pending === null) pick(shown[0])
+								}}
+							/>
+							<kbd className="rm-key">/</kbd>
+						</label>
+					</div>
 
+					<div className="sp-cols" aria-hidden="true">
+						<span>Session</span>
+						<span>Directory</span>
+						<span>State</span>
+						<span>Active</span>
+						<span>Canvas</span>
+					</div>
 					<div className="sp-list">
 						{!answered && !failing.length ? (
 							<SkeletonRows />
@@ -213,6 +254,7 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 							<>
 								{shown.map((s) => {
 									const k = sessionKey(s)
+									const state = stateOf(s)
 									return (
 										<button
 											key={k}
@@ -221,8 +263,27 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 											title={s.here ? (s.hidden ? 'Hidden on this canvas: show its frame' : 'Go to its frame') : 'Add its frame to this canvas'}
 											onClick={() => pick(s)}
 										>
-											<RowText title={s.title} directory={s.directory} />
-											{pending === k ? <span className="sp-spin" aria-label="Adding" /> : s.here && !s.hidden ? <span className="sp-chip">On canvas</span> : null}
+											<span className={`sp-c-title${s.title ? '' : ' is-untitled'}`}>{s.title || 'Untitled session'}</span>
+											<span className="sp-c-dir" title={s.directory || undefined}>
+												<bdi>{shortDir(s.directory) || '—'}</bdi>
+											</span>
+											<span className="sp-c-state">
+												<span className={`sp-state is-${state}`}>{STATE_LABEL[state]}</span>
+											</span>
+											<span className="sp-c-active">{state === 'running' ? 'Now' : ago(s.updatedAt)}</span>
+											<span className="sp-c-canvas">
+												{pending === k ? (
+													<span className="sp-wait">Adding…</span>
+												) : s.here ? (
+													s.hidden ? (
+														<b>Show</b>
+													) : (
+														<span className="sp-goto">Go to →</span>
+													)
+												) : (
+													<b>+ Add</b>
+												)}
+											</span>
 										</button>
 									)
 								})}
@@ -255,6 +316,18 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 							</div>
 						))}
 					</div>
+					<div className="sp-keys">
+						<span>
+							<kbd className="rm-key">↑</kbd> <kbd className="rm-key">↓</kbd> move
+						</span>
+						<span>
+							<kbd className="rm-key">↵</kbd> add or go to
+						</span>
+						<span>
+							<kbd className="rm-key">Esc</kbd> close
+						</span>
+						<span className="sp-keys-order">Most recent first</span>
+					</div>
 				</>
 			)}
 
@@ -285,6 +358,7 @@ function SessionsPopover({ editor, sessions, onClose }: { editor: Editor; sessio
 											onClick={() => goToFrame(f.id)}
 										>
 											<RowText title={f.title} directory={f.directory} parent={f.parent ? frames[f.parent]?.title || 'Untitled session' : undefined} />
+											<span className="sp-c-canvas">{f.hidden ? <b>Show</b> : <span className="sp-goto">Go to →</span>}</span>
 										</button>
 									))}
 								</div>
@@ -344,30 +418,28 @@ function Caret({ open }: { open: boolean }) {
 	)
 }
 
-function TerminalIcon() {
-	return (
-		<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-			<rect x="3" y="4.5" width="18" height="15" rx="2.5" />
-			<path d="m7.5 10 2.5 2-2.5 2M12.5 14.5h4" />
-		</svg>
-	)
-}
-
-function SearchIcon() {
-	return (
-		<svg className="sp-search-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-			<circle cx="11" cy="11" r="6.5" />
-			<path d="m16 16 4 4" />
-		</svg>
-	)
-}
-
 function CloseIcon() {
 	return (
 		<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
 			<path d="M6 6l12 12M18 6 6 18" />
 		</svg>
 	)
+}
+
+/** A directory as the manual prints it: the home folder as ~. */
+function shortDir(dir: string) {
+	return dir.replace(/^\/(?:root|home\/[^/]+)(?=\/|$)/, '~')
+}
+
+/** How long ago, in the manual's capitals: NOW, 4 MIN, 2 H, YESTERDAY, 3 D, then the date. */
+function ago(at: number) {
+	const s = Math.max(0, (Date.now() - at) / 1000)
+	if (s < 60) return 'Now'
+	if (s < 3600) return `${Math.floor(s / 60)} min`
+	if (s < 24 * 3600) return `${Math.floor(s / 3600)} h`
+	if (s < 48 * 3600) return 'Yesterday'
+	if (s < 7 * 24 * 3600) return `${Math.floor(s / 86400)} d`
+	return new Date(at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
 }
 
 /** The project a session's directory is: its last folder ("canvas"), else a shortened path ("~", "/"). */

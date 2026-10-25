@@ -31,6 +31,7 @@ import { EmptyState } from './EmptyState'
 import { PopulateProgress } from './PopulateProgress'
 import { FollowIndicator, PresenceBar } from './PresenceBar'
 import { useValue } from './useValue'
+import { Wordmark } from './Wordmark'
 // hiding frames (their title's eye), the hidden-link toast, the attention bar's hidden rows
 import './frames.css'
 
@@ -207,6 +208,8 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 					const control = new SessionControl(editor, p, c.id, link.role === 'edit', links, busy, () => canvasTitle)
 					// What sessions want people to look at: their sticky notes (and what they ask), for the bar at the top.
 					const calls = new Attention(editor, control, notes)
+					// An agent note's "Later": on to the next note that wants attention.
+					notes.onLater = () => calls.step(1)
 					const cursors = new PeerCursors(overlayRef.current!, editor, p)
 					// Every frame is an OpenCode session: what its OpenCode says about it, live (edit links tell everyone).
 					const frameSessions = new FrameSessions(editor, c.id, link.role === 'edit')
@@ -282,6 +285,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 				<div ref={overlayRef} className="overlay" />
 			</div>
 			<ToolPicker editor={editor} withEditTools={!!presence && role === 'edit'} />
+			<StatusLine editor={editor} />
 			{presence && <FollowIndicator presence={presence} />}
 			{presence && <CursorChat editor={editor} presence={presence} />}
 			{sessions?.canPrompt && <SessionPrompt editor={editor} sessions={sessions} />}
@@ -305,13 +309,13 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 							</span>
 						</div>
 					)}
-					{presence && <PresenceBar presence={presence} />}
 					<Toolbar editor={editor} canvas={role === 'edit' ? canvas : null} sessions={sessions?.canPrompt ? sessions : null} />
+					{presence && <PresenceBar presence={presence} />}
 				</div>
 			</div>
 			<UndoToast editor={editor} />
 			<HiddenLinkToast editor={editor} canEdit={role === 'edit'} />
-			{canvas && <EmptyState editor={editor} canAdd={!!sessions?.canPrompt} viewOnly={role === 'view'} />}
+			{canvas && <EmptyState editor={editor} canvasId={canvas.id} canAdd={!!sessions?.canPrompt} viewOnly={role === 'view'} />}
 			{(rendererError || error) && (
 				<div className="error">
 					<strong>{rendererError ? "Can't start the renderer." : "Can't open this canvas."}</strong>
@@ -361,37 +365,41 @@ function TitleBar({ canvas, canRename, onRenamed }: { canvas: Canvas | null; can
 	}
 
 	return (
-		<div className="toolbar title-bar" onPointerDown={(e) => e.stopPropagation()}>
+		<div className="title-bar" onPointerDown={(e) => e.stopPropagation()}>
 			<a className="back" href={listUrl()} title="All canvases">
-				<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-					<rect x="3" y="3" width="7" height="7" rx="1.5" />
-					<rect x="14" y="3" width="7" height="7" rx="1.5" />
-					<rect x="3" y="14" width="7" height="7" rx="1.5" />
-					<rect x="14" y="14" width="7" height="7" rx="1.5" />
-				</svg>
-				<span>All canvases</span>
+				<Wordmark />
 			</a>
-			<div className="sep" />
-			{draft !== null ? (
-				<input
-					className="title-input"
-					autoFocus
-					value={draft}
-					maxLength={120}
-					onChange={(e) => setDraft(e.currentTarget.value)}
-					onFocus={(e) => e.currentTarget.select()}
-					onBlur={commit}
-					onKeyDown={(e) => {
-						if (e.key === 'Enter') e.currentTarget.blur()
-						if (e.key === 'Escape') setDraft(null)
-					}}
-				/>
-			) : canRename && canvas ? (
-				<button className="title" title="Rename" disabled={saving} onClick={() => setDraft(canvas.title)}>
-					{canvas.title}
-				</button>
-			) : (
-				<span className="title">{canvas?.title ?? ''}</span>
+			<div className="title-bar-main">
+				<a className="title-bar-name rm-wide" href={listUrl()} title="All canvases">
+					OPENCODE CANVAS
+				</a>
+				{draft !== null ? (
+					<input
+						className="title-input"
+						autoFocus
+						value={draft}
+						maxLength={120}
+						onChange={(e) => setDraft(e.currentTarget.value)}
+						onFocus={(e) => e.currentTarget.select()}
+						onBlur={commit}
+						onKeyDown={(e) => {
+							if (e.key === 'Enter') e.currentTarget.blur()
+							if (e.key === 'Escape') setDraft(null)
+						}}
+					/>
+				) : canRename && canvas ? (
+					<button className="title" title="Rename" disabled={saving} onClick={() => setDraft(canvas.title)}>
+						{canvas.title}
+					</button>
+				) : (
+					<span className="title">{canvas?.title ?? ''}</span>
+				)}
+			</div>
+			{canvas && (
+				<>
+					<div className="sep wide-only" />
+					<span className="title-bar-id wide-only">{canvas.id}</span>
+				</>
 			)}
 		</div>
 	)
@@ -403,8 +411,8 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 		label: 'Select',
 		key: 'V',
 		icon: (
-			<svg viewBox="0 0 24 24" width="16" height="16">
-				<path d="M5 4l14 8-6.5 1.5L9 20z" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+			<svg viewBox="0 0 20 20" width="20" height="20">
+				<path d="M5 2.5v13.2l3.3-3.1 2.3 5 2.1-.9-2.3-5h4.5z" fill="currentColor" />
 			</svg>
 		),
 	},
@@ -413,9 +421,8 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 		label: 'Hand',
 		key: 'H',
 		icon: (
-			<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-				<path d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v6M10 10.5V6a2 2 0 0 0-4 0v8" />
-				<path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-5.9-2.4l-3.6-3.6a2 2 0 0 1 2.8-2.8L7 15" />
+			<svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+				<path d="M6.5 10V4.8a1.2 1.2 0 0 1 2.4 0V9M8.9 9V3.6a1.2 1.2 0 0 1 2.4 0V9M11.3 9V4.4a1.2 1.2 0 0 1 2.4 0V10M13.7 10V6.6a1.2 1.2 0 0 1 2.4 0v5.2c0 3.2-2.2 5.7-5.4 5.7-2.2 0-3.4-1-4.6-2.6L3.6 11.3a1.2 1.2 0 0 1 1.8-1.5L6.5 11" />
 			</svg>
 		),
 	},
@@ -424,9 +431,9 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 		label: 'Pencil · draw on an item, T for a text note',
 		key: 'P',
 		icon: (
-			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-				<path d="M4 20l1.2-4.4L16.4 4.4a2 2 0 0 1 2.8 0l.4.4a2 2 0 0 1 0 2.8L8.4 18.8z" />
-				<path d="M14.5 6.3l3.2 3.2" />
+			<svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+				<path d="M3.5 16.5l1-4L13 4l3 3-8.5 8.5z" />
+				<path d="M11.5 5.5l3 3" />
 			</svg>
 		),
 	},
@@ -435,18 +442,19 @@ const TOOLS: { id: ToolId; label: string; key: string; icon: JSX.Element }[] = [
 		label: 'Sticky note',
 		key: 'N',
 		icon: (
-			<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
-				<path d="M4 4h16v10l-6 6H4z" />
-				<path d="M14 20v-6h6" />
+			<svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.4">
+				<path d="M3.5 3.5h13v8.5l-4.5 4.5h-8.5z" />
+				<path d="M16.5 12h-4.5v4.5" />
 			</svg>
 		),
 	},
 ]
 
+/** The tool palette, down the left edge: the active tool in inverse, each with its key. */
 function ToolPicker({ editor, withEditTools }: { editor: Editor; withEditTools: boolean }) {
 	const current = useValue(() => editor.currentToolId.get())
 	return (
-		<div className="toolbar tools" onPointerDown={(e) => e.stopPropagation()}>
+		<div className="tools" onPointerDown={(e) => e.stopPropagation()}>
 			{TOOLS.filter((tool) => withEditTools || (tool.id !== 'note' && tool.id !== 'pencil')).map((tool) => (
 				<button
 					key={tool.id}
@@ -456,15 +464,53 @@ function ToolPicker({ editor, withEditTools }: { editor: Editor; withEditTools: 
 					onClick={() => editor.setCurrentTool(tool.id)}
 				>
 					{tool.icon}
+					<span className="tool-key">{tool.key}</span>
 				</button>
 			))}
 		</div>
 	)
 }
 
+/** Scale bars this long in page px, the shortest that is at least SCALE_MIN screen px at the zoom. */
+const SCALE_STEPS = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+const SCALE_MIN = 55
+
+/** Bottom left: a scale bar, the zoom, where the pointer is on the page, and how many things are selected (click: zoom to them). */
+function StatusLine({ editor }: { editor: Editor }) {
+	const z = useValue(() => editor.camera.get().z)
+	const at = useValue(() => {
+		const p = editor.pointerPage.get()
+		return p ? `${Math.round(p.x)} ${Math.round(p.y)}` : ''
+	})
+	const selected = useValue(() => editor.selectedIds.get().length)
+	const step = SCALE_STEPS.find((s) => s * z >= SCALE_MIN) ?? SCALE_STEPS[SCALE_STEPS.length - 1]!
+	const [x, y] = at ? at.split(' ') : []
+	return (
+		<div className="status-line wide-only">
+			<span className="status-scale">
+				<i style={{ width: Math.round(step * z) }} />
+				{groupDigits(step)} px
+			</span>
+			<span>{Math.round(z * 100)}%</span>
+			{at && (
+				<span>
+					X {groupDigits(Number(x))}&nbsp; Y {groupDigits(Number(y))}
+				</span>
+			)}
+			{selected > 0 && (
+				<button className="status-selected" title="Zoom to the selection (Shift+2)" onPointerDown={(e) => e.stopPropagation()} onClick={() => editor.zoomToSelection()}>
+					{selected} SELECTED
+				</button>
+			)}
+		</div>
+	)
+}
+
+/** 4120 → "4 120", as the manual sets numbers. */
+const groupDigits = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
+
 function Toolbar({ editor, canvas, sessions }: { editor: Editor; canvas: Canvas | null; sessions: SessionControl | null }) {
 	const zoom = useValue(() => Math.round(editor.camera.get().z * 100))
-	const hasSelection = useValue(() => editor.selectedIds.get().length > 0)
 	const [sharing, setSharing] = useState(false)
 	const adding = useValue(() => sessionsPopover.get() !== null)
 	useEffect(() => {
@@ -473,21 +519,24 @@ function Toolbar({ editor, canvas, sessions }: { editor: Editor; canvas: Canvas 
 	useEffect(() => () => sessionsPopover.set(null), [])
 
 	return (
-		<div className="toolbar" onPointerDown={(e) => e.stopPropagation()}>
-			{/* wide-only: hidden on narrow screens, where pinch zooms */}
-			<button className="wide-only" title="Zoom out (−)" onClick={() => editor.zoomOut()}>−</button>
-			<button title="Reset to 100% (Shift+0)" className="zoom wide-only" onClick={() => editor.resetZoom()}>
-				{zoom}%
-			</button>
-			<button className="wide-only" title="Zoom in (+)" onClick={() => editor.zoomIn()}>+</button>
-			<div className="sep wide-only" />
-			<button title="Zoom to fit (Shift+1)" onClick={() => editor.zoomToFit()}>Fit</button>
-			<button className="wide-only" title="Zoom to selection (Shift+2)" disabled={!hasSelection} onClick={() => editor.zoomToSelection()}>
-				Selection
-			</button>
-			{canvas && <div className="sep" />}
+		<div className="toolbar-row" onPointerDown={(e) => e.stopPropagation()}>
+			<div className="toolbar zoom-panel">
+				{/* wide-only: hidden on narrow screens, where pinch zooms */}
+				<button className="wide-only" title="Zoom out (−)" onClick={() => editor.zoomOut()}>
+					−
+				</button>
+				<button title="Reset to 100% (Shift+0)" className="zoom wide-only" onClick={() => editor.resetZoom()}>
+					{zoom}%
+				</button>
+				<button className="wide-only" title="Zoom in (+)" onClick={() => editor.zoomIn()}>
+					+
+				</button>
+				<button title="Zoom to fit (Shift+1)" onClick={() => editor.zoomToFit()}>
+					Fit
+				</button>
+			</div>
 			{canvas && (
-				<>
+				<div className="toolbar">
 					{sessions && <SessionsButton editor={editor} sessions={sessions} />}
 					<button
 						title="Links to this canvas"
@@ -499,18 +548,18 @@ function Toolbar({ editor, canvas, sessions }: { editor: Editor; canvas: Canvas 
 					>
 						Share
 					</button>
-				</>
-			)}
-			{canvas && sharing && (
-				<div className="share-popover links">
-					<div className="share-popover-head">
-						<span className="share-note">Share this canvas</span>
-						<button title="Close" onClick={() => setSharing(false)}>
-							×
-						</button>
-					</div>
-					<ShareLinkRow label="Can edit" hint="Full access: notes, removing sessions, renaming" url={editUrl(canvas)} />
-					<ShareLinkRow label="View only" hint="Can look around and chat, but not edit" url={viewUrl(canvas)} />
+					{sharing && (
+						<div className="share-popover links">
+							<div className="share-popover-head">
+								<span className="share-note">Share this canvas</span>
+								<button title="Close" onClick={() => setSharing(false)}>
+									×
+								</button>
+							</div>
+							<ShareLinkRow label="Can edit" hint="Full access: notes, removing sessions, renaming" url={editUrl(canvas)} />
+							<ShareLinkRow label="View only" hint="Can look around and chat, but not edit" url={viewUrl(canvas)} />
+						</div>
+					)}
 				</div>
 			)}
 		</div>

@@ -3,6 +3,7 @@ import type { CanvasSummary } from '../../../shared/types'
 import { createCanvas, deleteCanvas, listCanvases, liveSocket } from '../sync/client'
 import { BASE, url } from '../base'
 import { ConnectOpenCode } from './ConnectOpenCode'
+import { Wordmark } from './Wordmark'
 
 /**
  * The home page: connecting OpenCode (first, until it's connected), then every canvas as a card,
@@ -60,12 +61,15 @@ export function CanvasList() {
 	return (
 		<div className="canvas-list">
 			<header className="canvas-list-head">
-				<div>
-					<h1>Canvases</h1>
-					<span className="canvas-list-sub">
-						<span className={`dot ${connection}`} title={connection} />
-						{canvases ? `${canvases.length} canvas${canvases.length === 1 ? '' : 'es'}` : 'Loading…'}
-					</span>
+				<div className="canvas-list-mark">
+					<Wordmark size={44} />
+					<div>
+						<h1>Canvases</h1>
+						<span className="canvas-list-sub">
+							<span className={`dot ${connection}`} title={connection} />
+							OpenCode Canvas · {canvases ? `${canvases.length} canvas${canvases.length === 1 ? '' : 'es'}` : 'Loading…'}
+						</span>
+					</div>
 				</div>
 				{canvases?.length !== 0 && <NewCanvasButton creating={creating} onClick={create} />}
 			</header>

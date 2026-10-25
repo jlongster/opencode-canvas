@@ -1,15 +1,17 @@
-/* A session's prompt at its frame (PromptThread.tsx) and the questions at its frame (FrameAsks.tsx): separate bubbles, one line each until opened. */
+/*
+ * A session's prompt at its frame (PromptThread.tsx) and the questions at its frame (FrameAsks.tsx):
+ * one panel set like a form. "TO ▪ session" across the top, your last prompt and its reply in
+ * ruled rows (one line each until opened), then the input under an 80-column ruler, its keys and a
+ * ringed Send. Questions and permission requests are alert boxes in the same panel.
+ */
 
 .pt {
-	--surf: var(--panel);
-	--line: var(--border);
-	--line2: var(--border-strong);
-	--tx: var(--text);
-	--mut: var(--text-muted);
-	--dim: var(--text-dim);
-	--shadow:
-		0 10px 24px -8px rgba(0, 0, 0, 0.55),
-		0 2px 6px rgba(0, 0, 0, 0.3);
+	--surf: var(--rm-sheet);
+	--line: var(--rm-rule);
+	--line2: var(--rm-rule-2);
+	--tx: var(--rm-ink);
+	--mut: var(--rm-ink-2);
+	--dim: var(--rm-ink-3);
 	position: absolute;
 	left: 0;
 	top: 0;
@@ -17,16 +19,18 @@
 	box-sizing: border-box;
 	display: flex;
 	flex-direction: column;
-	align-items: flex-start;
-	gap: 6px;
-	color: var(--tx);
-	/* (the app's UI font) */
-	font: 13px/20px ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+	align-items: stretch;
+	width: 376px;
+	max-width: calc(100vw - 16px);
+	background: var(--rm-sheet);
+	border: 1px solid var(--rm-ink);
+	box-shadow: 4px 4px 0 rgb(21 21 21 / 0.14);
+	color: var(--rm-ink);
+	font: 12px/1.4 var(--rm-font-sans);
 	-webkit-font-smoothing: antialiased;
 	text-align: left;
-	/* Positioned with left/top (inline) so this scale-in never animates where it is. */
-	animation: pt-in 140ms ease-out;
-	transform-origin: 20px 0;
+	/* Positioned with left/top (inline) so this never animates where it is. */
+	animation: pt-in 120ms steps(2, end);
 }
 
 .pt *,
@@ -38,7 +42,6 @@
 @keyframes pt-in {
 	from {
 		opacity: 0;
-		transform: scale(0.97);
 	}
 }
 
@@ -64,25 +67,94 @@
 	flex: 1;
 }
 
-/* ── bubbles ── */
+/* ── the head: TO ▪ session × ── */
+
+.pt-head {
+	position: relative;
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: 8px;
+	height: 30px;
+	padding-left: 10px;
+	border-bottom: 1px solid var(--rm-ink);
+	font: 600 12px var(--rm-font-sans);
+}
+
+.pt-to {
+	flex: none;
+	color: var(--rm-ink-2);
+	font: 600 7.5px var(--rm-font-sans);
+	letter-spacing: 0.16em;
+	text-transform: uppercase;
+}
+
+.pt-name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pt .pt-hb {
+	align-self: stretch;
+	display: grid;
+	place-items: center;
+	flex: none;
+	width: 30px;
+	border-left: 1px solid var(--rm-rule);
+	color: var(--rm-ink);
+}
+
+.pt .pt-hb:hover,
+.pt .pt-hb[aria-expanded='true'] {
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
+}
+
+.pt .pt-hb svg {
+	width: 13px;
+	height: 13px;
+}
+
+.pt .pt-hb.pt-later {
+	width: auto;
+	padding: 0 10px;
+	color: var(--rm-ink-2);
+	font-weight: 500;
+}
+
+/* ── rows: YOU and REPLY, one line each until opened ── */
 
 .pt-b {
 	position: relative;
 	flex: none;
-	max-width: 360px;
-	border-radius: 16px;
-	box-shadow: var(--shadow);
 }
 
-/* Prompt and reply: filled with the session's colour, one line. */
+.pt-k {
+	flex: none;
+	width: 42px;
+	color: var(--rm-ink-2);
+	font: 600 7.5px/16px var(--rm-font-sans);
+	letter-spacing: 0.16em;
+	text-transform: uppercase;
+}
+
 .pt-fill {
 	display: flex;
 	align-items: center;
-	gap: 6px;
-	min-height: 32px;
-	padding: 6px 12px;
-	background: var(--c);
-	color: var(--ink);
+	gap: 8px;
+	min-height: 30px;
+	padding: 6px 10px;
+	border-bottom: 1px solid var(--rm-rule);
+	color: var(--rm-ink-2);
+}
+
+/* The reply: the machine's voice. */
+.pt-reply {
+	color: var(--rm-ink);
+	font: 11.5px/1.45 var(--rm-font-mono);
 }
 
 .pt-fill.can {
@@ -90,7 +162,7 @@
 }
 
 .pt-fill.can:hover {
-	background: color-mix(in srgb, var(--c) 90%, var(--ink));
+	background: #f5f4ee;
 }
 
 .pt-fill.dim {
@@ -116,33 +188,19 @@
 	unicode-bidi: isolate;
 }
 
+/* Working: a blue rule down the row's edge. */
 .pt-fill.busy {
-	animation: pt-pulse 1.8s ease-in-out infinite;
-}
-
-@keyframes pt-pulse {
-	0%,
-	100% {
-		box-shadow:
-			var(--shadow),
-			0 0 0 0 color-mix(in srgb, var(--c) 45%, transparent);
-	}
-	50% {
-		box-shadow:
-			var(--shadow),
-			0 0 0 5px color-mix(in srgb, var(--c) 0%, transparent);
-	}
+	box-shadow: inset 4px 0 0 var(--rm-blue);
 }
 
 .pt-idle {
-	opacity: 0.85;
+	color: var(--rm-ink-2);
 }
 
 .pt-dot {
 	flex: none;
 	width: 6px;
 	height: 6px;
-	border-radius: 50%;
 	background: currentColor;
 	opacity: 0.5;
 }
@@ -158,41 +216,43 @@
 .pt-chip-n {
 	width: 18px;
 	height: 18px;
-	border-radius: 4px;
 	object-fit: cover;
-	box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 20%, transparent);
+	outline: 1px solid rgb(0 0 0 / 0.12);
 }
 
 .pt-chip-n {
 	display: grid;
 	place-items: center;
-	font-size: 10px;
-	font-weight: 600;
-	background: color-mix(in srgb, var(--ink) 14%, transparent);
+	font: 600 10px var(--rm-font-mono);
+	background: var(--rm-bar);
 }
 
-/* Opened: as wide as they get, and scrolls past a fixed height. */
+/* Opened: scrolls past a fixed height. */
 .pt-open {
-	width: 360px;
-	padding: 0;
-	align-items: stretch;
+	align-items: flex-start;
+	padding-right: 0;
+}
+
+.pt-open .pt-k {
+	margin-top: 4px;
 }
 
 .pt-scroll {
-	width: 100%;
+	flex: 1;
+	min-width: 0;
 	max-height: 240px;
 	overflow: auto;
-	padding: 10px 14px;
+	padding: 3px 10px 3px 0;
 	overscroll-behavior: contain;
 	overflow-wrap: anywhere;
 	scrollbar-width: thin;
-	scrollbar-color: color-mix(in srgb, var(--ink) 30%, transparent) transparent;
+	scrollbar-color: var(--rm-rule-2) transparent;
 }
 
 .pt-p + .pt-p {
 	margin-top: 8px;
 	padding-top: 8px;
-	border-top: 1px solid color-mix(in srgb, var(--ink) 16%, transparent);
+	border-top: 1px solid var(--rm-rule);
 }
 
 .pt-p.dim {
@@ -218,9 +278,8 @@
 	flex: none;
 	width: 44px;
 	height: 44px;
-	border-radius: 6px;
-	border: 1px solid var(--border);
-	background: var(--raised);
+	border: 1px solid var(--rm-rule-2);
+	background: var(--rm-bar);
 }
 
 .pt-th img,
@@ -229,13 +288,11 @@ img.pt-th {
 	width: 100%;
 	height: 100%;
 	object-fit: cover;
-	border-radius: 5px;
 }
 
 img.pt-th.sm {
 	width: 40px;
 	height: 40px;
-	border-color: color-mix(in srgb, var(--ink) 20%, transparent);
 }
 
 .pt .pt-th-x {
@@ -244,14 +301,12 @@ img.pt-th.sm {
 	top: -6px;
 	width: 16px;
 	height: 16px;
-	border-radius: 50%;
-	background: var(--raised-2);
-	border: 1px solid var(--line2);
+	background: var(--rm-sheet);
+	border: 1px solid var(--rm-ink);
 	display: grid;
 	place-items: center;
-	color: var(--mut);
+	color: var(--rm-ink);
 	opacity: 0;
-	transition: opacity 0.1s;
 }
 
 .pt-th:hover .pt-th-x,
@@ -264,7 +319,7 @@ img.pt-th.sm {
 	height: 8px;
 }
 
-/* The reply, opened: its Markdown, on its colour. */
+/* The reply, opened: its Markdown, in the mono voice. */
 .pt-md > :first-child {
 	margin-top: 0;
 }
@@ -291,27 +346,27 @@ img.pt-th.sm {
 .pt-md h3,
 .pt-md h4 {
 	margin: 10px 0 4px;
-	font-size: 13px;
+	font-size: 1em;
 	font-weight: 700;
+	text-transform: uppercase;
 }
 
 .pt-md a {
-	color: inherit;
+	color: var(--rm-blue);
 	text-decoration: underline;
 	text-underline-offset: 2px;
 }
 
 .pt-md code {
-	font: 12px ui-monospace, monospace;
-	padding: 1px 4px;
-	border-radius: 4px;
-	background: color-mix(in srgb, var(--ink) 10%, transparent);
+	padding: 0 3px;
+	background: var(--rm-bar);
+	font: 0.95em var(--rm-font-mono);
 }
 
 .pt-md pre {
-	padding: 8px 10px;
-	border-radius: 6px;
-	background: color-mix(in srgb, var(--ink) 10%, transparent);
+	padding: 6px 8px;
+	border-left: 2px solid var(--rm-rule-2);
+	background: var(--rm-bar);
 	overflow-x: auto;
 }
 
@@ -322,52 +377,127 @@ img.pt-th.sm {
 
 .pt-md blockquote {
 	padding-left: 10px;
-	border-left: 2px solid color-mix(in srgb, var(--ink) 30%, transparent);
-	opacity: 0.85;
+	border-left: 2px solid var(--rm-rule-2);
+	color: var(--rm-ink-2);
 }
 
 .pt-md hr {
 	margin: 10px 0;
 	border: 0;
-	border-top: 1px solid color-mix(in srgb, var(--ink) 20%, transparent);
+	border-top: 1px solid var(--rm-rule);
 }
 
 .pt-md img {
 	max-width: 100%;
 }
 
-/* ── input: dark, in a thick ring of its colour ── */
+/* ── the input: a field under an 80-column ruler ── */
 
 .pt-in {
-	width: 360px;
-	padding: 6px 8px 5px 10px;
-	background: var(--surf);
-	border: 3px solid var(--c);
+	padding: 10px 10px 0;
+	background: var(--rm-sheet);
 }
 
-.pt-in.drag {
+.pt-field {
+	position: relative;
+	min-height: 48px;
+	padding: 14px 9px 8px;
+	border: 1px solid var(--rm-ink);
+	cursor: text;
+}
+
+.pt-in.drag .pt-field {
 	border-style: dashed;
+}
+
+.pt-ruler {
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 0;
+	height: 7px;
+	overflow: hidden;
+	background: repeating-linear-gradient(90deg, var(--rm-rule-2) 0 1px, transparent 1px 8px);
+	border-bottom: 1px solid var(--rm-rule);
+}
+
+.pt-ruler span {
+	position: absolute;
+	top: -1px;
+	padding: 0 1px;
+	background: var(--rm-sheet);
+	color: var(--rm-ink-3);
+	font: 7px/8px var(--rm-font-mono);
 }
 
 .pt-atts {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 6px;
-	margin: 4px 0 8px;
+	margin: 0 0 8px;
 }
 
-/* Media people dragged onto the frame that the session hasn't had yet: goes with this prompt. */
+/* Media people dragged onto the frame that the session hasn't had yet: chips that go with this prompt. */
 .pt-frame-items {
-	margin-top: 4px;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-bottom: 8px;
 }
 
-.pt-frame-label {
-	font-size: 11px;
-	color: var(--text-dim);
+.pt-fchip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	max-width: 100%;
+	min-width: 0;
+	padding: 2px 6px;
+	border: 1px solid var(--rm-rule-2);
+	color: var(--rm-ink);
+	font: 11px var(--rm-font-sans);
+	white-space: nowrap;
 }
 
-.pt-frame-items .pt-atts {
-	margin-top: 3px;
+.pt-fchip-th {
+	flex: none;
+	width: 16px;
+	height: 11px;
+	object-fit: cover;
+}
+
+.pt-fchip-th.pt-th-doc {
+	display: grid;
+	place-items: center;
+	width: auto;
+	height: auto;
+	padding: 0 2px;
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
+	font: 700 7px var(--rm-font-mono);
+}
+
+.pt-fchip-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pt-fchip-from {
+	flex: none;
+	color: var(--rm-ink-2);
+}
+
+.pt .pt-fchip-x {
+	flex: none;
+	padding: 0 2px;
+	color: var(--rm-ink-2);
+	font-size: 13px;
+	line-height: 1;
+}
+
+.pt .pt-fchip-x:hover {
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
 }
 
 .pt-th-doc {
@@ -375,9 +505,8 @@ img.pt-th.sm {
 	place-items: center;
 	width: 100%;
 	height: 100%;
-	font-size: 9px;
-	font-weight: 600;
-	color: var(--text-muted);
+	font: 700 9px var(--rm-font-mono);
+	color: var(--rm-ink-2);
 }
 
 .pt-ta {
@@ -393,19 +522,19 @@ img.pt-th.sm {
 	outline: 0;
 	resize: none;
 	background: none;
-	color: var(--tx);
-	font: inherit;
-	line-height: 20px;
+	color: var(--rm-ink);
+	font: 13px/20px var(--rm-font-sans);
 	white-space: pre-wrap;
 	overflow-wrap: break-word;
 	overflow-y: hidden;
+	caret-color: var(--rm-ink);
 	cursor: text;
 	scrollbar-width: thin;
-	scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+	scrollbar-color: var(--rm-rule-2) transparent;
 }
 
 .pt-in textarea::placeholder {
-	color: var(--dim);
+	color: var(--rm-ink-3);
 }
 
 /* The draft's first line (clipped with an ellipsis), over the textarea while it's collapsed. */
@@ -416,32 +545,50 @@ img.pt-th.sm {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	pointer-events: none;
-	color: var(--tx);
+	color: var(--rm-ink);
+	font: 13px/20px var(--rm-font-sans);
 }
 
+/* keys, attach, send */
 .pt-tb {
 	display: flex;
 	align-items: center;
-	gap: 4px;
-	margin-top: 4px;
+	gap: 6px;
+	padding: 10px 0;
+	color: var(--rm-ink-2);
+	font: 11px var(--rm-font-sans);
+}
+
+.pt-keys {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.pt-keys .rm-key + .rm-key,
+.pt-keys .rm-key {
+	margin-left: 3px;
 }
 
 .pt-ib {
-	width: 26px;
-	height: 26px;
-	border-radius: 6px;
+	width: 24px;
+	height: 24px;
 	display: inline-grid;
 	place-items: center;
 	flex: none;
 }
 
 .pt .pt-ib {
-	color: var(--mut);
+	color: var(--rm-ink-2);
+	border: 1px solid transparent;
 }
 
 .pt .pt-ib:hover:not(:disabled) {
-	background: rgba(255, 255, 255, 0.06);
-	color: var(--tx);
+	border-color: var(--rm-ink);
+	color: var(--rm-ink);
 }
 
 .pt .pt-ib:disabled {
@@ -449,26 +596,27 @@ img.pt-th.sm {
 }
 
 .pt-ib svg {
-	width: 15px;
-	height: 15px;
+	width: 14px;
+	height: 14px;
 }
 
 .pt-h {
-	margin-left: 4px;
+	margin-left: 2px;
 	min-width: 0;
 	font-size: 11.5px;
-	color: var(--dim);
+	color: var(--rm-ink-2);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
 
 .pt-h.pt-fail {
-	color: #fca5a5;
+	color: var(--rm-red);
 }
 
 .pt .pt-fail button {
-	color: #fecaca;
+	color: var(--rm-red);
+	font-weight: 600;
 	text-decoration: underline;
 	text-underline-offset: 2px;
 }
@@ -477,8 +625,9 @@ img.pt-th.sm {
 	display: inline-flex;
 	gap: 6px;
 	align-items: center;
-	color: var(--c);
-	font-size: 12px;
+	color: var(--rm-blue);
+	font: 600 11px var(--rm-font-mono);
+	text-transform: uppercase;
 }
 
 .pt-flash svg {
@@ -490,10 +639,10 @@ img.pt-th.sm {
 	display: flex;
 	gap: 8px;
 	align-items: flex-start;
-	margin-top: 6px;
+	margin-top: 8px;
 	font-size: 12px;
 	line-height: 17px;
-	color: #fca5a5;
+	color: var(--rm-red);
 }
 
 .pt-error svg {
@@ -503,68 +652,72 @@ img.pt-th.sm {
 	margin-top: 1.5px;
 }
 
+/* Send: the ringed default (see .rm-ringed); quiet until there's something to send. */
 .pt .pt-send {
-	width: 26px;
-	height: 26px;
-	border-radius: 6px;
-	display: inline-grid;
-	place-items: center;
 	flex: none;
-	background: rgba(255, 255, 255, 0.06);
-	color: var(--dim);
+	margin: 0 3px 0 0;
+	padding: 3px 10px;
 }
 
-.pt .pt-send.on {
-	background: var(--c);
-	color: var(--ink);
-}
-
-.pt-send svg {
-	width: 14px;
-	height: 14px;
+.pt .pt-send:not(.on) {
+	outline-color: var(--rm-rule-2);
+	border-color: var(--rm-rule-2);
+	color: var(--rm-ink-3);
+	opacity: 1;
 }
 
 .pt .pt-btn {
-	height: 26px;
+	height: 24px;
 	padding: 0 9px;
-	border-radius: 6px;
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
 	flex: none;
-	font-size: 12px;
-	font-weight: 500;
+	font: 600 12px var(--rm-font-sans);
 	white-space: nowrap;
 }
 
 .pt .pt-btn.ghost {
-	border: 1px solid var(--line2);
-	color: var(--tx);
+	border: 1px solid var(--rm-ink);
+	color: var(--rm-ink);
 }
 
 .pt .pt-btn.ghost:hover:not(:disabled) {
-	background: rgba(255, 255, 255, 0.05);
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
 }
 
+/* the default action: ringed */
 .pt .pt-btn.pri {
-	background: var(--c);
-	color: var(--ink);
+	margin: 0 3px;
+	border: 1px solid var(--rm-ink);
+	border-radius: 4px;
+	outline: 2px solid var(--rm-ink);
+	outline-offset: 1px;
+	background: var(--rm-sheet);
+	color: var(--rm-ink);
+}
+
+.pt .pt-btn.pri:hover:not(:disabled) {
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
 }
 
 .pt .pt-btn.pri.off {
-	background: rgba(255, 255, 255, 0.06);
-	color: var(--dim);
+	border-color: var(--rm-rule-2);
+	outline-color: var(--rm-rule-2);
+	color: var(--rm-ink-3);
 }
 
 .pt .pt-btn.danger {
-	background: #f87171;
-	color: #0d0d0f;
+	border: 1px solid var(--rm-red);
+	background: var(--rm-red);
+	color: #fff;
 }
 
 .pt-stopi {
 	width: 8px;
 	height: 8px;
-	border-radius: 2px;
 	background: currentColor;
 }
 
@@ -573,10 +726,10 @@ img.pt-th.sm {
 	inset: 0;
 	display: grid;
 	place-items: center;
-	border-radius: 13px;
-	background: color-mix(in srgb, var(--panel) 82%, var(--c));
-	color: var(--tx);
-	font-size: 12px;
+	border: 1px dashed var(--rm-ink);
+	background: rgb(251 250 246 / 0.92);
+	color: var(--rm-ink);
+	font: italic 15px var(--rm-font-serif);
 	pointer-events: none;
 }
 
@@ -587,10 +740,9 @@ img.pt-th.sm {
 	align-items: center;
 	gap: 6px;
 	min-height: 32px;
-	padding: 5px 12px;
-	background: var(--surf);
-	border: 1.5px dashed color-mix(in srgb, var(--c) 65%, transparent);
-	color: var(--mut);
+	padding: 6px 10px;
+	color: var(--rm-ink-2);
+	font-size: 12px;
 }
 
 .pt-ro.can {
@@ -598,8 +750,7 @@ img.pt-th.sm {
 }
 
 .pt-ro.pt-open {
-	padding: 9px 13px;
-	font-size: 12px;
+	padding: 9px 10px;
 	line-height: 17px;
 }
 
@@ -608,8 +759,10 @@ img.pt-th.sm {
 	align-items: center;
 	gap: 5px;
 	margin-bottom: 2px;
-	color: var(--tx);
-	font-weight: 500;
+	color: var(--rm-ink);
+	font: 600 8px var(--rm-font-sans);
+	letter-spacing: 0.16em;
+	text-transform: uppercase;
 }
 
 .pt-lock {
@@ -621,53 +774,54 @@ img.pt-th.sm {
 	align-items: center;
 	gap: 4px;
 	margin-left: 4px;
-	color: var(--dim);
-	font-weight: 400;
+	color: var(--rm-ink-3);
 }
 
-/* ── questions and permission requests, in place of the three bubbles (AskBubbles.tsx) ── */
+/* ── questions and permission requests, in place of the rows (AskBubbles.tsx): alert boxes ── */
 
 .pt-asks {
 	display: contents;
 }
 
-/* One question: filled with the session's colour, like the prompt and reply, as wide as they get. */
 .pt-q {
-	width: 360px;
-	padding: 9px 12px 10px;
-	background: var(--c);
-	color: var(--ink);
-	outline: none;
-	animation: pt-q-in 180ms cubic-bezier(0.34, 1.4, 0.64, 1) both;
+	margin: 10px 10px 0;
+	padding: 10px 12px;
+	border: 1px solid var(--rm-ink);
+	outline: 1px solid var(--rm-ink);
+	outline-offset: 2px;
+	background: var(--rm-sheet);
+	color: var(--rm-ink);
 }
 
 .pt-q + .pt-q {
-	animation-delay: 40ms;
+	margin-top: 14px;
 }
 
-@keyframes pt-q-in {
-	from {
-		opacity: 0;
-		transform: translateY(-4px) scale(0.98);
-	}
+.pt-q:focus {
+	outline-width: 2px;
 }
 
 .pt-q-head {
 	display: flex;
 	align-items: center;
-	gap: 6px;
-	font-size: 11px;
-	line-height: 16px;
-	font-weight: 600;
-	letter-spacing: 0.04em;
+	gap: 7px;
+	color: var(--rm-red);
+	font: 600 8px/14px var(--rm-font-sans);
+	letter-spacing: 0.16em;
 	text-transform: uppercase;
-	opacity: 0.75;
+}
+
+/* the red lamp: waiting on you */
+.pt-q-head::before {
+	content: '';
+	flex: none;
+	width: 9px;
+	height: 9px;
+	background: var(--rm-red);
 }
 
 .pt-q-icon {
-	flex: none;
-	width: 13px;
-	height: 13px;
+	display: none;
 }
 
 .pt-q-title {
@@ -679,36 +833,35 @@ img.pt-th.sm {
 
 .pt-q-n {
 	margin-left: auto;
-	font-variant-numeric: tabular-nums;
+	color: var(--rm-ink-3);
+	font: 10px var(--rm-font-mono);
+	letter-spacing: 0;
 }
 
 .pt-q-text {
-	margin-top: 3px;
-	font-size: 13.5px;
-	line-height: 20px;
-	font-weight: 600;
+	margin-top: 6px;
+	font: 13px/1.4 var(--rm-font-sans);
 	overflow-wrap: anywhere;
 }
 
 .pt-q-note {
 	margin-top: 6px;
+	color: var(--rm-ink-2);
 	font-size: 12px;
 	line-height: 17px;
-	opacity: 0.75;
 }
 
 .pt-q-note code {
-	font: 11.5px ui-monospace, monospace;
-	padding: 1px 4px;
-	border-radius: 4px;
-	background: color-mix(in srgb, var(--ink) 10%, transparent);
+	padding: 0 3px;
+	background: var(--rm-bar);
+	font: 11.5px var(--rm-font-mono);
 }
 
 .pt-q-opts {
 	display: flex;
 	flex-direction: column;
-	gap: 3px;
 	margin-top: 8px;
+	border-top: 1px solid var(--rm-rule);
 }
 
 .pt .pt-q-opt {
@@ -716,26 +869,24 @@ img.pt-th.sm {
 	align-items: flex-start;
 	gap: 9px;
 	width: 100%;
-	padding: 6px 9px;
-	border-radius: 9px;
+	padding: 6px 4px;
+	border-bottom: 1px solid var(--rm-rule);
 	text-align: left;
-	color: var(--ink);
-	background: color-mix(in srgb, var(--ink) 7%, transparent);
-	transition: background 90ms;
+	color: var(--rm-ink);
 }
 
 .pt .pt-q-opt:not(.on):hover:not(:disabled) {
-	background: color-mix(in srgb, var(--ink) 13%, transparent);
+	background: #f5f4ee;
 }
 
 .pt .pt-q-opt.on {
-	background: var(--ink);
-	color: var(--c);
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
 }
 
 .pt .pt-q-opt:focus-visible {
-	outline: 2px solid var(--ink);
-	outline-offset: 1px;
+	outline: 1px solid var(--rm-ink);
+	outline-offset: -3px;
 }
 
 .pt .pt-q-opt:disabled {
@@ -744,27 +895,22 @@ img.pt-th.sm {
 
 .pt-q-mark {
 	flex: none;
-	width: 14px;
-	height: 14px;
-	margin-top: 3px;
-	border-radius: 50%;
-	border: 1.5px solid currentColor;
-	opacity: 0.7;
 	position: relative;
+	width: 11px;
+	height: 11px;
+	margin-top: 3px;
+	border: 1.5px solid currentColor;
+	border-radius: 50%;
 }
 
 .pt-q-mark.sq {
-	border-radius: 4px;
-}
-
-.pt-q-opt.on .pt-q-mark {
-	opacity: 1;
+	border-radius: 0;
 }
 
 .pt-q-opt.on .pt-q-mark::after {
 	content: '';
 	position: absolute;
-	inset: 2.5px;
+	inset: 2px;
 	border-radius: inherit;
 	background: currentColor;
 }
@@ -781,188 +927,106 @@ img.pt-th.sm {
 }
 
 .pt-q-opt-desc {
-	font-size: 12px;
+	font-size: 11.5px;
 	line-height: 16px;
-	opacity: 0.7;
+	opacity: 0.75;
 	overflow-wrap: anywhere;
 }
 
-/* A typed answer: the dark of the input, ringed in the session's ink. */
 .pt-q-input {
 	display: block;
 	width: 100%;
-	margin-top: 6px;
-	padding: 6px 10px;
-	border: 0;
-	border-radius: 9px;
-	outline: 2px solid transparent;
-	background: var(--surf);
-	color: var(--tx);
-	font: inherit;
-	transition: outline-color 90ms;
+	margin-top: 8px;
+	padding: 6px 9px;
+	border: 1px solid var(--rm-ink);
+	border-radius: 0;
+	outline: none;
+	background: var(--rm-sheet);
+	color: var(--rm-ink);
+	font: 13px var(--rm-font-sans);
 }
 
 .pt-q-input:focus {
-	outline-color: var(--ink);
+	outline: 1px solid var(--rm-ink);
+	outline-offset: 2px;
 }
 
 .pt-q-input::placeholder {
-	color: var(--dim);
+	color: var(--rm-ink-3);
 }
 
-/* The answer's actions: dark, in its colour's ring, like the input it stands in for. */
+/* The answer's actions: Later-style text, then the ringed default. */
 .pt-act {
-	width: 360px;
 	display: flex;
 	align-items: center;
-	gap: 6px;
-	padding: 5px 6px 5px 12px;
-	background: var(--surf);
-	border: 3px solid var(--c);
+	gap: 8px;
+	padding: 12px 10px 10px;
 }
 
 .pt-act-h {
 	min-width: 0;
 	font-size: 11.5px;
-	color: var(--dim);
+	color: var(--rm-ink-2);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
 
 .pt-act-h.pt-fail {
-	color: #fca5a5;
+	color: var(--rm-red);
 }
 
-.pt .pt-act .pt-btn.pri:not(.off):hover:not(:disabled) {
-	background: color-mix(in srgb, var(--c) 88%, white);
+/* (the read-only "waiting" row under a question) */
+.pt-asks .pt-ro {
+	margin-top: 8px;
+	border-top: 1px solid var(--rm-rule);
 }
 
-/* ── ⋯ and ×, beside the stack on hover ── */
-
-.pt-ctl {
-	position: absolute;
-	top: 4px;
-	display: flex;
-	flex-direction: column;
-	gap: 4px;
-	opacity: 0;
-	transition: opacity 120ms ease-out;
-	pointer-events: none;
-}
-
-.pt-ctl.right {
-	left: calc(100% + 6px);
-}
-
-.pt-ctl.left {
-	right: calc(100% + 6px);
-}
-
-/* (a strip across the gap, so the pointer can get to them without leaving the stack) */
-.pt-ctl::before {
-	content: '';
-	position: absolute;
-	top: -4px;
-	bottom: -4px;
-	width: 10px;
-}
-
-.pt-ctl.right::before {
-	right: 100%;
-}
-
-.pt-ctl.left::before {
-	left: 100%;
-}
-
-.pt:hover .pt-ctl,
-.pt-ctl:focus-within,
-.pt-ctl.open {
-	opacity: 1;
-	pointer-events: auto;
-}
-
-@media (hover: none) {
-	.pt-ctl {
-		opacity: 1;
-		pointer-events: auto;
-	}
-}
-
-.pt .pt-fb {
-	width: 24px;
-	height: 24px;
-	border-radius: 50%;
-	display: grid;
-	place-items: center;
-	color: var(--mut);
-	background: var(--raised);
-	border: 1px solid var(--line2);
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
-	transition:
-		background 100ms,
-		color 100ms;
-}
-
-.pt .pt-fb:hover,
-.pt .pt-fb[aria-expanded='true'] {
-	color: var(--tx);
-	background: var(--raised-2);
-}
-
-.pt .pt-fb:focus-visible {
-	outline: 2px solid color-mix(in srgb, var(--c) 70%, transparent);
-	outline-offset: 1px;
-}
-
-.pt-fb svg {
-	width: 12px;
-	height: 12px;
-}
+/* ── the ⋯ menu, under the head ── */
 
 .pt-menu {
 	position: absolute;
-	top: 64px;
+	top: 34px;
+	right: -1px;
 	z-index: 9;
-	width: 220px;
+	width: 240px;
 	display: flex;
 	flex-direction: column;
-	padding: 4px;
-	background: var(--raised);
-	border: 1px solid var(--line2);
-	border-radius: 8px;
-	box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+	padding: 0;
+	background: var(--rm-sheet);
+	border: 1px solid var(--rm-ink);
+	box-shadow: 3px 3px 0 rgb(21 21 21 / 0.12);
 	font-size: 12.5px;
 	line-height: 1.45;
-}
-
-/* (under the ⋯, reaching back over the stack rather than off the window) */
-.pt-menu.right {
-	right: -30px;
-}
-
-.pt-menu.left {
-	left: -30px;
 }
 
 .pt .pt-menu > button {
 	display: flex;
 	justify-content: space-between;
 	gap: 8px;
-	padding: 6px 8px;
-	border-radius: 5px;
+	padding: 7px 10px;
+	border-bottom: 1px solid var(--rm-rule);
 	text-align: left;
-	color: var(--tx);
+	color: var(--rm-ink);
 	white-space: nowrap;
 }
 
+.pt .pt-menu > button:last-child {
+	border-bottom: 0;
+}
+
 .pt .pt-menu > button:hover:not(:disabled) {
-	background: rgba(255, 255, 255, 0.06);
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
 }
 
 .pt .pt-menu > button.pt-danger {
-	color: #fca5a5;
+	color: var(--rm-red);
+}
+
+.pt .pt-menu > button.pt-danger:hover {
+	background: var(--rm-red);
+	color: #fff;
 }
 
 .pt-menu .pt-dim {
@@ -970,21 +1034,21 @@ img.pt-th.sm {
 }
 
 .pt-confirm {
-	width: 250px;
+	width: 260px;
 	padding: 10px 12px;
 	gap: 10px;
 }
 
 .pt-confirm p {
 	margin: 0;
-	color: var(--mut);
+	color: var(--rm-ink-2);
 	line-height: 17px;
 	font-size: 12px;
 }
 
 .pt-confirm p b {
-	color: var(--tx);
-	font-weight: 500;
+	color: var(--rm-ink);
+	font-weight: 600;
 }
 
 .pt-confirm-row {
@@ -993,32 +1057,26 @@ img.pt-th.sm {
 	gap: 6px;
 }
 
-/* ── spinner, caret ── */
+/* ── loading, caret ── */
 
+/* Loading: a 50% dither square stepping round, never a shimmer. */
 .pt-spin {
 	display: inline-block;
 	flex: none;
-	width: 12px;
-	height: 12px;
-	border-radius: 50%;
-	border: 1.5px solid color-mix(in srgb, currentColor 25%, transparent);
-	border-top-color: currentColor;
-	animation: pt-spin 0.8s linear infinite;
+	width: 10px;
+	height: 10px;
+	border: 1px solid currentColor;
+	background: repeating-conic-gradient(currentColor 0 25%, transparent 0 50%) 0 0 / 2px 2px;
+	animation: pt-spin 1s steps(4) infinite;
 }
 
 .pt-in .pt-spin {
-	border-color: color-mix(in srgb, var(--c) 25%, transparent);
-	border-top-color: var(--c);
+	color: var(--rm-blue);
 }
 
 .pt-spin.pt-spin-xs {
-	width: 9px;
-	height: 9px;
-}
-
-.pt .pt-spin.dark {
-	border-color: color-mix(in srgb, var(--ink) 20%, transparent);
-	border-top-color: var(--ink);
+	width: 8px;
+	height: 8px;
 }
 
 @keyframes pt-spin {
@@ -1029,13 +1087,12 @@ img.pt-th.sm {
 
 .pt-caret {
 	display: inline-block;
-	width: 7px;
+	width: 1.5px;
 	height: 14px;
 	margin-left: 2px;
-	border-radius: 1px;
-	vertical-align: -2px;
+	vertical-align: -3px;
 	background: currentColor;
-	animation: pt-blink 1s steps(2) infinite;
+	animation: pt-blink 1.06s steps(1) infinite;
 }
 
 @keyframes pt-blink {
@@ -1046,13 +1103,11 @@ img.pt-th.sm {
 
 @media (prefers-reduced-motion: reduce) {
 	.pt,
-	.pt-caret,
-	.pt-q,
-	.pt-fill.busy {
+	.pt-caret {
 		animation: none;
 	}
 
 	.pt-spin {
-		animation-duration: 2.4s;
+		animation: none;
 	}
 }

@@ -7,30 +7,42 @@
 	align-items: center;
 	gap: 8px;
 	box-sizing: border-box;
-	height: 28px;
-	padding: 0 12px 0 10px;
-	border: 1px solid rgba(255, 255, 255, 0.1);
-	border-radius: 999px;
-	background: rgba(28, 28, 32, 0.9);
-	color: #d4d4d8;
-	font-size: 12px;
+	height: 26px;
+	padding: 0 10px 0 0;
+	border: 1px solid var(--rm-ink);
+	background: var(--rm-sheet);
+	color: var(--rm-ink);
+	font: 11px var(--rm-font-mono);
+	text-transform: uppercase;
 	white-space: nowrap;
 	pointer-events: none;
-	backdrop-filter: blur(8px);
-	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
 
+/* a blue cell, as running is everywhere */
+.populate-progress::before {
+	content: '';
+	align-self: stretch;
+	width: 4px;
+	background: var(--rm-blue);
+}
+
+/* loading: a 50% dither square stepping round, never a shimmer */
 .populate-spinner {
-	width: 11px;
-	height: 11px;
-	border: 2px solid rgba(255, 255, 255, 0.2);
-	border-top-color: #a5b4fc;
-	border-radius: 50%;
-	animation: populate-spin 0.8s linear infinite;
+	width: 9px;
+	height: 9px;
+	border: 1px solid var(--rm-blue);
+	background: repeating-conic-gradient(var(--rm-blue) 0 25%, transparent 0 50%) 0 0 / 2px 2px;
+	animation: populate-spin 1s steps(4) infinite;
 }
 
 @keyframes populate-spin {
 	to {
 		transform: rotate(360deg);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.populate-spinner {
+		animation: none;
 	}
 }

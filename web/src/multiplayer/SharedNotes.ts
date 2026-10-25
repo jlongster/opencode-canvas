@@ -57,6 +57,8 @@ export interface AgentNoteInfo {
 export class SharedNotes {
 	/** agents' notes, oldest first */
 	readonly agentNotes = atom<AgentNoteInfo[]>('agentNotes', [], agentNotesEqual)
+	/** An agent's note's "Later": on to the next note that wants attention (see App). */
+	onLater: (() => void) | null = null
 	private doc: Y.Doc
 	private notes: Y.Map<Y.Map<unknown>>
 	private host: HTMLDivElement
@@ -385,14 +387,22 @@ class NoteView {
 		this.el.dataset.note = id
 		this.el.style.width = `${NOTE_W}px`
 		if (agent) {
+			const kind = note.get('kind') === 'highlight' ? 'Highlight' : 'Say'
 			this.el.innerHTML =
-				'<div class="note-header"><i class="note-agent-dot"></i><span class="note-author"></span></div>' +
+				`<div class="note-header"><i class="note-agent-dot"></i><span class="note-author"></span><span class="note-kind">${kind}</span></div>` +
 				'<div class="note-body md-text"></div>' +
-				(editable ? '<div class="note-actions"><button class="note-ack" title="Acknowledge it: removes this note for everyone">✓ Got it</button></div>' : '')
+				(editable
+					? '<div class="note-actions"><button class="note-later" title="Later: on to the next note that wants your attention">Later</button>' +
+						'<button class="note-ack" title="Acknowledge it: removes this note for everyone">✓ Got it</button></div>'
+					: '')
 			this.body = this.el.querySelector('.note-body')!
 			this.el.querySelector('.note-ack')?.addEventListener('click', (e) => {
 				e.stopPropagation()
 				owner.acknowledge(id)
+			})
+			this.el.querySelector('.note-later')?.addEventListener('click', (e) => {
+				e.stopPropagation()
+				owner.onLater?.()
 			})
 			// A long note scrolls instead of zooming the canvas.
 			this.body.addEventListener('wheel', (e) => {
@@ -437,8 +447,7 @@ class NoteView {
 	update() {
 		if (this.agent) return this.updateAgent()
 		const color = (this.note.get('color') as string) ?? NOTE_COLORS[0]
-		this.el.style.background = color
-		this.colorButton.style.background = color
+		this.el.style.setProperty('--note-color', color)
 		const author = (this.note.get('author') as string) ?? ''
 		if (this.author.textContent !== author) this.author.textContent = author
 	}
@@ -537,19 +546,16 @@ class NoteView {
 			}
 			box = this.drawn = next
 		}
-		const tilt = (this.note.get('rotation') as number | undefined) ?? tiltFromId(this.id)
 		const p = editor.pageToScreen(box ?? { x: this.note.get('x') as number, y: this.note.get('y') as number })
 		const z = editor.camera.peek().z
-		const h = box?.h ?? NOTE_H
 		// Outlines are scaled with the note, so they divide by the zoom to stay the same width on screen.
 		if (z !== this.lastZoom) {
 			this.lastZoom = z
 			this.el.style.setProperty('--z', String(z))
 		}
-		// Scale from the top-left (so x/y stay the note's corner), but tilt around the centre.
-		const transform =
-			`translate(${p.x}px, ${p.y}px) scale(${z}) translate(${NOTE_W / 2}px, ${h / 2}px) ` +
-			`rotate(${tilt}deg) translate(${-NOTE_W / 2}px, ${-h / 2}px)`
+		// Scaled from the top-left, so x/y stay the note's corner. Notes sit square on the sheet: the
+		// tilt stored with people's notes isn't drawn.
+		const transform = `translate(${p.x}px, ${p.y}px) scale(${z})`
 		if (transform === this.lastTransform) return
 		this.lastTransform = transform
 		this.el.style.transform = transform
@@ -754,7 +760,7 @@ class NoteView {
 	}
 }
 
-/** An agent's note's pointer: a line from the note (over a dark keyline), and a ring on a point or an outline round a region. */
+/** An agent's note's pointer: a leader from the note (over a paper keyline), and a ring on a point or an outline round a region. */
 interface Pointer {
 	kind: 'point' | 'region'
 	g: SVGGElement
@@ -782,7 +788,7 @@ function createPointer(kind: 'point' | 'region'): Pointer {
 					make('circle', 'np-ring', { r: String(POINT_RING) }),
 					make('circle', 'np-dot', { r: '3.5' }),
 				]
-			: [make('rect', 'np-pulse', { rx: '5' }), make('rect', 'np-keyline', { rx: '5' }), make('rect', 'np-ring', { rx: '5' })]
+			: [make('rect', 'np-pulse'), make('rect', 'np-keyline'), make('rect', 'np-ring')]
 	return { kind, g, lines, marks, key: '' }
 }
 
@@ -800,13 +806,6 @@ function agentNotesEqual(a: AgentNoteInfo[], b: AgentNoteInfo[]) {
 }
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
-
-/** A stable tilt for notes created before tilts were stored. */
-function tiltFromId(id: string) {
-	let h = 0
-	for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0
-	return ((((h % 1000) + 1000) % 1000) / 1000 * 2 - 1) * MAX_TILT
-}
 
 /** crypto.randomUUID only exists in secure contexts (and Safari 15.4+); fall back to getRandomValues. */
 function noteId() {

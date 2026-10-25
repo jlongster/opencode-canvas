@@ -11,6 +11,9 @@ import { useValue } from './useValue'
  * gliding the camera to each; the pill opens the breakdown by session, where each session's arrows
  * step through just its notes, and a session asking something shows what it asks.
  */
+/** sessions named in the bar itself; the rest are in its breakdown */
+const CHIPS_SHOWN = 3
+
 export function AttentionTray({ attention }: { attention: Attention }) {
 	const callers = useValue(() => attention.callers.get(), [attention])
 	// hidden frames can't be shown: on edit links their rows open Sessions, where they can be shown again
@@ -20,32 +23,42 @@ export function AttentionTray({ attention }: { attention: Attention }) {
 		if (!callers.length) setOpen(false)
 	}, [callers.length])
 	if (!callers.length) return null
+	const notes = callers.reduce((n, c) => n + c.notes.length, 0)
 	const total = callers.reduce((n, c) => n + c.notes.length + (c.asking?.count ?? 0), 0)
 	const names = callers.map((c) => c.name)
 	const askers = callers.filter((c) => c.asking)
 	const lone = askers.length === 1 && callers.length === 1 && !callers[0]!.notes.length
-	const headline = lone ? `${askers[0]!.name} ${asks(askers[0]!.asking!)}` : `${total} thing${total === 1 ? ' wants' : 's want'} your attention`
+	const what = notes === total ? (total === 1 ? 'note wants' : 'notes want') : total === 1 ? 'thing wants' : 'things want'
+	const headline = lone ? `${askers[0]!.name} ${asks(askers[0]!.asking!)}` : `${total} ${what} your attention`
+	const chips = callers.slice(0, CHIPS_SHOWN)
 	return (
 		<div className={`attention-tray${open ? ' open' : ''}`} onPointerDown={(e) => e.stopPropagation()} onWheel={(e) => e.stopPropagation()}>
 			<div className="attention-bar">
-				<button className="attention-pill" aria-expanded={open} title={`From ${names.join(', ')}`} onClick={() => setOpen(!open)}>
-					<span className="attention-dots" aria-hidden="true">
-						{callers.slice(0, 4).map((c) => (
-							<i key={c.sessionId} style={{ background: c.color }} />
+				<button className="attention-pill" aria-expanded={open} title={`From ${names.join(', ')}: show them all`} onClick={() => setOpen(!open)}>
+					<i className="attention-lamp" aria-hidden="true" />
+					<span className="attention-pill-text">{headline}</span>
+				</button>
+				{!lone && (
+					<span className="attention-who wide-only">
+						{chips.map((c) => (
+							<button
+								key={c.sessionId}
+								className="attention-chip"
+								title={c.asking ? `${c.name}: show what it asks` : `${c.name}: show its next note`}
+								onClick={() => (c.asking ? attention.answer(c.sessionId) : attention.step(1, c.sessionId))}
+							>
+								{c.asking ? <i className="attention-lamp" /> : <i className="rm-swatch" style={{ ['--c' as string]: c.color }} />}
+								<span className="attention-chip-name">{c.ownName}</span>
+								{c.notes.length > 0 && <span className="attention-chip-n">×{c.notes.length}</span>}
+							</button>
 						))}
-					</span>
-					<span className="attention-pill-text">
-						{headline}
-						{!lone && (
-							<span className="attention-pill-names">
-								{' · '}
-								{names[0]}
-								{names.length > 1 ? ` +${names.length - 1}` : ''}
-							</span>
+						{callers.length > chips.length && (
+							<button className="attention-chip attention-chip-more" title="Show them all" onClick={() => setOpen(true)}>
+								+{callers.length - chips.length}
+							</button>
 						)}
 					</span>
-					<span className="attention-caret">{open ? '▴' : '▾'}</span>
-				</button>
+				)}
 				<Stepper attention={attention} label="sticky note" />
 			</div>
 			{open && (
@@ -83,7 +96,7 @@ function CallerRow({ attention, caller: c, hidden }: { attention: Attention; cal
 					else attention.step(1, c.sessionId)
 				}}
 			>
-				<i className="attention-row-dot" />
+				{c.asking ? <i className="attention-lamp" /> : <i className="rm-swatch" style={{ ['--c' as string]: c.color }} />}
 				<span className="attention-row-main">
 					<span className="attention-row-name" title={c.name}>
 						{c.parentName && <span className="attention-row-parent">{c.parentName} › </span>}
@@ -115,7 +128,7 @@ function Stepper({ attention, sessionId, label }: { attention: Attention; sessio
 				←
 			</button>
 			<span className="attention-pos" aria-live="polite">
-				{index ? `${index}/${total}` : total}
+				{index ? `${pad(index)}/${pad(total)}` : pad(total)}
 			</span>
 			<button className="attention-arrow" title={`Next ${label}`} aria-label={`Next ${label}`} onClick={() => attention.step(1, sessionId)}>
 				→
@@ -129,6 +142,8 @@ function asks(asking: AskingInfo): string {
 	if (asking.kind === 'permission') return asking.count > 1 ? `needs your permission (${asking.count})` : 'needs your permission'
 	return asking.count > 1 ? `is asking ${asking.count} questions` : 'is asking a question'
 }
+
+const pad = (n: number) => String(n).padStart(2, '0')
 
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 

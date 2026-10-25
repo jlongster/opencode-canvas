@@ -12,7 +12,7 @@ const CHIP_EDGE = 12
 const CHIP_TOP = 72
 const CHIP_W = 180
 const CHIP_H = 30
-const CARD_W = 360
+const CARD_W = 376
 
 /**
  * What sessions wait on their owner to answer (questions, permission requests), shown at their
@@ -81,7 +81,6 @@ function AskCard({
 	}, [])
 	if (!asking) return null
 	const { left, top } = placeAtFrame(anchor, size?.w ?? CARD_W, size?.h ?? 0, window.innerWidth, window.innerHeight)
-	const ctlSide = left + (size?.w ?? CARD_W) + 40 > window.innerWidth ? 'left' : 'right'
 	return (
 		<div
 			ref={ref}
@@ -96,22 +95,21 @@ function AskCard({
 				if (e.key === 'Escape') onAway()
 			}}
 		>
-			<div className="frame-asks-who">
-				<i />
-				<span>{name}</span>
+			<div className="pt-head">
+				<span className="pt-to">Asks</span>
+				<i className="rm-swatch" />
+				<span className="pt-name" title={name}>
+					{name}
+				</span>
+				<button className="pt-hb pt-later" title="Later (Esc): its row in the attention bar at the top brings it back" onClick={onAway}>
+					Later
+				</button>
 			</div>
 			{owner && asks?.length ? (
 				<AskBubbles asks={asks} actions={actions} more={asks.length - 1} />
 			) : (
 				<AskWaiting asking={asking} loading={owner && loading} />
 			)}
-			<div className={`pt-ctl ${ctlSide}`}>
-				<button className="pt-fb" title="Later (Esc): its row in the attention bar at the top brings it back" aria-label="Later" onClick={onAway}>
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
-						<path d="M6 6l12 12M18 6 6 18" />
-					</svg>
-				</button>
-			</div>
 		</div>
 	)
 }

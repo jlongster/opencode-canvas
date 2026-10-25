@@ -1,13 +1,13 @@
 /* Hiding and dragging session frames on the canvas, and the hidden-link toast's dismiss button. */
 
 .toast .toast-dismiss {
-	color: var(--text-dim);
+	color: var(--rm-ink-2);
 	font-weight: 400;
 }
 
 .toast .toast-dismiss:hover {
-	background: rgba(255, 255, 255, 0.08);
-	color: var(--text);
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
 }
 
 /* On the canvas: a small eye on a hovered frame title (page-space). */
@@ -55,5 +55,5 @@
 
 .attention-row-hidden {
 	font-weight: 400;
-	color: var(--text-dim);
+	color: var(--rm-ink-3);
 }

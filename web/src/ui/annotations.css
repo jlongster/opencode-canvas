@@ -1,16 +1,16 @@
 /* Annotations: pencil strokes and note cards at a constant screen size (not scaled with the camera), above notes. */
 .annotation-layer {
-	--ann-bg: var(--panel);
-	--ann-border: var(--border);
-	--ann-border-strong: var(--border-strong);
-	--ann-text: var(--text);
-	--ann-muted: var(--text-muted);
-	--ann-faint: var(--text-dim);
+	--ann-bg: var(--rm-sheet);
+	--ann-border: var(--rm-ink);
+	--ann-border-strong: var(--rm-ink);
+	--ann-text: var(--rm-ink);
+	--ann-muted: var(--rm-ink-2);
+	--ann-faint: var(--rm-ink-3);
 	position: absolute;
 	inset: 0;
 	pointer-events: none;
 	z-index: 2;
-	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter Variable', Inter, system-ui, sans-serif;
+	font-family: var(--rm-font-sans);
 	-webkit-font-smoothing: antialiased;
 	-moz-osx-font-smoothing: grayscale;
 }
@@ -23,7 +23,7 @@
 	overflow: visible;
 }
 
-/* Pencil strokes: 3px on screen at any zoom, with a soft dark casing so they read on light images. */
+/* The red pencil: 2.5px on screen at any zoom, whoever drew it (their colour stays on their card). */
 .annotation-stroke,
 .annotation-casing {
 	fill: none;
@@ -33,64 +33,64 @@
 }
 
 .annotation-casing {
-	stroke: rgba(0, 0, 0, 0.3);
+	stroke: transparent;
 	stroke-width: 5;
 }
 
 .annotation-stroke {
-	stroke: var(--author);
-	stroke-width: 3;
+	stroke: var(--rm-red);
+	stroke-width: 2.5;
 }
 
+/* hovered or open: a paper knockout under the pencil, so it lifts off the image */
 .annotation-g.hover .annotation-casing,
 .annotation-g.active .annotation-casing {
-	stroke: rgba(0, 0, 0, 0.5);
+	stroke: rgb(251 250 246 / 0.75);
 	stroke-width: 6;
+}
+
+.annotation-g.hover .annotation-stroke,
+.annotation-g.active .annotation-stroke {
+	stroke-width: 3;
 }
 
 /* A text-only note's spot. */
 .annotation-ring {
-	fill: rgb(var(--canvas-rgb) / 0.45);
-	stroke: var(--author);
+	fill: rgb(251 250 246 / 0.5);
+	stroke: var(--rm-red);
 	stroke-width: 1.5;
 }
 
 .annotation-dot {
-	fill: var(--author);
+	fill: var(--rm-red);
 }
 
 .annotation-g.hover .annotation-ring,
 .annotation-g.active .annotation-ring {
-	fill: rgb(var(--canvas-rgb) / 0.7);
+	fill: rgb(251 250 246 / 0.8);
 }
 
-/* The number chip: a drawing without a note, or any note collapsed at low zoom (the same number agents see). */
+/* The chip: a red revision triangle (its number, the one agents see, is kept for them and in its title, not drawn). */
 .annotation-badge {
 	position: absolute;
 	left: 0;
 	top: 0;
-	min-width: 18px;
-	height: 18px;
-	padding: 0 5px;
-	border: 1px solid var(--ann-border-strong);
-	border-radius: 5px;
-	background: var(--ann-bg);
-	color: var(--ann-text);
-	font-size: 11px;
-	font-weight: 600;
-	line-height: 16px;
-	font-variant-numeric: tabular-nums;
-	text-align: center;
+	width: 18px;
+	height: 16px;
+	padding: 0;
+	border: 0;
+	background: var(--rm-red);
+	color: transparent;
+	font-size: 0;
+	clip-path: polygon(50% 0, 100% 100%, 0 100%);
 	cursor: pointer;
 	pointer-events: auto;
 	will-change: transform;
-	transition: border-color 120ms, background-color 120ms;
 }
 
 .annotation-badge:hover,
 .annotation-badge.active {
-	border-color: var(--author);
-	background: var(--raised);
+	background: var(--rm-ink);
 }
 
 .annotation-card {
@@ -100,12 +100,12 @@
 	width: max-content;
 	min-width: 168px;
 	max-width: 260px;
-	padding: 7px 10px 8px;
-	border: 1px solid var(--ann-border);
-	border-radius: 6px;
+	padding: 6px 10px 8px;
+	border: 1px solid var(--rm-rule-2);
+	border-left: 2px solid var(--rm-red);
+	border-radius: 0;
 	background: var(--ann-bg);
 	color: var(--ann-text);
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
 	pointer-events: auto;
 	will-change: transform;
 	cursor: default;
@@ -116,7 +116,8 @@
 .annotation-card.active,
 .annotation-card.editing {
 	z-index: 1;
-	border-color: var(--ann-border-strong);
+	border-color: var(--rm-ink);
+	border-left-color: var(--rm-red);
 }
 
 .annotation-head {
@@ -125,30 +126,39 @@
 	align-items: center;
 	gap: 6px;
 	height: 16px;
-	font-size: 11px;
-	line-height: 16px;
-	color: var(--ann-muted);
+	color: var(--rm-red);
+	font: 700 8px/16px var(--rm-font-sans);
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
 	white-space: nowrap;
+}
+
+/* ▲ · AUTHOR, as the red pencil signs it */
+.annotation-head::before {
+	content: '▲';
+	font-size: 8px;
+	letter-spacing: 0;
 }
 
 .annotation-swatch {
 	flex: none;
-	width: 6px;
-	height: 6px;
-	border-radius: 50%;
+	width: 7px;
+	height: 7px;
 	background: var(--author);
 }
 
 .annotation-author {
 	overflow: hidden;
 	text-overflow: ellipsis;
-	color: var(--text-muted);
-	font-weight: 500;
+	color: var(--rm-red);
 }
 
 .annotation-time {
 	flex: 1;
-	color: var(--ann-faint);
+	color: var(--rm-ink-3);
+	font: 10px var(--rm-font-mono);
+	letter-spacing: 0;
+	text-transform: none;
 }
 
 .annotation-actions {
@@ -178,19 +188,20 @@
 	height: 22px;
 	padding: 0;
 	border: 0;
-	border-radius: 4px;
+	border-radius: 0;
 	background: transparent;
 	color: var(--ann-muted);
 	cursor: pointer;
 }
 
 .annotation-actions button:hover {
-	background: rgba(255, 255, 255, 0.07);
-	color: var(--ann-text);
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
 }
 
 .annotation-actions .annotation-delete:hover {
-	color: #f87171;
+	background: var(--rm-red);
+	color: #fff;
 }
 
 .annotation-actions svg {
@@ -200,16 +211,15 @@
 }
 
 .annotation-text {
-	margin-top: 3px;
-	font-size: 13px;
-	line-height: 18px;
+	margin-top: 2px;
+	color: var(--rm-red);
+	font: italic 15px/1.25 var(--rm-font-serif);
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
 }
 
 .annotation-text.empty {
 	color: var(--ann-faint);
-	font-style: italic;
 }
 
 .annotation-input {
@@ -223,10 +233,8 @@
 	resize: none;
 	background: transparent;
 	color: var(--ann-text);
-	caret-color: var(--author);
-	font: inherit;
-	font-size: 13px;
-	line-height: 18px;
+	caret-color: var(--rm-red);
+	font: italic 15px/1.25 var(--rm-font-serif);
 }
 
 .annotation-input::placeholder {
@@ -236,7 +244,7 @@
 .annotation-hint {
 	margin-top: 6px;
 	padding-top: 6px;
-	border-top: 1px solid var(--ann-border);
+	border-top: 1px solid var(--rm-rule);
 	font-size: 11px;
 	line-height: 14px;
 	color: var(--ann-faint);

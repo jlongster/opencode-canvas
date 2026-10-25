@@ -11,8 +11,6 @@ import { markdownToHtml } from './markdown'
 import { useValue } from './useValue'
 import './promptThread.css'
 
-/** the widest a bubble gets (the input always is this wide) */
-const BUBBLE_MAX = 360
 const LINE_PX = 20
 /** the input grows to this many lines while focused, then scrolls */
 const INPUT_MAX_LINES = 8
@@ -475,12 +473,9 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 
 	const vw = window.innerWidth
 	const vh = window.innerHeight
-	const w = size?.w ?? BUBBLE_MAX
 	if (size && !place.current) place.current = placeAtAnchor(anchor, size.w, size.h, size.inputTop, vw, vh)
 	const left = Math.round(anchor.x + (place.current?.dx ?? 0))
 	const top = Math.round(anchor.top + (place.current?.dy ?? 0) - (size?.inputTop ?? 0))
-	/** the ⋯ and × go on the stack's right, or its left with no room there */
-	const ctlSide = left + w + 40 > vw ? 'left' : 'right'
 
 	const hasContent = !!text.trim() || attachments.length > 0 || included.length > 0
 	const empty = !lastPrompt && !reply && !thinking
@@ -522,11 +517,25 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 			}}
 			{...dropHandlers}
 		>
+			<div className="pt-head">
+				<span className="pt-to">To</span>
+				<i className="rm-swatch" />
+				<span className="pt-name" title={name}>
+					{name}
+				</span>
+				<button className="pt-hb pt-more" title="More" aria-label="More" aria-expanded={!!menu} onClick={() => setMenu(menu ? null : 'open')}>
+					<MoreIcon />
+				</button>
+				<button className="pt-hb" title="Close (Esc)" aria-label="Close" onClick={close}>
+					<XIcon />
+				</button>
+			</div>
 			{askView ?? (
 				<>
 					{lastPrompt &&
 						(expanded === 'prompt' ? (
 							<div className="pt-b pt-fill pt-open" data-b="prompt">
+								<span className="pt-k">You</span>
 								<div className="pt-scroll">
 									{prompts.map((p) => (
 										<div key={p.id} className={`pt-p${p.dim ? ' dim' : ''}`}>
@@ -549,6 +558,7 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 								title={promptMore ? 'Show the whole prompt' : undefined}
 								onPointerDown={expandOn('prompt', promptMore)}
 							>
+								<span className="pt-k">You</span>
 								{chips > 0 && (
 									<span className="pt-chips">
 										{lastPrompt.images.slice(0, CHIPS_MAX).map((src, i) => (
@@ -566,7 +576,8 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 						))}
 
 					{expanded === 'reply' && reply ? (
-						<div className={`pt-b pt-fill pt-open${thinking ? ' busy' : ''}`} data-b="reply">
+						<div className={`pt-b pt-fill pt-reply pt-open${thinking ? ' busy' : ''}`} data-b="reply">
+							<span className="pt-k">Reply</span>
 							<div
 								ref={replyRef}
 								className="pt-scroll pt-md"
@@ -578,24 +589,27 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 							/>
 						</div>
 					) : thinking && !replyLine ? (
-						<div className="pt-b pt-fill busy" data-b="reply">
+						<div className="pt-b pt-fill pt-reply busy" data-b="reply">
+							<span className="pt-k">Reply</span>
 							<span className="pt-spin" />
 							<span className="pt-line">{busyLine}</span>
 						</div>
 					) : replyLine ? (
 						<div
-							className={`pt-b pt-fill${thinking ? ' busy' : ''}${replyMore ? ' can' : ''}`}
+							className={`pt-b pt-fill pt-reply${thinking ? ' busy' : ''}${replyMore ? ' can' : ''}`}
 							data-b="reply"
 							title={replyMore ? 'Show the whole reply' : undefined}
 							onPointerDown={expandOn('reply', replyMore)}
 						>
+							<span className="pt-k">Reply</span>
 							<span ref={replyLineRef} className={`pt-line${replyTail ? ' tail' : ''}`}>
 								{replyTail ? <span>{replyLine}</span> : replyLine}
 							</span>
 						</div>
 					) : (
 						empty && (
-							<div className="pt-b pt-fill pt-idle" data-b="reply">
+							<div className="pt-b pt-fill pt-reply pt-idle" data-b="reply">
+								<span className="pt-k">Reply</span>
 								{loading ? <span className="pt-spin" /> : <span className="pt-dot" />}
 								{loading ? 'Loading the last exchange…' : owner ? 'Idle · nothing said yet' : 'Idle · its replies show here'}
 							</div>
@@ -640,25 +654,27 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 						>
 							{included.length > 0 && (
 								<div className="pt-frame-items">
-									<span className="pt-frame-label" title="Added to the frame by people, not sent to the session yet: they go with this prompt">
-										From the frame
-									</span>
-									<div className="pt-atts">
-										{included.map((item) => (
-											<div key={item.id} className="pt-th" title={`${item.name}${item.addedBy ? `, added by ${item.addedBy}` : ''}: goes with this prompt`}>
-												{item.kind === 'html' ? <span className="pt-th-doc">HTML</span> : <img src={withBase(item.thumb)} alt={item.name} />}
-												<button
-													className="pt-th-x"
-													title={`Don’t send ${item.name} with this prompt (it stays on the frame, still to send)`}
-													disabled={sending}
-													onPointerDown={keepFocus}
-													onClick={() => setSkipped((prev) => new Set([...prev, item.id]))}
-												>
-													<XIcon />
-												</button>
-											</div>
-										))}
-									</div>
+									{included.map((item) => (
+										<span
+											key={item.id}
+											className="pt-fchip"
+											title={`${item.name}${item.addedBy ? `, added by ${item.addedBy}` : ''}: added to the frame by people, not sent to the session yet, so it goes with this prompt`}
+										>
+											{item.kind === 'html' ? <span className="pt-fchip-th pt-th-doc">HTML</span> : <img className="pt-fchip-th" src={withBase(item.thumb)} alt="" />}
+											<span className="pt-fchip-name">{item.name}</span>
+											<span className="pt-fchip-from">· from the frame</span>
+											<button
+												className="pt-fchip-x"
+												title={`Don’t send ${item.name} with this prompt (it stays on the frame, still to send)`}
+												aria-label={`Don’t send ${item.name}`}
+												disabled={sending}
+												onPointerDown={keepFocus}
+												onClick={() => setSkipped((prev) => new Set([...prev, item.id]))}
+											>
+												×
+											</button>
+										</span>
+									))}
 								</div>
 							)}
 							{attachments.length > 0 && (
@@ -679,32 +695,35 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 									))}
 								</div>
 							)}
-							<div className="pt-ta">
-								<textarea
-									ref={inputRef}
-									value={text}
-									rows={1}
-									style={{ color: draftLine ? 'transparent' : undefined }}
-									placeholder={thinking ? 'Steer it: added to the work in progress…' : `Message ${name}…`}
-									onFocus={() => setTyping(true)}
-									onBlur={(e) => {
-										if (!e.currentTarget.closest('.pt-in')?.contains(e.relatedTarget as Node)) setTyping(false)
-									}}
-									onChange={(e) => setText(e.target.value)}
-									onPaste={(e) => {
-										const files = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'))
-										if (!files.length) return
-										if (!e.clipboardData.getData('text/plain')) e.preventDefault()
-										attach(files)
-									}}
-									onKeyDown={(e) => {
-										if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-											e.preventDefault()
-											void send(e.altKey)
-										}
-									}}
-								/>
-								{draftLine && <div className="pt-ta-line">{draftLine}</div>}
+							<div className="pt-field">
+								<Ruler />
+								<div className="pt-ta">
+									<textarea
+										ref={inputRef}
+										value={text}
+										rows={1}
+										style={{ color: draftLine ? 'transparent' : undefined }}
+										placeholder={thinking ? 'Steer it: added to the work in progress…' : `Message ${name}…`}
+										onFocus={() => setTyping(true)}
+										onBlur={(e) => {
+											if (!e.currentTarget.closest('.pt-in')?.contains(e.relatedTarget as Node)) setTyping(false)
+										}}
+										onChange={(e) => setText(e.target.value)}
+										onPaste={(e) => {
+											const files = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'))
+											if (!files.length) return
+											if (!e.clipboardData.getData('text/plain')) e.preventDefault()
+											attach(files)
+										}}
+										onKeyDown={(e) => {
+											if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+												e.preventDefault()
+												void send(e.altKey)
+											}
+										}}
+									/>
+									{draftLine && <div className="pt-ta-line">{draftLine}</div>}
+								</div>
 							</div>
 							{error && (
 								<div className="pt-error">
@@ -739,6 +758,11 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 										</span>
 									)
 								)}
+								{!failed && !flash && (
+									<span className="pt-keys">
+										<kbd className="rm-key">↵</kbd> {thinking ? 'steer' : 'send'} <kbd className="rm-key">⇧↵</kbd> new line <kbd className="rm-key">Esc</kbd> close
+									</span>
+								)}
 								<span className="pt-sp" />
 								{thinking ? (
 									<>
@@ -753,7 +777,7 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 											Stop
 										</button>
 										<button
-											className={`pt-btn pri${hasContent && !sending ? '' : ' off'}`}
+											className={`pt-btn pri rm-ringed${hasContent && !sending ? '' : ' off'}`}
 											title="Steer: add this to the work in progress (Enter). Alt+Enter queues it for when it’s done."
 											disabled={!hasContent || sending}
 											onPointerDown={keepFocus}
@@ -764,13 +788,13 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 									</>
 								) : (
 									<button
-										className={`pt-send${hasContent ? ' on' : ''}`}
+										className={`pt-send rm-ringed${hasContent ? ' on' : ''}`}
 										title="Send (Enter; Shift+Enter for a new line, Esc closes)"
 										disabled={!hasContent || sending}
 										onPointerDown={keepFocus}
 										onClick={() => send()}
 									>
-										{sending ? <span className="pt-spin pt-spin-xs dark" /> : <UpIcon />}
+										{sending ? <span className="pt-spin pt-spin-xs" /> : 'Send'}
 									</button>
 								)}
 							</div>
@@ -791,16 +815,8 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 				</>
 			)}
 
-			<div className={`pt-ctl ${ctlSide}${menu ? ' open' : ''}`}>
-				<button className="pt-fb pt-more" title="More" aria-label="More" aria-expanded={!!menu} onClick={() => setMenu(menu ? null : 'open')}>
-					<MoreIcon />
-				</button>
-				<button className="pt-fb" title="Close (Esc)" aria-label="Close" onClick={close}>
-					<XIcon />
-				</button>
-			</div>
 			{menu === 'open' && (
-				<div className={`pt-menu ${ctlSide}`} role="menu">
+				<div className="pt-menu" role="menu">
 					<button
 						role="menuitem"
 						onClick={() => {
@@ -818,7 +834,7 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 				</div>
 			)}
 			{menu === 'unlink' && (
-				<div className={`pt-menu pt-confirm ${ctlSide}`} role="dialog">
+				<div className="pt-menu pt-confirm" role="dialog">
 					<p>
 						Unlink <b>{name}</b> from its OpenCode for everyone? Its frame stays, and the session itself stays in OpenCode; whoever prompts it next
 						links it again.
@@ -833,6 +849,19 @@ function PromptStack({ sessions, sessionId, meta, anchor }: { sessions: SessionC
 					</div>
 				</div>
 			)}
+		</div>
+	)
+}
+
+/** An 80-column ruler over the input: a tick each column, a figure every ten. */
+function Ruler() {
+	return (
+		<div className="pt-ruler" aria-hidden="true">
+			{[10, 20, 30, 40, 50, 60, 70, 80].map((n) => (
+				<span key={n} style={{ left: n * 8 - 4 }}>
+					{n}
+				</span>
+			))}
 		</div>
 	)
 }
@@ -982,10 +1011,6 @@ const icon = (children: ReactNode, props: Record<string, unknown> = {}) => (
 
 function PaperclipIcon() {
 	return icon(<path d="m21 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9" />)
-}
-
-function UpIcon() {
-	return icon(<path d="M12 19V5M5 12l7-7 7 7" />, { strokeWidth: 2.2 })
 }
 
 function XIcon() {

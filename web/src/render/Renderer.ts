@@ -44,14 +44,14 @@ type RGBA = [number, number, number, number]
 const [BG_R, BG_G, BG_B] = hexToRgba(THEME.canvas)
 const BG: GPUColor = { r: BG_R, g: BG_G, b: BG_B, a: 1 }
 const ACCENT: RGBA = [0.34, 0.56, 1, 1]
-/** Frames: white over the canvas, as light as THEME.frame */
-const SECTION_FILL: RGBA = [1, 1, 1, whiteOver(THEME.canvas, THEME.frame)]
-const SECTION_STROKE: RGBA = [1, 1, 1, 0.07]
-const PLACEHOLDER: RGBA = [1, 1, 1, 0.06]
+/** Frames: a sheet of paper on the ground, ruled with a hairline */
+const SECTION_FILL: RGBA = hexToRgba(THEME.frame)
+const SECTION_STROKE: RGBA = hexToRgba(THEME.rule)
+const PLACEHOLDER: RGBA = [0, 0, 0, 0.06]
 const NONE: RGBA = [0, 0, 0, 0]
 /** A frame picked up by its title: opaque (so nothing shows through it), over a soft shadow */
 const LIFTED_FILL: RGBA = hexToRgba(THEME.frame)
-const LIFTED_STROKE: RGBA = [1, 1, 1, 0.14]
+const LIFTED_STROKE: RGBA = hexToRgba(THEME.rule2)
 const SHADOW: RGBA = [0, 0, 0, 0.14]
 
 export interface RendererOptions {
@@ -1632,12 +1632,6 @@ function hexToRgba(hex: string): RGBA {
 }
 
 /** How much white over `base` makes `target` (both grey enough that one alpha does for every channel). */
-function whiteOver(base: string, target: string) {
-	const b = hexToRgba(base)
-	const t = hexToRgba(target)
-	return [0, 1, 2].reduce((sum, i) => sum + (t[i] - b[i]) / (1 - b[i]), 0) / 3
-}
-
 function css([r, g, b, a]: RGBA) {
 	return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${a})`
 }

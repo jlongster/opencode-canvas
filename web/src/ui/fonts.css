@@ -1,0 +1,56 @@
+/*
+ * The Reference Manual's type, self-hosted from the build (latin only, no font CDN):
+ * Archivo (variable: weight 100–900, width 62–125%), Courier Prime, EB Garamond.
+ *
+ * "Archivo Wide" is the same file with its width pinned at 125%: browsers clamp font-stretch to a
+ * face's range, so the family alone gives the extended cut (also in canvas 2D and SVG text).
+ */
+@font-face {
+	font-family: 'Archivo';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 100 900;
+	font-stretch: 62% 125%;
+	src: url('@fontsource-variable/archivo/files/archivo-latin-standard-normal.woff2') format('woff2-variations');
+}
+
+@font-face {
+	font-family: 'Archivo Wide';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 100 900;
+	font-stretch: 125%;
+	src: url('@fontsource-variable/archivo/files/archivo-latin-standard-normal.woff2') format('woff2-variations');
+}
+
+@font-face {
+	font-family: 'Courier Prime';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 400;
+	src: url('@fontsource/courier-prime/files/courier-prime-latin-400-normal.woff2') format('woff2');
+}
+
+@font-face {
+	font-family: 'Courier Prime';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 700;
+	src: url('@fontsource/courier-prime/files/courier-prime-latin-700-normal.woff2') format('woff2');
+}
+
+@font-face {
+	font-family: 'EB Garamond';
+	font-style: italic;
+	font-display: swap;
+	font-weight: 400;
+	src: url('@fontsource/eb-garamond/files/eb-garamond-latin-400-italic.woff2') format('woff2');
+}
+
+@font-face {
+	font-family: 'EB Garamond';
+	font-style: normal;
+	font-display: swap;
+	font-weight: 400;
+	src: url('@fontsource/eb-garamond/files/eb-garamond-latin-400-normal.woff2') format('woff2');
+}

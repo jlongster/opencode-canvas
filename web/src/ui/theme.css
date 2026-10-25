@@ -1,21 +1,69 @@
 /*
- * The app's dark theme: one neutral scale, each surface about 4 L* above the one under it, and the
- * text and border colours that go on it. The renderer draws the canvas and frames with the same
- * values (see web/src/theme.ts, keep the two in step).
- *
- * Each surface also comes as "r g b" (--*-rgb), for translucent versions: rgb(var(--panel-rgb) / 0.9).
+ * The "Reference Manual" theme: paper, ink and two signals (red: waiting on you, blue: running).
+ * The renderer draws the canvas and frames with the same values (see web/src/theme.ts, keep the two
+ * in step).
  */
+@import './fonts.css';
+
 :root {
-	/* the canvas, behind everything (L* 9) */
-	--canvas-rgb: 26 26 29;
-	/* a session's frame on the canvas (L* 14) */
-	--frame-rgb: 35 35 39;
-	/* toolbars, popovers, the attention bar, prompt bubbles (L* 18) */
-	--panel-rgb: 43 43 48;
-	/* things on a panel: menus, thumbnails, hovered chips, dragged rows (L* 22) */
-	--raised-rgb: 52 52 58;
-	/* the top step: pressed or open things on a raised surface (L* 26) */
-	--raised-2-rgb: 61 61 67;
+	/* paper */
+	--rm-ground: #eceae3; /* the canvas paper */
+	--rm-sheet: #fbfaf6; /* frames and panels */
+	--rm-bar: #eef1ea; /* the printout bar */
+
+	/* ink */
+	--rm-ink: #151515; /* type, rules, selection */
+	--rm-ink-2: #4f4d48; /* secondary text */
+	--rm-ink-3: #8a877f; /* muted labels */
+	--rm-rule: #d5d1c6; /* hairlines */
+	--rm-rule-2: #b9b4a8; /* dashed and stronger hairlines */
+
+	/* signals */
+	--rm-red: #c2381f; /* waiting on you, the red pencil */
+	--rm-blue: #1e5c88; /* running */
+	--rm-blue-tint: #dce6ee;
+
+	/* the person-added tag */
+	--rm-buff: #e8d9c1;
+
+	/* placeholders: a 50% ink dither at 28% over the sheet (loading), 0.7px pinstripes every 2px (queued) */
+	--rm-dither: rgb(21 21 21 / 0.28);
+	--rm-pinstripe: #bdb8ac;
+
+	/* session badges, 9px squares only */
+	--rm-badge-1: #2f8c96; /* teal */
+	--rm-badge-2: #d9744e; /* orange */
+	--rm-badge-3: #2b6a54; /* green */
+	--rm-badge-4: #b88a2c; /* ochre */
+	--rm-badge-5: #826465; /* walnut */
+	--rm-badge-6: #7f8cc4; /* plot */
+	--rm-badge-7: #4a5560; /* slate */
+	--rm-badge-8: #8e3b2e; /* brick */
+
+	/* type: display is --rm-font-wide (or .rm-wide) at 800; title/text/label Archivo; machine Courier Prime; callout EB Garamond italic */
+	--rm-font-sans: 'Archivo', system-ui, sans-serif;
+	--rm-font-wide: 'Archivo Wide', 'Archivo', system-ui, sans-serif;
+	--rm-font-mono: 'Courier Prime', ui-monospace, monospace;
+	--rm-font-serif: 'EB Garamond', Georgia, serif;
+
+	/* grid: items flow on 8px, plus-marks on the canvas every 96px (12 × 8) */
+	--rm-unit: 8px;
+	--rm-module: 96px;
+
+	/*
+	 * The generic tokens the components use, on paper. Each surface also comes as "r g b" (--*-rgb),
+	 * for translucent versions: rgb(var(--panel-rgb) / 0.9).
+	 */
+	/* the canvas, behind everything: ground */
+	--canvas-rgb: 236 234 227;
+	/* a session's frame on the canvas: sheet */
+	--frame-rgb: 251 250 246;
+	/* toolbars, popovers, the attention bar, prompt bubbles: sheet */
+	--panel-rgb: 251 250 246;
+	/* things on a panel: menus, thumbnails, hovered chips, dragged rows */
+	--raised-rgb: 242 240 234;
+	/* the top step: pressed or open things on a raised surface */
+	--raised-2-rgb: 230 227 218;
 
 	--canvas: rgb(var(--canvas-rgb));
 	--frame: rgb(var(--frame-rgb));
@@ -24,18 +72,23 @@
 	--raised-2: rgb(var(--raised-2-rgb));
 
 	/* hairlines on any surface */
-	--border: rgb(255 255 255 / 0.09);
-	--border-strong: rgb(255 255 255 / 0.14);
+	--border: var(--rm-rule);
+	--border-strong: var(--rm-rule-2);
 
 	/* text, strongest first; --text-dim is the quietest that still reads (AA) on a panel */
-	--text-strong: #f4f4f5;
-	--text: #e4e4e7;
-	--text-soft: #d4d4d8;
-	--text-muted: #ababb3;
-	--text-dim: #93939c;
+	--text-strong: var(--rm-ink);
+	--text: var(--rm-ink);
+	--text-soft: #2e2d2a;
+	--text-muted: var(--rm-ink-2);
+	--text-dim: #6b6862;
 	/* not text: grips, idle dots, disabled marks */
-	--text-faint: #5f5f68;
+	--text-faint: var(--rm-ink-3);
 
 	/* the accent: focus rings, selected rows */
-	--accent-rgb: 87 143 255;
+	--accent-rgb: 30 92 136;
+}
+
+.rm-wide {
+	font-family: var(--rm-font-wide);
+	font-stretch: 125%;
 }

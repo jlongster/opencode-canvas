@@ -47,128 +47,11 @@ body,
 	overflow: clip;
 }
 
-.section-label,
-.group-heading {
-	position: absolute;
-	left: 0;
-	top: 0;
-	display: flex;
-	align-items: center;
-	gap: 0.4em;
-	transform-origin: 0 100%;
-	white-space: nowrap;
-	overflow: hidden;
-	will-change: transform;
-	transition: opacity 120ms;
-}
-
-/* Page-space sizes: the element is scaled with zoom. */
-.section-label {
-	font-size: 40px;
-	align-items: flex-start;
-	padding-top: 4px;
-}
-
-.section-label .title {
-	min-width: 0;
-	line-height: 1.2;
-	font-weight: 650;
-	letter-spacing: -0.01em;
-	color: var(--text-strong);
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-/* A subagent's frame in its drawer (see editor/drawers.ts): a smaller title, in its band. */
-.section-label.in-drawer {
-	font-size: 28px;
-}
-
-.section-label.in-drawer .title {
-	color: var(--text);
-}
-
-.group-heading {
-	font-size: 22px;
-	align-items: flex-start;
-}
-
-.group-heading .name {
-	font-weight: 600;
-	color: var(--text-soft);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	border-radius: 6px;
-	transition: color 120ms, background-color 120ms;
-}
-
-.group-heading.hovered .name {
-	color: var(--rm-ink);
-	background: var(--rm-blue-tint);
-	box-shadow: 0 0 0 4px var(--rm-blue-tint);
-}
-
-.group-heading.linked .name {
-	color: var(--rm-blue);
-}
-
-/* Under a frame's groups when it leaves older items out (see SectionLabels.createMore); page-space sizes. */
-.frame-more {
-	position: absolute;
-	left: 0;
-	top: 0;
-	box-sizing: border-box;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	gap: 0.6em;
-	border-top: 1px dashed var(--border-strong);
-	font-size: 20px;
-	color: var(--text-dim);
-	white-space: nowrap;
-	overflow: hidden;
-	transform-origin: 0 100%;
-	will-change: transform;
-	transition: opacity 120ms;
-}
-
-.frame-more button {
-	height: 1.9em;
-	padding: 0 0.9em;
-	border: 0;
-	border-radius: 0.95em;
-	background: rgba(255, 255, 255, 0.06);
-	color: var(--text-soft);
-	font: inherit;
-	cursor: pointer;
-	pointer-events: auto;
-	transition: background 120ms, color 120ms;
-}
-
-.frame-more button:hover {
-	background: rgba(87, 143, 255, 0.2);
-	color: #fafafa;
-}
-
-.frame-more .show-all {
-	background: transparent;
-	color: var(--text-muted);
-}
-
-.frame-more button[hidden] {
-	display: none;
-}
-
+/* Item labels over the items: placed here, drawn in render/sheet.css. */
 .item-title {
 	position: absolute;
 	left: 0;
 	top: 0;
-	display: flex;
-	align-items: flex-end;
-	padding: 0 0 0.45em 0.1em;
-	color: var(--text-dim);
-	font-weight: 400;
-	line-height: 1.2;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -245,32 +128,17 @@ body,
 	top: 0;
 	display: none;
 	will-change: transform;
-	background: var(--rm-sheet);
-	border: 1px solid var(--rm-ink);
 }
 
+/* The item's file commands (shift or ⋯): placed here, drawn in render/sheet.css. */
 .item-action {
 	position: relative;
-	width: 26px;
-	height: 26px;
 	display: grid;
 	place-items: center;
 	padding: 0;
 	border: 0;
-	border-radius: 0;
-	background: var(--rm-sheet);
-	color: var(--rm-ink);
 	pointer-events: auto;
 	cursor: pointer;
-}
-
-.item-action + .item-action {
-	border-left: 1px solid var(--rm-rule);
-}
-
-.item-action:hover {
-	background: var(--rm-ink);
-	color: var(--rm-sheet);
 }
 
 .item-link.copied {

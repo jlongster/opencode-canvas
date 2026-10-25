@@ -306,6 +306,7 @@ export class LinkHover {
 	constructor(after: HTMLElement) {
 		this.el = document.createElement('div')
 		this.el.className = 'html-link-hover'
+		this.el.style.display = 'none'
 		this.tip = document.createElement('div')
 		this.tip.className = 'html-link-tip'
 		this.el.appendChild(this.tip)

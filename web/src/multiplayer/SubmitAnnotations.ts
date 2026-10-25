@@ -233,12 +233,21 @@ export class SubmitAnnotations {
 		let x = Math.min(headerRight, vw - MARGIN) - w
 		let y = mid - h / 2
 		let pinned = false
+		let underHead = false
 		if (y < top) {
 			pinned = true
 			y = top
 			x = right - w
+		} else if (title && x < textRight(title) - this.host.getBoundingClientRect().left + MARGIN / 2) {
+			// The head runs off the screen, so the pill would cover its title: just under the head instead.
+			pinned = underHead = true
+			y = header.y + header.h + MARGIN
+			x = right - w
 		}
 		const visible = frame.x + frame.w > 0 && frame.x < vw && frame.y < vh && y + h + MARGIN <= Math.min(frame.y + frame.h, vh) && x >= left
+		// (the title only makes room while the pill is on its line)
+		const kept = visible && !underHead ? reserve : ''
+		if (title && title.style.marginRight !== kept) title.style.marginRight = kept
 		const key = visible ? `${Math.round(x)},${Math.round(y)},${pinned}` : 'hidden'
 		if (p.el.dataset.at === key) return
 		p.el.dataset.at = key
@@ -390,4 +399,11 @@ async function dataUrl(src: string): Promise<string> {
 	const res = await fetch(src)
 	if (!res.ok) throw new Error(`HTTP ${res.status}`)
 	return toDataUrl(await res.blob())
+}
+
+/** Where a frame title's text ends on screen (its box, if the text runs into an ellipsis). */
+function textRight(title: HTMLElement): number {
+	const range = document.createRange()
+	range.selectNodeContents(title)
+	return Math.min(range.getBoundingClientRect().right, title.getBoundingClientRect().right)
 }

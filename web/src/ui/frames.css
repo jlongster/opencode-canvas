@@ -1,4 +1,4 @@
-/* Hiding and dragging session frames on the canvas, and the hidden-link toast's dismiss button. */
+/* The hidden-link toast's dismiss button, and hidden frames in the attention list. */
 
 .toast .toast-dismiss {
 	color: var(--rm-ink-2);
@@ -8,49 +8,6 @@
 .toast .toast-dismiss:hover {
 	background: var(--rm-ink);
 	color: var(--rm-sheet);
-}
-
-/* On the canvas: a small eye on a hovered frame title (page-space). */
-.section-label .hide-frame {
-	flex: none;
-	display: inline-grid;
-	place-items: center;
-	box-sizing: border-box;
-	height: 1.636em;
-	min-width: 1.636em;
-	margin: 0.273em 0 0 auto;
-	padding: 0;
-	border: 0;
-	border-radius: 0.409em;
-	background: transparent;
-	color: var(--text-muted);
-	font: inherit;
-	font-size: 0.55em;
-	line-height: 1;
-	opacity: 0;
-	cursor: pointer;
-	pointer-events: none;
-	transition: opacity 120ms, background 120ms, color 120ms;
-}
-
-.section-label .hide-frame svg {
-	width: 0.8em;
-	height: 0.8em;
-}
-
-.section-label.hovered .hide-frame {
-	opacity: 0.6;
-	pointer-events: auto;
-}
-
-.section-label .hide-frame:hover {
-	opacity: 1;
-	background: rgba(255, 255, 255, 0.08);
-	color: var(--text);
-}
-
-.section-label.lifted {
-	z-index: 1;
 }
 
 .attention-row-hidden {

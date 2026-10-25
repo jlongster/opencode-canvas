@@ -112,7 +112,7 @@ export const LAYOUT = {
 
 /**
  * Where a session's title is on the page at zoom z: the header strip, from the top of the frame,
- * extended upward when the title is drawn bigger than page scale (see SectionLabels).
+ * extended upward when the title is drawn bigger than page scale (see render/SheetHeads.ts).
  */
 export function frameTitleBox(section: SectionLayout, z: number): Box {
 	// (a drawer's title stays in its band)

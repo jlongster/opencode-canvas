@@ -105,7 +105,7 @@ function withLive(record: Session, info: LiveSession): Session {
 
 /**
  * Sessions' controls on their frame titles (set by the app once the canvas loads; drawn by the
- * renderer's SectionLabels): a prompt button.
+ * sheet heads, render/SheetHeads.ts): a prompt button.
  */
 export interface FrameChrome {
 	/** read while rendering: a change to what it reads makes the renderer redraw */

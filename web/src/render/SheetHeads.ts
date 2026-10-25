@@ -73,6 +73,9 @@ export class SheetHeads {
 	/** running clocks to tick: session id → its clock element and since when */
 	private clocks = new Map<string, { big: HTMLElement; small: HTMLElement; since: number; text: string }>()
 	private ticker = 0
+	/** the zoom the heads were last rastered at, and the pending re-raster once a zoom settles */
+	private rasterZ = 0
+	private rasterTimer = 0
 
 	constructor(
 		parent: HTMLElement,
@@ -92,6 +95,7 @@ export class SheetHeads {
 
 	destroy() {
 		clearInterval(this.ticker)
+		clearTimeout(this.rasterTimer)
 		this.host.remove()
 	}
 
@@ -259,6 +263,21 @@ export class SheetHeads {
 			el.remove()
 			this.others.delete(key)
 		}
+		if (z !== this.rasterZ) this.rerasterSoon(z)
+	}
+
+	/**
+	 * Heads are design px scaled up onto the page in their own layers (will-change: transform), which
+	 * Chrome keeps at the scale it first rastered them at, blurry when zoomed in. Once a zoom settles,
+	 * dropping the hint for a frame has them rastered again at the new scale.
+	 */
+	private rerasterSoon(z: number) {
+		clearTimeout(this.rasterTimer)
+		this.rasterTimer = window.setTimeout(() => {
+			this.rasterZ = z
+			this.host.classList.add('reraster')
+			requestAnimationFrame(() => requestAnimationFrame(() => this.host.classList.remove('reraster')))
+		}, 200)
 	}
 
 	/** A page box as design px, scaled with the zoom like the items. */

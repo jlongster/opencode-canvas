@@ -792,8 +792,11 @@ function createPointer(kind: 'point' | 'region'): Pointer {
 	return { kind, g, lines, marks, key: '' }
 }
 
-/** Session titles stay this big at least, growing upward out of the frame when zoomed far out (see frameTitleBox). */
-const titleScale = (z: number) => Math.max(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx)
+/**
+ * Session titles stay this big at least, growing upward out of the frame when zoomed far out (see
+ * frameTitleBox): below that zoom their page height changes with every zoom, above it it doesn't.
+ */
+const titleScale = (z: number) => Math.min(z, LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx)
 
 function agentNotesEqual(a: AgentNoteInfo[], b: AgentNoteInfo[]) {
 	return (

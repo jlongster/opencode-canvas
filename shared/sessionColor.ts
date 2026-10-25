@@ -1,4 +1,6 @@
-const COLORS = ['#f472b6', '#a78bfa', '#fb923c', '#4ade80', '#facc15', '#f87171', '#60a5fa', '#2dd4bf', '#e879f9', '#a3e635']
+// The Reference Manual's session badge colours (--rm-badge-1…8 in web/src/ui/theme.css): teal, orange,
+// green, ochre, walnut, plot, slate, brick.
+const COLORS = ['#2f8c96', '#d9744e', '#2b6a54', '#b88a2c', '#826465', '#7f8cc4', '#4a5560', '#8e3b2e']
 
 /** A session's colour: its busy band, prompt and badges, and its dot in lists. */
 export function sessionColor(sessionId: string) {

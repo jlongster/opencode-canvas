@@ -11,6 +11,11 @@
 	pointer-events: none;
 }
 
+/* for a frame once a zoom settles, so the heads are rastered at the new scale (see SheetHeads.rerasterSoon) */
+.sheet-heads.reraster > * {
+	will-change: auto;
+}
+
 .sheet-head {
 	position: absolute;
 	left: 0;

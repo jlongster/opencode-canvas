@@ -51,21 +51,19 @@ export interface Layout {
  */
 export const SHEET = {
 	k: 2.5,
-	/** the title row */
+	/** the title row (its running or asking cell included) */
 	head: 34,
-	/** the title block: AGENT, MODEL, ITEMS, UPDATED, STATUS */
-	block: 31,
 	/** the subagents' row of documents (frames with subagents) */
 	tray: 76,
-	/** the printout (while it works) */
-	printout: 37,
+	/** the printout: one slim line under the title row (while it works) */
+	printout: 22,
 	/** a subagent's drawer's head */
 	drawerHead: 32,
 }
 
-/** The page height of a frame's sheet head: its title row and title block, and its subagents' row and printout when it has them. */
+/** The page height of a frame's sheet head: its title row, and its printout and subagents' row when it has them. */
 export function sheetHeadHeight(o: { subagents?: boolean; busy?: boolean } = {}) {
-	return (SHEET.head + SHEET.block + (o.subagents ? SHEET.tray : 0) + (o.busy ? SHEET.printout : 0)) * SHEET.k
+	return (SHEET.head + (o.subagents ? SHEET.tray : 0) + (o.busy ? SHEET.printout : 0)) * SHEET.k
 }
 
 export const LAYOUT = {
@@ -92,9 +90,10 @@ export const LAYOUT = {
 	/** the sheet head at the top of a frame, without subagents or a printout (see sheetHeadHeight) */
 	frameHeaderHeight: sheetHeadHeight(),
 	frameGap: 160,
-	/** the heading above a named group, its rule included */
-	groupHeadingHeight: 64,
-	groupGap: 48,
+	/** the heading above a named group: a rule across the frame, then its name (see .sheet-group) */
+	groupHeadingHeight: 96,
+	/** between one group's last row and the next group's rule */
+	groupGap: 120,
 	minFrameWidth: 1000,
 	emptyFrameHeight: 160,
 	/** a frame shows only its newest items, this many unless the viewer asks for more... */

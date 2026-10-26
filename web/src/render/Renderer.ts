@@ -41,8 +41,10 @@ const PLUS_MARKS = 3
 type RGBA = [number, number, number, number]
 const [BG_R, BG_G, BG_B] = hexToRgba(THEME.canvas)
 const BG: GPUColor = { r: BG_R, g: BG_G, b: BG_B, a: 1 }
-/** Selection, hover and every rule that matters: ink. Nothing glows. */
+/** Rules that matter: ink. */
 const INK: RGBA = hexToRgba(THEME.ink)
+/** Selection, hover and the brush */
+const ACCENT: RGBA = [0.34, 0.56, 1, 1]
 /** Frames: a sheet of paper on the ground, edged with a hairline */
 const SECTION_FILL: RGBA = hexToRgba(THEME.frame)
 const SECTION_STROKE: RGBA = hexToRgba(THEME.rule2)
@@ -379,8 +381,6 @@ export class Renderer {
 		}
 		// The ground: plus-marks, anchored to the page.
 		pushRect({ x: 0, y: 0, w: vw, h: vh }, NONE, PLUS, 0, 0, true, PLUS_MARKS)
-		/** A 1 screen px ring, gap px outside a box. */
-		const ring = (b: Box, gap: number, color: RGBA) => pushRect(Box.expand(b, gap * unit), NONE, color, 1, 0, false)
 		/** Where a sheet is drawn: its frame, and its head where that grows up out of it (zoomed out, see frameTitleBox). */
 		const minScale = LAYOUT.minFrameTitlePx / LAYOUT.frameTitlePx
 		const sheetOf = (section: (typeof layout.sections)[number], d: Displayed): Box => {
@@ -424,8 +424,8 @@ export class Renderer {
 			pushSheet(section, d, SECTION_FILL, SECTION_STROKE)
 			const key = frameKey(section.id)
 			const remote = remoteSelected.get(key)
-			if (remote) overlays.push(() => pushRect(Box.expand(sheet, 7 * unit), NONE, remote, 2, 0, false))
-			if (selected.has(key)) overlays.push(() => ring(sheet, 3, INK))
+			if (remote) overlays.push(() => pushRect(Box.expand(sheet, 4 * unit), NONE, remote, 2.5, SECTION_RADIUS, false))
+			if (selected.has(key)) overlays.push(() => pushRect(sheet, NONE, ACCENT, 2, SECTION_RADIUS, false))
 		}
 
 		// A hovered heading gets a faint outline around its group; a just-focused group a fading one.
@@ -441,8 +441,8 @@ export class Renderer {
 			if (!section || !d) continue
 			const pad = GROUP_OUTLINE_PADDING
 			const b = { x: group.box.x + d.x - section.box.x - pad, y: group.box.y + d.y - section.box.y - pad, w: group.box.w + pad * 2, h: group.box.h + pad * 2 }
-			const stroke = flashing ? withAlpha(INK, Math.max(flashAlpha, 0.5)) : withAlpha(INK, 0.5)
-			overlays.push(() => pushRect(b, NONE, stroke, 1, 0, false))
+			const stroke = flashing ? withAlpha(ACCENT, Math.max(flashAlpha, 0.35)) : withAlpha(ACCENT, 0.35)
+			overlays.push(() => pushRect(b, NONE, stroke, flashing ? 2 : 1, ITEM_RADIUS, false))
 		}
 
 		let images = 0
@@ -506,22 +506,11 @@ export class Renderer {
 			const fade = this.options.easeLayout === false ? d.opacity : 1
 			// Someone else's selection sits outside ours, so both stay visible.
 			const remote = remoteSelected.get(id)
-			if (remote) overlays.push(() => pushRect(Box.expand(d, 7 * unit), NONE, withAlpha(remote, fade), 2, 0, false))
-			if (selected.has(id)) {
-				// selected: an ink edge, a ring 3 px out, and square handles at its corners
-				overlays.push(() => {
-					pushRect(d, NONE, withAlpha(INK, fade), 1, 0, false)
-					ring(d, 3, withAlpha(INK, fade))
-					const tl = editor.pageToScreen(d)
-					const br = editor.pageToScreen({ x: d.x + d.w, y: d.y + d.h })
-					for (const [x, y] of [[tl.x - 8, tl.y - 8], [br.x + 1, tl.y - 8], [tl.x - 8, br.y + 1], [br.x + 1, br.y + 1]]) {
-						pushRect({ x: Math.round(x), y: Math.round(y), w: 7, h: 7 }, withAlpha(INK, fade), NONE, 0, 0, true)
-					}
-				})
-			} else {
-				// hovered: an ink rule; at rest, a faint edge
-				overlays.push(() => pushRect(d, NONE, hovered === id ? withAlpha(INK, fade) : withAlpha(ITEM_EDGE, fade * d.opacity), 1, 0, false))
-			}
+			if (remote) overlays.push(() => pushRect(Box.expand(d, 3 * unit), NONE, withAlpha(remote, fade), 2.5, ITEM_RADIUS, false))
+			if (selected.has(id)) overlays.push(() => pushRect(d, NONE, withAlpha(ACCENT, fade), 2, ITEM_RADIUS, false))
+			else if (hovered === id) overlays.push(() => pushRect(d, NONE, withAlpha(ACCENT, 0.7 * fade), 1.5, ITEM_RADIUS, false))
+			// at rest, a faint edge
+			else overlays.push(() => pushRect(d, NONE, withAlpha(ITEM_EDGE, fade * d.opacity), 1, 0, false))
 		}
 		this.itemStates.clear()
 		for (const [id, d] of this.displayedItems) if (!raisedIds.has(layout.sectionOf.get(id)!)) pushItem(id, d)
@@ -537,7 +526,7 @@ export class Renderer {
 			// a hard offset shadow, like paper lifted off the desk
 			if (r.shadow > 0) pushRect({ x: sheet.x + 5 * unit, y: sheet.y + 5 * unit, w: sheet.w, h: sheet.h }, withAlpha(SHADOW, r.shadow * lifted.opacity), NONE, 0, 0, false)
 			pushSheet(section, lifted, LIFTED_FILL, r.id === liftedId ? LIFTED_STROKE : SECTION_STROKE)
-			if (selected.has(frameKey(r.id))) overlays.push(() => ring(sheet, 3, INK))
+			if (selected.has(frameKey(r.id))) overlays.push(() => pushRect(sheet, NONE, ACCENT, 2, SECTION_RADIUS, false))
 			for (const [id, d] of this.displayedItems) if (layout.sectionOf.get(id) === r.id) pushItem(id, d)
 			layers.push([from[0], rects, from[1], images])
 		}
@@ -551,8 +540,8 @@ export class Renderer {
 			const tl = editor.pageToScreen(brush)
 			pushRect(
 				{ x: tl.x, y: tl.y, w: brush.w * camera.z, h: brush.h * camera.z },
-				withAlpha(INK, 0.04),
-				withAlpha(INK, 0.7),
+				withAlpha(ACCENT, 0.08),
+				withAlpha(ACCENT, 0.6),
 				1,
 				0,
 				true,
@@ -804,9 +793,8 @@ export class Renderer {
 
 /**
  * Item labels as DOM text in the strip the layout reserves above each titled item: its name, and
- * its type on the right (PNG, HTML, LINK, MP4; LOADING or QUEUED until its picture's ready). A
- * selected item's name is in inverse video. The text scales with zoom like the images do, and only
- * on-screen labels exist in the DOM.
+ * its type on the right (png, html, Link, mp4; Loading or Queued until its picture's ready). The
+ * text scales with zoom like the images do, and only on-screen labels exist in the DOM.
  */
 class ItemTitles {
 	private els = new Map<string, { el: HTMLDivElement; name: HTMLElement; kind: HTMLElement }>()
@@ -820,7 +808,6 @@ class ItemTitles {
 
 	update(items: Record<string, Item>, displayed: Map<string, Displayed>, view: Box, editor: Editor, states: ReadonlyMap<string, 'loading' | 'queued'>) {
 		const z = editor.camera.peek().z
-		const selected = editor.selectedSet.get()
 		const strip = LAYOUT.titleHeight
 		// Scales with zoom, but never past MAX_ITEM_TITLE_PX on screen.
 		const fontSize = Math.min(26 * z, MAX_ITEM_TITLE_PX)
@@ -841,9 +828,8 @@ class ItemTitles {
 			}
 			if (entry.name.textContent !== title) entry.name.textContent = title
 			const state = states.get(id)
-			const kind = state ? state.toUpperCase() : kindTag(item)
+			const kind = state ? state[0].toUpperCase() + state.slice(1) : kindTag(item)
 			if (entry.kind.textContent !== kind) entry.kind.textContent = kind
-			entry.el.classList.toggle('selected', selected.has(id))
 			const el = entry.el
 			const p = editor.pageToScreen({ x: d.x, y: d.y - strip })
 			el.style.transform = `translate(${p.x}px, ${p.y}px)`
@@ -864,14 +850,14 @@ class ItemTitles {
 	}
 }
 
-/** An item's type, as its label shows it: its file's extension, LINK for a page, HTML. */
+/** An item's type, as its label shows it: its file's extension (lower case), Link for a page, html. */
 function kindTag(item: Item) {
-	if (item.kind === 'page') return 'LINK'
-	if (item.kind === 'html') return 'HTML'
+	if (item.kind === 'page') return 'Link'
+	if (item.kind === 'html') return 'html'
 	const ext = /\.([a-z0-9]{2,4})(?:[?#]|$)/i.exec(item.name || '')?.[1] ?? /\.([a-z0-9]{2,4})(?:[?#]|$)/i.exec(item.src)?.[1]
-	if (!ext) return item.kind === 'video' ? 'VIDEO' : 'IMAGE'
-	const up = ext.toUpperCase()
-	return up === 'JPEG' ? 'JPG' : up
+	if (!ext) return item.kind === 'video' ? 'Video' : 'Image'
+	const low = ext.toLowerCase()
+	return low === 'jpeg' ? 'jpg' : low
 }
 
 interface HtmlFrame {

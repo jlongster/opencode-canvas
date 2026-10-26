@@ -223,6 +223,7 @@ function CanvasPage({ link, onGone }: { link: CanvasLink; onGone: (wasLoaded: bo
 							prompting: control.prompting.get() === sessionId,
 							ended: !!editor.sessions.get()[sessionId]?.opencode?.deleted,
 							asking: asking(sessionId) || !!control.live.get().get(sessionId)?.asking?.count,
+							connected: liveSessions.has(sessionId) || control.live.get().has(sessionId) || !!editor.reportedActivity.get()[sessionId],
 						}),
 						prompt: (sessionId, button) => control.toggle(sessionId, button && control.screenAnchor(button, 'below')),
 						subagent: (sessionId) => subagentState(sessionId, editor.parentOf(sessionId), control, editor.sessions.peek()[sessionId], asking(sessionId)),

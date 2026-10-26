@@ -47,13 +47,24 @@
 	display: none;
 }
 
-/* the title row */
+/* the title row: inverted while the frame is connected to its live session, greyed when it isn't */
 .sh-row {
 	flex: none;
 	display: flex;
 	align-items: stretch;
 	height: 34px;
-	border-bottom: var(--hair) solid var(--rm-ink);
+}
+
+.sheet-frame-head .sh-row {
+	border-bottom: var(--hair) solid var(--rm-rule-2);
+	background: color-mix(in srgb, var(--rm-ink) 6%, var(--rm-sheet));
+	color: var(--rm-ink-3);
+}
+
+.sheet-frame-head.connected .sh-row {
+	border-bottom-color: var(--rm-ink);
+	background: var(--rm-ink);
+	color: var(--rm-sheet);
 }
 
 .sh-row .title {
@@ -67,16 +78,63 @@
 }
 
 .sh-row .title.untitled {
-	color: var(--rm-ink-3);
-}
-
-.sheet-head.ended .sh-row .title {
-	color: var(--rm-ink-3);
+	font-weight: 400;
+	opacity: 0.75;
 }
 
 .sheet-head.ended .sh-row .title::before {
 	content: 'Ended · ';
 	font-weight: 400;
+}
+
+/* running (blue, with its clock) or asking (red), in the title row */
+.sh-state {
+	flex: none;
+	display: none;
+	align-items: center;
+	gap: 7px;
+	align-self: center;
+	height: 22px;
+	margin-right: 6px;
+	padding: 0 8px;
+	font: 600 11.5px/1 var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
+}
+
+.sh-state.st-run,
+.sh-state.st-ask,
+.sh-state.st-failed {
+	display: inline-flex;
+}
+
+.sh-state.st-run {
+	background: var(--rm-blue);
+	color: #fff;
+}
+
+.sh-state.st-run .clk {
+	font-weight: 400;
+	opacity: 0.85;
+}
+
+.sh-state.st-ask {
+	background: var(--rm-red);
+	color: #fff;
+}
+
+.sh-state.st-failed {
+	padding: 0 2px;
+	color: var(--rm-red);
+}
+
+.sheet-frame-head.connected .sh-state.st-failed {
+	color: #f0a594;
+}
+
+@container (max-width: 260px) {
+	.sh-state .w {
+		display: none;
+	}
 }
 
 .sh-act {
@@ -104,6 +162,7 @@
 	border-bottom-width: calc(var(--hair) * 2);
 	border-radius: 3px;
 	background: var(--rm-sheet);
+	color: var(--rm-ink) !important;
 	font: 700 10px/1 var(--rm-font-sans) !important;
 }
 
@@ -115,7 +174,8 @@
 	padding: 0;
 	border: 0;
 	background: none;
-	color: var(--rm-ink-2) !important;
+	color: inherit !important;
+	opacity: 0.8;
 }
 
 .sh-ico svg {
@@ -129,105 +189,28 @@
 .sh-ico.active {
 	background: var(--rm-ink);
 	color: var(--rm-sheet) !important;
+	opacity: 1;
 }
 
-/* the title block: small spaced capitals over monospaced values */
-.sh-block {
-	flex: none;
-	display: flex;
-	height: 31px;
-	border-bottom: var(--hair) solid var(--rm-ink);
-	overflow: hidden;
-}
-
-.sh-block .f {
-	flex: none;
-	min-width: 50px;
-	padding: 4px 7px 5px;
-	border-right: var(--hair) solid var(--rm-rule);
-}
-
-.sh-block .f-status {
-	flex: 1;
-	border-right: 0;
+.sheet-frame-head.connected .sh-ico:hover,
+.sheet-frame-head.connected .sh-ico.active {
+	background: var(--rm-sheet);
+	color: var(--rm-ink) !important;
 }
 
 .sheet-head .k {
-	font: 600 7.5px/9px var(--rm-font-sans);
-	letter-spacing: 0.16em;
-	text-transform: uppercase;
+	font: 600 10px/12px var(--rm-font-sans);
 	color: var(--rm-ink-2);
 }
 
-.sh-block .v {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	height: 16px;
-	font: 12px/16px var(--rm-font-mono);
-	overflow: hidden;
+.sheet-head .k .n {
+	margin-left: 3px;
+	font-weight: 400;
+	font-variant-numeric: tabular-nums;
+	color: var(--rm-ink-3);
 }
 
-.sh-block .st-run {
-	background: var(--rm-blue);
-	color: #fff;
-}
-
-.sh-block .st-run .k {
-	color: #bcd0e0;
-}
-
-.sh-block .st-ask {
-	background: var(--rm-red);
-	color: #fff;
-}
-
-.sh-block .st-ask .k {
-	color: #f3c7bd;
-}
-
-.sh-block .clk {
-	display: inline-flex;
-}
-
-.sh-block .clk-small {
-	display: none;
-}
-
-@container (max-width: 430px) {
-	.sh-block .f-model {
-		display: none;
-	}
-}
-
-@container (max-width: 340px) {
-	.sh-block .f-updated {
-		display: none;
-	}
-}
-
-@container (max-width: 260px) {
-	.sh-block .f-agent {
-		display: none;
-	}
-	.sh-block .st-run .st-word,
-	.sh-block .st-run .clk {
-		display: none;
-	}
-	.sh-block .st-run .clk-small {
-		display: inline;
-	}
-	.sh-block .st-run .v::before {
-		content: 'RUN';
-	}
-}
-
-/* zoomed out: the head stops shrinking, and its title row turns to ink */
-.sheet-head.far .sh-row {
-	background: var(--rm-ink);
-	color: var(--rm-sheet);
-}
-
+/* zoomed out: the head stops shrinking, and its title takes two lines */
 .sheet-head.far .sh-row .title {
 	display: -webkit-box;
 	-webkit-box-orient: vertical;
@@ -238,13 +221,8 @@
 	white-space: normal;
 }
 
-.sheet-head.far .sh-act {
-	display: none;
-}
-
-.sheet-head.far .sh-block .f-agent,
-.sheet-head.far .sh-block .f-model,
-.sheet-head.far .sh-block .f-updated {
+.sheet-head.far .sh-act,
+.sheet-head.far .sh-state .w {
 	display: none;
 }
 
@@ -305,23 +283,23 @@
 	color: var(--rm-sheet);
 }
 
-/* the printout: what it's doing now, fed like a chain printer */
+/* the printout: what it's doing now, one slim line fed like a chain printer */
 .sh-printout {
 	flex: none;
 	position: relative;
-	height: 37px;
+	height: 22px;
 	overflow: hidden;
 	border-bottom: var(--hair) solid var(--rm-rule);
-	background: linear-gradient(var(--rm-bar) 0 18px, transparent 18px 36px);
-	font: 11px/18px var(--rm-font-mono);
-	text-transform: uppercase;
+	font: 400 11px/22px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
+	color: var(--rm-ink-2);
 }
 
 .sh-printout .ln {
 	display: flex;
-	gap: 10px;
-	height: 18px;
-	padding: 0 9px;
+	gap: 8px;
+	height: 22px;
+	padding: 0 10px;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
@@ -333,12 +311,17 @@
 .sh-printout .ln .t {
 	flex: none;
 	color: var(--rm-blue);
-	font-weight: 700;
+	font-weight: 600;
 }
 
 .sh-printout .ln.old .t {
 	color: var(--rm-ink-3);
 	font-weight: 400;
+}
+
+/* (the old line sits above, out of view; a new one rolls it up) */
+.sh-printout .roll {
+	transform: translateY(-22px);
 }
 
 .sh-printout .roll.feed {
@@ -347,10 +330,10 @@
 
 @keyframes sh-feed {
 	from {
-		transform: translateY(18px);
+		transform: none;
 	}
 	to {
-		transform: none;
+		transform: translateY(-22px);
 	}
 }
 
@@ -398,7 +381,8 @@
 }
 
 .sheet-drawer-head .sh-meta .m {
-	font: 10.5px var(--rm-font-mono);
+	font: 11px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 	color: var(--rm-ink-2);
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -417,19 +401,20 @@
 	display: flex;
 }
 
-/* group headings: spaced small capitals, a count on the right */
+/* group headings: a rule across the frame (the section break), then the name in sentence case and a quiet count */
 .sheet-group {
 	position: absolute;
 	left: 0;
 	top: 0;
 	display: flex;
-	align-items: flex-start;
+	align-items: flex-end;
 	gap: 10px;
-	padding-top: 3px;
+	padding-bottom: 7px;
+	box-sizing: border-box;
+	border-top: calc(var(--hair) * 1.5) solid var(--rm-rule-2);
 	transform-origin: 0 0;
-	font: 400 11px/14px var(--rm-font-mono);
-	letter-spacing: 0.1em;
-	text-transform: uppercase;
+	font: 600 15px/19px var(--rm-font-sans);
+	letter-spacing: -0.005em;
 	color: var(--rm-ink);
 	white-space: nowrap;
 	pointer-events: none;
@@ -437,33 +422,33 @@
 	--hair: 1px;
 }
 
-.sheet-group::after {
-	content: '';
-	position: absolute;
-	left: 0;
-	right: 0;
-	bottom: 6px;
-	border-bottom: var(--hair) solid var(--rm-rule);
+/* (the first group sits right under the head's own rule) */
+.sheet-group.first {
+	border-top-color: transparent;
 }
 
 .sheet-group .name {
 	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
+	border-radius: 3px;
 }
 
 .sheet-group .count {
-	margin-left: auto;
+	flex: none;
+	font-size: 11.5px;
 	font-weight: 400;
+	font-variant-numeric: tabular-nums;
 	color: var(--rm-ink-3);
 }
 
-.sheet-group.hovered .name,
+.sheet-group.hovered .name {
+	background: var(--rm-blue-tint);
+	box-shadow: 0 0 0 3px var(--rm-blue-tint);
+}
+
 .sheet-group.linked .name {
-	margin-left: -4px;
-	padding: 0 4px;
-	background: var(--rm-ink);
-	color: var(--rm-sheet);
+	color: var(--rm-blue);
 }
 
 /* under a frame's groups when it leaves older items out */
@@ -477,8 +462,8 @@
 	gap: 10px;
 	transform-origin: 0 0;
 	border-top: var(--hair) dashed var(--rm-rule-2);
-	font: 10.5px var(--rm-font-mono);
-	text-transform: uppercase;
+	font: 11px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 	color: var(--rm-ink-2);
 	white-space: nowrap;
 	pointer-events: none;
@@ -492,7 +477,6 @@
 	background: var(--rm-sheet);
 	color: var(--rm-ink);
 	font: 600 10px var(--rm-font-sans);
-	text-transform: none;
 	pointer-events: auto;
 	cursor: pointer;
 }
@@ -527,17 +511,8 @@
 .overlay .item-title .kd {
 	flex: none;
 	margin-left: auto;
-	font-family: var(--rm-font-mono);
 	font-size: 0.9em;
-	text-transform: uppercase;
 	color: var(--rm-ink-3);
-}
-
-.overlay .item-title.selected .nm {
-	margin-left: -0.38em;
-	padding: 0 0.38em;
-	background: var(--rm-ink);
-	color: var(--rm-sheet);
 }
 
 /* over the hovered item: plain-text commands on a ruled strip */

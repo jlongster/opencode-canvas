@@ -3,15 +3,15 @@ import type { Session, SessionActivity } from '../../../shared/types'
 import type { Editor, FrameStatus } from '../editor/Editor'
 import { Box } from '../editor/geometry'
 import { LAYOUT, SHEET, type SectionLayout } from '../editor/layout'
-import { clock, hhmm, segments } from './segments'
+import { clock } from './segments'
 import './sheet.css'
 
 /*
  * The Reference Manual's sheet heads (see render/sheet.css): each frame's head is a title row (the
- * session's title, its prompt keycap and buttons), a title block of small spaced capitals over
- * monospaced values (AGENT, MODEL, ITEMS, UPDATED, STATUS), its subagents as a row of documents, and,
- * while it works, a one-line printout of what it's doing, fed like a chain printer. Group headings
- * and the "older items hidden" row are here too.
+ * session's title, a running or asking cell, its prompt keycap and buttons), inverted while the frame
+ * is connected to its live session and greyed when it isn't; while it works, a slim printout of what
+ * it's doing under it, fed like a chain printer; and its subagents as a row of documents. Group
+ * headings and the "older items hidden" row are here too.
  *
  * Heads are DOM laid out in design px (the mockup's own sizes) and scaled onto the page: a design px
  * is SHEET.k page px, and heads never shrink below LAYOUT.minFrameTitlePx for their title on screen;
@@ -44,7 +44,6 @@ const FAR = 0.7
 const ROOMY_PX = 250
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!)
-const pad2 = (n: number) => String(n).padStart(2, '0')
 /** A subagent's title without OpenCode's "(@explore subagent)" tail. */
 const kidTitle = (title: string) => title.replace(/\s*\(@[\w-]+ subagent\)\s*$/, '').trim() || 'Subagent'
 
@@ -52,6 +51,7 @@ interface Head {
 	el: HTMLDivElement
 	title: HTMLElement
 	row: HTMLElement
+	/** the title row's state cell (a frame's), or a drawer head's meta */
 	block: HTMLElement
 	tray: HTMLElement | null
 	printout: HTMLElement | null
@@ -68,10 +68,8 @@ export class SheetHeads {
 	private host: HTMLDivElement
 	/** sessions seen working, and when they started (ms), when activity doesn't say */
 	private seenBusy = new Map<string, number>()
-	/** when sessions seen working stopped (ms): DONE · hh:mm */
-	private finished = new Map<string, number>()
 	/** running clocks to tick: session id → its clock element and since when */
-	private clocks = new Map<string, { big: HTMLElement; small: HTMLElement; since: number; text: string }>()
+	private clocks = new Map<string, { el: HTMLElement; since: number; text: string }>()
 	private ticker = 0
 	/** the zoom the heads were last rastered at, and the pending re-raster once a zoom settles */
 	private rasterZ = 0
@@ -105,8 +103,7 @@ export class SheetHeads {
 			const text = clock(now - c.since)
 			if (text === c.text) continue
 			c.text = text
-			c.big.innerHTML = segments(text, 11)
-			c.small.textContent = text
+			c.el.textContent = text
 		}
 	}
 
@@ -123,22 +120,12 @@ export class SheetHeads {
 		const linkedGroupId = editor.linkedGroup.get()?.id
 		const now = Date.now()
 
-		// working and finished, as seen from here
+		// working, as seen from here
 		for (const id of busy) if (!this.seenBusy.has(id)) this.seenBusy.set(id, now)
-		for (const id of [...this.seenBusy.keys()]) {
-			if (busy.has(id)) continue
-			this.seenBusy.delete(id)
-			this.finished.set(id, now)
-		}
-		for (const id of busy) this.finished.delete(id)
+		for (const id of [...this.seenBusy.keys()]) if (!busy.has(id)) this.seenBusy.delete(id)
 
-		const counts = new Map<string, { n: number; latest: number }>()
-		for (const item of Object.values(items)) {
-			const c = counts.get(item.sessionId) ?? { n: 0, latest: 0 }
-			c.n++
-			c.latest = Math.max(c.latest, item.createdAt)
-			counts.set(item.sessionId, c)
-		}
+		const counts = new Map<string, number>()
+		for (const item of Object.values(items)) counts.set(item.sessionId, (counts.get(item.sessionId) ?? 0) + 1)
 
 		const seen = new Set<string>()
 		const live = new Set<string>()
@@ -192,15 +179,17 @@ export class SheetHeads {
 			this.showButtons(el, status)
 
 			const working = busy.has(s.id)
+			// (working or asking: something reports it live, so it's connected too)
+			if (!s.drawer) el.classList.toggle('connected', !status?.ended && !!(status?.connected || status?.asking || working))
 			const since = act?.busySince ?? this.seenBusy.get(s.id) ?? now
 			if (working) live.add(s.id)
 			if (s.drawer) {
-				this.fillDrawerHead(head, s.id, session, status, act, count?.n ?? 0, working)
+				this.fillDrawerHead(head, s.id, session, act, count ?? 0, working)
 				continue
 			}
-			this.fillBlock(head, s.id, session, status, act, count, working, since)
-			this.fillTray(head, s.id, kids.get(s.id) ?? [], sessions)
+			this.fillState(head, s.id, session, status, working, since)
 			this.fillPrintout(head, s.id, act, working, since)
+			this.fillTray(head, s.id, kids.get(s.id) ?? [], sessions)
 		}
 		for (const [id, head] of this.heads) {
 			if (seen.has(id)) continue
@@ -230,8 +219,10 @@ export class SheetHeads {
 				}
 				const [name, count] = h.children as unknown as HTMLElement[]
 				if (name.textContent !== g.name) name.textContent = g.name
-				const c = pad2(g.itemIds.length)
+				const n = g.itemIds.length
+				const c = `${n} ${n === 1 ? 'item' : 'items'}`
 				if (count.textContent !== c) count.textContent = c
+				h.classList.toggle('first', g === s.groups[0])
 				this.placeDesign(h, { x: g.heading.x + dx, y: g.heading.y + dy, w: g.heading.w, h: g.heading.h }, z)
 				h.style.opacity = String(d.opacity)
 				h.classList.toggle('hovered', g.id === hoveredGroupId)
@@ -294,13 +285,11 @@ export class SheetHeads {
 
 	private createHead(id: string): Head {
 		const el = document.createElement('div')
-		el.className = 'sheet-head'
+		el.className = 'sheet-head sheet-frame-head'
 		el.dataset.session = id
-		el.innerHTML =
-			'<div class="sh-row"><span class="title"></span><span class="frame-buttons sh-act"></span></div>' +
-			'<div class="sh-block"></div>'
+		el.innerHTML = '<div class="sh-row"><span class="title"></span><span class="sh-state"></span><span class="frame-buttons sh-act"></span></div>'
 		const row = el.children[0] as HTMLElement
-		const buttons = row.children[1] as HTMLElement
+		const buttons = row.children[2] as HTMLElement
 		buttons.append(...this.promptButtons(id))
 		if (this.onHide) {
 			const onHide = this.onHide
@@ -319,7 +308,7 @@ export class SheetHeads {
 			e.stopPropagation()
 			this.editor.toggleDrawer(doc.dataset.kid!, e.shiftKey)
 		})
-		return { el, row, title: row.children[0] as HTMLElement, block: el.children[1] as HTMLElement, tray: null, printout: null, notch: null, keys: {}, line: '', drawer: false }
+		return { el, row, title: row.children[0] as HTMLElement, block: row.children[1] as HTMLElement, tray: null, printout: null, notch: null, keys: {}, line: '', drawer: false }
 	}
 
 	/** The prompt keycap and button: open (or close) the session's prompt under them. */
@@ -345,46 +334,26 @@ export class SheetHeads {
 		}
 	}
 
-	/** The title block: what's known of AGENT, MODEL, ITEMS, UPDATED, and always STATUS. */
-	private fillBlock(head: Head, id: string, session: Session | undefined, status: FrameStatus | null, act: SessionActivity | undefined, count: { n: number; latest: number } | undefined, working: boolean, since: number) {
-		const agent = act?.agent ?? session?.opencode?.agent
-		const model = act?.model
-		const updatedAt = Math.max(session?.opencode?.updatedAt ?? 0, count?.latest ?? 0)
-		const state = status?.ended ? 'ended' : status?.asking ? 'ask' : working ? 'run' : session?.opencode?.failed ? 'failed' : this.finished.has(id) ? 'done' : 'idle'
-		const stamp = state === 'done' ? this.finished.get(id)! : updatedAt
-		const key = JSON.stringify([agent, model, count?.n ?? 0, updatedAt, state, stamp, state === 'run' ? since : 0])
-		if (head.keys.block !== key) {
-			head.keys.block = key
-			const field = (cls: string, k: string, v: string) => `<div class="f ${cls}"><div class="k">${k}</div><div class="v">${v}</div></div>`
-			let html = ''
-			if (agent) html += field('f-agent', 'Agent', esc(agent))
-			if (model) html += field('f-model', 'Model', esc(model))
-			html += field('f-items', 'Items', pad2(count?.n ?? 0))
-			if (updatedAt) html += field('f-updated', 'Updated', hhmm(updatedAt))
-			const t = stamp ? ` · ${hhmm(stamp)}` : ''
-			const value =
-				state === 'run'
-					? `<span class="st-word">RUNNING</span><span class="clk"></span><span class="clk-small"></span>`
-					: state === 'ask'
-						? 'ASKING'
-						: state === 'ended'
-							? 'ENDED'
-							: state === 'failed'
-								? `FAILED${t}`
-								: state === 'done'
-									? `DONE${t}`
-									: `IDLE${t}`
-			html += field(`f-status st-${state}`, 'Status', value)
-			head.block.innerHTML = html
-			this.clocks.delete(id)
-			if (state === 'run') {
-				const text = clock(Date.now() - since)
-				const big = head.block.querySelector<HTMLElement>('.clk')!
-				const small = head.block.querySelector<HTMLElement>('.clk-small')!
-				big.innerHTML = segments(text, 11)
-				small.textContent = text
-				this.clocks.set(id, { big, small, since, text })
-			}
+	/**
+	 * The title row's state cell: running (blue, with its clock) or asking (red); failed, quietly.
+	 * Nothing while it's idle or done.
+	 */
+	private fillState(head: Head, id: string, session: Session | undefined, status: FrameStatus | null, working: boolean, since: number) {
+		const state = status?.ended ? 'ended' : status?.asking ? 'ask' : working ? 'run' : session?.opencode?.failed ? 'failed' : 'idle'
+		const key = JSON.stringify([state, state === 'run' ? since : 0])
+		if (head.keys.state === key) return
+		head.keys.state = key
+		const cell = head.block
+		cell.className = `sh-state st-${state}`
+		this.clocks.delete(id)
+		if (state === 'run') {
+			const text = clock(Date.now() - since)
+			cell.innerHTML = '<span class="w">Running</span><span class="clk"></span>'
+			const el = cell.lastElementChild as HTMLElement
+			el.textContent = text
+			this.clocks.set(id, { el, since, text })
+		} else {
+			cell.textContent = state === 'ask' ? 'Asking' : state === 'failed' ? 'Failed' : ''
 		}
 	}
 
@@ -400,7 +369,7 @@ export class SheetHeads {
 		if (!head.tray) {
 			head.tray = document.createElement('div')
 			head.tray.className = 'sh-tray'
-			head.block.after(head.tray)
+			head.el.insertBefore(head.tray, head.notch)
 		}
 		const chrome = this.editor.frameChrome
 		const docs = kids.map((k) => ({ id: k, title: kidTitle(sessions[k]?.title || 'Subagent'), state: (chrome?.subagent?.(k) ?? 'done') as KidState, open: this.editor.drawers.isOpen(k) }))
@@ -408,7 +377,7 @@ export class SheetHeads {
 		if (head.keys.tray !== key) {
 			head.keys.tray = key
 			head.tray.innerHTML =
-				`<div class="k">Subagents · ${kids.length} — click one to unfold its sheet</div>` +
+				`<div class="k">Subagents <span class="n">${kids.length}</span></div>` +
 				`<div class="docs">${docs.map((d) => docIcon(d.id, d.title, d.state, d.open)).join('')}</div>`
 		}
 		// the notch: where the open drawer unfolds from (the first open one)
@@ -442,9 +411,9 @@ export class SheetHeads {
 			head.printout = document.createElement('div')
 			head.printout.className = 'sh-printout'
 			head.printout.innerHTML = '<div class="roll"></div>'
-			head.el.insertBefore(head.printout, head.notch)
+			head.row.after(head.printout)
 		}
-		const step = act?.step ?? 'WORKING'
+		const step = act?.step ?? 'Working'
 		const at = clock(Math.max(0, (act?.stepAt ?? since) - since))
 		const line = `${at}|${step}`
 		if (head.line === line) return
@@ -476,19 +445,18 @@ export class SheetHeads {
 		return { el, row, title: row.children[1] as HTMLElement, block: row.children[2] as HTMLElement, tray: null, printout: null, notch: null, keys: {}, line: '', drawer: true }
 	}
 
-	private fillDrawerHead(head: Head, id: string, session: Session | undefined, status: FrameStatus | null, act: SessionActivity | undefined, n: number, working: boolean) {
+	private fillDrawerHead(head: Head, id: string, session: Session | undefined, act: SessionActivity | undefined, n: number, working: boolean) {
 		const state = (this.editor.frameChrome?.subagent?.(id) ?? (working ? 'running' : 'done')) as KidState
 		const created = session?.opencode?.createdAt
 		const updated = session?.opencode?.updatedAt
 		const min = created && updated && updated > created ? Math.max(1, Math.round((updated - created) / 60_000)) : 0
 		const word = { running: 'Running', waiting: 'Asking', failed: 'Failed', done: 'Done' }[state]
-		const meta = [`${pad2(n)} ITEMS`, ...(min ? [`${min} MIN`] : []), ...(act?.model ? [act.model.toUpperCase()] : [])].join(' · ')
+		const meta = [`${n} ${n === 1 ? 'item' : 'items'}`, ...(min ? [`${min} min`] : []), ...(act?.model ? [act.model] : [])].join(' · ')
 		const key = JSON.stringify([state, meta, sessionColor(id)])
 		if (head.keys.meta === key) return
 		head.keys.meta = key
 		;(head.row.children[0] as HTMLElement).style.background = sessionColor(id)
 		head.block.innerHTML = `<span class="k st-${state}">${word}</span><span class="m">${esc(meta)}</span>`
-		void status
 	}
 
 	/** The row under a frame's groups: how many older items it leaves out, and buttons to show them. */

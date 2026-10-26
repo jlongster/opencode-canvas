@@ -48,6 +48,8 @@ export interface KnownSession extends Partial<OpenCodeSessionInfo> {
 	serverKey: string
 	/** read from OpenCode in full; else only what listings and events said */
 	complete: boolean
+	/** the session it was forked from, if it's a fork (OpenCode's fork.sessionID) */
+	forkOf?: string
 }
 
 /** An OpenCode title as the canvas keeps it: one line, at most TITLE_MAX characters. */
@@ -70,6 +72,7 @@ function fromOpenCode(serverKey: string, s: SessionInfo): KnownSession {
 		complete: true,
 		title: cleanTitle(s.title),
 		...(s.parentID ? { parentId: s.parentID } : {}),
+		...(s.fork?.sessionID ? { forkOf: s.fork.sessionID } : {}),
 		...(s.agent ? { agent: s.agent } : {}),
 		...(s.location?.directory ? { directory: s.location.directory } : {}),
 		createdAt: s.time.created,
@@ -151,6 +154,12 @@ class LiveSessions {
 
 	unwant(who: object) {
 		this.wants.delete(who)
+	}
+
+	/** Whether a paired server whose event stream is up has this session, as read from it (reactive). */
+	has(id: string): boolean {
+		const k = this.sessions.get()[id]
+		return !!k?.complete && !k.deleted && this.busyOn(k.serverKey) !== undefined
 	}
 
 	/** Which sessions are working on a server, or undefined while its event stream isn't up. */
@@ -532,6 +541,7 @@ function sameSession(a: KnownSession, b: KnownSession) {
 		a.complete === b.complete &&
 		a.title === b.title &&
 		a.parentId === b.parentId &&
+		a.forkOf === b.forkOf &&
 		a.agent === b.agent &&
 		a.directory === b.directory &&
 		a.createdAt === b.createdAt &&
@@ -579,11 +589,12 @@ export class FrameSessions {
 				for (const s of Object.values(editor.sessionRecords.get())) if (isOpenCodeSession(s.id)) wanted.set(s.id, s.serverKey)
 				// and their parents (and theirs) without frames: a subagent's subagent finds its way to its frame through them
 				const known = liveSessions.sessions.get()
+				const records = editor.sessionRecords.peek()
 				let ids = [...wanted.keys()]
 				for (let depth = 0; depth < 4 && ids.length; depth++) {
 					const next: string[] = []
 					for (const id of ids) {
-						const parent = known[id]?.parentId ?? editor.sessionRecords.peek()[id]?.opencode?.parentId
+						const parent = known[id]?.parentId ?? records[id]?.opencode?.parentId ?? (records[id] ? undefined : known[id]?.forkOf)
 						if (parent && isOpenCodeSession(parent) && !wanted.has(parent)) {
 							wanted.set(parent, known[id]?.serverKey)
 							next.push(parent)
@@ -593,7 +604,11 @@ export class FrameSessions {
 				}
 				liveSessions.want(this, wanted)
 			}),
-			react(() => this.show(editor.sessionRecords.get(), liveSessions.sessions.get())),
+			// (and again when who's whose parent is known: see withFrameParent)
+			react(() => {
+				editor.knownParents.get()
+				this.show(editor.sessionRecords.get(), liveSessions.sessions.get())
+			}),
 			// What the frames' sessions are doing, here (and, on edit links, for everyone: see sync/client.ts).
 			react(() => {
 				const records = editor.sessionRecords.get()
@@ -606,9 +621,16 @@ export class FrameSessions {
 				}
 				editor.ownActivity.set(own)
 			}),
+			// Who's whose parent, as far as the paired servers know. A fork without a frame here counts as
+			// its original's (a coordinator that forked its session goes on posting to the original's frame,
+			// so its subagents belong there); a fork with a frame of its own stays a frame.
 			react(() => {
+				const records = editor.sessionRecords.get()
 				const parents: Record<string, string> = {}
-				for (const k of Object.values(liveSessions.sessions.get())) if (k.parentId) parents[k.id] = k.parentId
+				for (const k of Object.values(liveSessions.sessions.get())) {
+					const up = k.parentId ?? (records[k.id] ? undefined : k.forkOf)
+					if (up) parents[k.id] = up
+				}
 				editor.knownParents.set(parents)
 			}),
 		)
@@ -657,8 +679,9 @@ export class FrameSessions {
 	}
 
 	private queueMirror(records: Record<string, Session>, live: Record<string, LiveSession>) {
-		for (const [id, info] of Object.entries(live)) {
+		for (const [id, shown] of Object.entries(live)) {
 			const record = records[id]
+			const info = this.withFrameParent(shown, records)
 			const key = mirrorKey(info.serverKey, info)
 			const onServer = record.serverKey && record.opencode ? mirrorKey(record.serverKey, record.opencode) : ''
 			if (key === onServer) {
@@ -671,6 +694,22 @@ export class FrameSessions {
 			this.queue.set(id, { sessionId: id, serverKey, ...rest })
 		}
 		if (this.queue.size && !this.timer) this.timer = window.setTimeout(() => void this.flushMirror(), MIRROR_DEBOUNCE_MS)
+	}
+
+	/**
+	 * A subagent's info as mirrored: when its parent has no frame here (it's a fork of a session that
+	 * does, or a subagent itself), its parent is given as the nearest one up that has a frame, so
+	 * viewers (who can't ask OpenCode) still find which frame it belongs to.
+	 */
+	private withFrameParent(info: LiveSession, records: Record<string, Session>): LiveSession {
+		if (!info.parentId || records[info.parentId]) return info
+		const known = this.editor.knownParents.peek()
+		let at: string | undefined = known[info.parentId]
+		for (let i = 0; at && i < 8; i++) {
+			if (records[at]) return { ...info, parentId: at }
+			at = known[at]
+		}
+		return info
 	}
 
 	private async flushMirror() {

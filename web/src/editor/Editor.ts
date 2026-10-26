@@ -83,6 +83,12 @@ export interface FrameStatus {
 	ended: boolean
 	/** it waits on an answer from you: a question or a permission request */
 	asking?: boolean
+	/**
+	 * it's connected to its live session: a paired OpenCode in this tab has it, its owner's tab runs
+	 * it (linked, online in the room), or, as the canvas server mirrors it, an edit tab paired with
+	 * its OpenCode reports it
+	 */
+	connected?: boolean
 }
 
 /** What OpenCode says about a frame's session, as this tab read it from the server it's on (see opencode/live.ts). */

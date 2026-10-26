@@ -14,7 +14,8 @@
 
 .sp-trigger-n {
 	color: var(--rm-ink-3);
-	font: 11px var(--rm-font-mono);
+	font: 11px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 }
 
 .toolbar .sp-trigger[aria-expanded='true'],
@@ -40,7 +41,7 @@
 	overflow: hidden;
 	border: 1px solid var(--rm-ink);
 	background: var(--rm-sheet);
-	box-shadow: 5px 5px 0 rgb(21 21 21 / 0.12);
+	box-shadow: 5px 5px 0 rgb(22 24 27 / 0.12);
 	color: var(--rm-ink);
 	font: 12.5px/1.35 var(--rm-font-sans);
 	white-space: normal;
@@ -70,17 +71,15 @@
 .sp-title {
 	font-weight: 800;
 	font-size: 12px;
-	letter-spacing: 0.04em;
-	text-transform: uppercase;
 }
 
 .sp-meta {
 	min-width: 0;
 	overflow: hidden;
 	color: var(--rm-ink-2);
-	font: 10.5px var(--rm-font-mono);
+	font: 10.5px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 	text-overflow: ellipsis;
-	text-transform: uppercase;
 	white-space: nowrap;
 }
 
@@ -149,9 +148,7 @@
 	flex: none;
 	padding: 8px 10px 6px;
 	border-bottom: 1px solid var(--rm-ink);
-	font: 600 7.5px var(--rm-font-sans);
-	letter-spacing: 0.16em;
-	text-transform: uppercase;
+	font: 600 11px var(--rm-font-sans);
 	color: var(--rm-ink-2);
 }
 
@@ -184,7 +181,7 @@
 }
 
 .toolbar .sp-list .sp-row:nth-child(even) {
-	background: #f5f4ee;
+	background: #f3f4f6;
 }
 
 /* the row in hand (hovered, or reached with the arrows): inverse video */
@@ -216,13 +213,13 @@
 .sp-c-active {
 	overflow: hidden;
 	color: var(--rm-ink-2);
-	font: 11.5px var(--rm-font-mono);
+	font: 11.5px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
 .sp-c-active {
-	text-transform: uppercase;
 }
 
 /* long paths lose their start, not their end */
@@ -236,16 +233,15 @@
 .sp-row:focus-visible .sp-c-dir,
 .sp-row:focus-visible .sp-c-active,
 .sp-row:hover .sp-c-title.is-untitled {
-	color: #b7b4aa;
+	color: #b2b5bb;
 }
 
 /* state chips: running in blue, asking in red, idle and done outlined */
 .sp-state {
 	display: inline-block;
 	padding: 3px 5px;
-	font: 700 9px/1 var(--rm-font-mono);
-	letter-spacing: 0.04em;
-	text-transform: uppercase;
+	font: 700 9px/1 var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 }
 
 .sp-state.is-running {
@@ -296,17 +292,18 @@
 
 .sp-goto {
 	color: var(--rm-ink-2);
-	font: 11.5px var(--rm-font-mono);
+	font: 11.5px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 }
 
 .sp-row:hover .sp-goto,
 .sp-row:focus-visible .sp-goto {
-	color: #b7b4aa;
+	color: #b2b5bb;
 }
 
 .sp-wait {
-	font-family: var(--rm-font-mono);
-	text-transform: uppercase;
+	font-family: var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 }
 
 .sp-spin {
@@ -465,9 +462,7 @@
 	padding: 0 12px;
 	border: 0;
 	color: var(--rm-ink-2);
-	font: 600 8px var(--rm-font-sans);
-	letter-spacing: 0.16em;
-	text-transform: uppercase;
+	font: 600 11px var(--rm-font-sans);
 	text-align: left;
 }
 
@@ -478,7 +473,8 @@
 
 .sp-toggle-count {
 	color: var(--rm-ink-3);
-	font: 10px var(--rm-font-mono);
+	font: 10px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 	letter-spacing: 0;
 }
 
@@ -531,14 +527,15 @@
 .sp-row-project {
 	overflow: hidden;
 	color: var(--rm-ink-2);
-	font: 11px var(--rm-font-mono);
+	font: 11px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
 .sp-row:hover .sp-row-project,
 .sp-row:focus-visible .sp-row-project {
-	color: #b7b4aa;
+	color: #b2b5bb;
 }
 
 /* hidden frames are listed too, quieter */

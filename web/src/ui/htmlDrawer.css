@@ -8,7 +8,7 @@
 .html-drawer-scrim {
 	position: absolute;
 	inset: 0;
-	background: rgb(236 234 227 / 0.55);
+	background: rgb(228 229 232 / 0.55);
 	animation: html-drawer-fade 200ms steps(2, end) both;
 }
 
@@ -23,7 +23,7 @@
 	flex-direction: column;
 	background: var(--rm-ground);
 	border-left: 1px solid var(--rm-ink);
-	box-shadow: -5px 0 0 rgb(21 21 21 / 0.08);
+	box-shadow: -5px 0 0 rgb(22 24 27 / 0.08);
 	outline: none;
 	animation: html-drawer-in 220ms steps(4, end) both;
 }
@@ -163,8 +163,8 @@
 
 .html-drawer-group {
 	color: var(--rm-ink-3);
-	font: 11px var(--rm-font-mono);
-	text-transform: uppercase;
+	font: 11px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 }
 
 .html-drawer-steps,
@@ -178,7 +178,8 @@
 .html-drawer-steps span {
 	min-width: 54px;
 	color: var(--rm-ink);
-	font: 12px var(--rm-font-mono);
+	font: 12px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 	text-align: center;
 }
 
@@ -387,7 +388,7 @@
 	padding: 5px 12px;
 	border: 1px solid var(--rm-ink);
 	background: var(--rm-sheet);
-	box-shadow: 3px 3px 0 rgb(21 21 21 / 0.12);
+	box-shadow: 3px 3px 0 rgb(22 24 27 / 0.12);
 	color: var(--rm-ink-2);
 	font-size: 12px;
 	white-space: nowrap;

@@ -45,7 +45,7 @@
 }
 
 .submit-annotations-pill.pinned {
-	box-shadow: 3px 3px 0 rgb(21 21 21 / 0.14);
+	box-shadow: 3px 3px 0 rgb(22 24 27 / 0.14);
 }
 
 .submit-annotations-pill.disabled {

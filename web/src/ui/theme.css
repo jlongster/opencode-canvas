@@ -7,28 +7,28 @@
 
 :root {
 	/* paper */
-	--rm-ground: #eceae3; /* the canvas paper */
-	--rm-sheet: #fbfaf6; /* frames and panels */
-	--rm-bar: #eef1ea; /* the printout bar */
+	--rm-ground: #e4e5e8; /* the canvas paper: a cool, neutral grey */
+	--rm-sheet: #f9f9fa; /* frames and panels */
+	--rm-bar: #e9edf1; /* the printout bar */
 
 	/* ink */
-	--rm-ink: #151515; /* type, rules, selection */
-	--rm-ink-2: #4f4d48; /* secondary text */
-	--rm-ink-3: #8a877f; /* muted labels */
-	--rm-rule: #d5d1c6; /* hairlines */
-	--rm-rule-2: #b9b4a8; /* dashed and stronger hairlines */
+	--rm-ink: #16181b; /* type, rules, selection */
+	--rm-ink-2: #4a4e55; /* secondary text */
+	--rm-ink-3: #858990; /* muted labels */
+	--rm-rule: #d2d4d8; /* hairlines */
+	--rm-rule-2: #b3b6bc; /* dashed and stronger hairlines */
 
 	/* signals */
-	--rm-red: #c2381f; /* waiting on you, the red pencil */
-	--rm-blue: #1e5c88; /* running */
-	--rm-blue-tint: #dce6ee;
+	--rm-red: #c4362a; /* waiting on you, the red pencil */
+	--rm-blue: #1f5d8c; /* running */
+	--rm-blue-tint: #dae3ec;
 
 	/* the person-added tag */
-	--rm-buff: #e8d9c1;
+	--rm-buff: #e5e1da;
 
 	/* placeholders: a 50% ink dither at 28% over the sheet (loading), 0.7px pinstripes every 2px (queued) */
-	--rm-dither: rgb(21 21 21 / 0.28);
-	--rm-pinstripe: #bdb8ac;
+	--rm-dither: rgb(22 24 27 / 0.28);
+	--rm-pinstripe: #b8bbc1;
 
 	/* session badges, 9px squares only */
 	--rm-badge-1: #2f8c96; /* teal */
@@ -40,10 +40,10 @@
 	--rm-badge-7: #4a5560; /* slate */
 	--rm-badge-8: #8e3b2e; /* brick */
 
-	/* type: display is --rm-font-wide (or .rm-wide) at 800; title/text/label Archivo; machine Courier Prime; callout EB Garamond italic */
+	/* type: display is --rm-font-wide (or .rm-wide) at 800; title/text/label Archivo; numbers Archivo with tabular figures (--rm-font-mono, no monospace); callout EB Garamond italic */
 	--rm-font-sans: 'Archivo', system-ui, sans-serif;
 	--rm-font-wide: 'Archivo Wide', 'Archivo', system-ui, sans-serif;
-	--rm-font-mono: 'Courier Prime', ui-monospace, monospace;
+	--rm-font-mono: var(--rm-font-sans);
 	--rm-font-serif: 'EB Garamond', Georgia, serif;
 
 	/* grid: items flow on 8px, plus-marks on the canvas every 96px (12 × 8) */
@@ -55,15 +55,15 @@
 	 * for translucent versions: rgb(var(--panel-rgb) / 0.9).
 	 */
 	/* the canvas, behind everything: ground */
-	--canvas-rgb: 236 234 227;
+	--canvas-rgb: 228 229 232;
 	/* a session's frame on the canvas: sheet */
-	--frame-rgb: 251 250 246;
+	--frame-rgb: 249 249 250;
 	/* toolbars, popovers, the attention bar, prompt bubbles: sheet */
-	--panel-rgb: 251 250 246;
+	--panel-rgb: 249 249 250;
 	/* things on a panel: menus, thumbnails, hovered chips, dragged rows */
-	--raised-rgb: 242 240 234;
+	--raised-rgb: 240 241 243;
 	/* the top step: pressed or open things on a raised surface */
-	--raised-2-rgb: 230 227 218;
+	--raised-2-rgb: 225 227 231;
 
 	--canvas: rgb(var(--canvas-rgb));
 	--frame: rgb(var(--frame-rgb));
@@ -78,14 +78,19 @@
 	/* text, strongest first; --text-dim is the quietest that still reads (AA) on a panel */
 	--text-strong: var(--rm-ink);
 	--text: var(--rm-ink);
-	--text-soft: #2e2d2a;
+	--text-soft: #2a2d32;
 	--text-muted: var(--rm-ink-2);
-	--text-dim: #6b6862;
+	--text-dim: #62666d;
 	/* not text: grips, idle dots, disabled marks */
 	--text-faint: var(--rm-ink-3);
 
 	/* the accent: focus rings, selected rows */
-	--accent-rgb: 30 92 136;
+	--accent-rgb: 31 93 140;
+}
+
+/* where numbers line up (times, counts, sizes) */
+.rm-num {
+	font-variant-numeric: tabular-nums;
 }
 
 .rm-wide {

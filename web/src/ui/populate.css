@@ -12,8 +12,8 @@
 	border: 1px solid var(--rm-ink);
 	background: var(--rm-sheet);
 	color: var(--rm-ink);
-	font: 11px var(--rm-font-mono);
-	text-transform: uppercase;
+	font: 11px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 	pointer-events: none;
 }

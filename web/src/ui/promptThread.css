@@ -24,7 +24,7 @@
 	max-width: calc(100vw - 16px);
 	background: var(--rm-sheet);
 	border: 1px solid var(--rm-ink);
-	box-shadow: 4px 4px 0 rgb(21 21 21 / 0.14);
+	box-shadow: 4px 4px 0 rgb(22 24 27 / 0.14);
 	color: var(--rm-ink);
 	font: 12px/1.4 var(--rm-font-sans);
 	-webkit-font-smoothing: antialiased;
@@ -84,9 +84,7 @@
 .pt-to {
 	flex: none;
 	color: var(--rm-ink-2);
-	font: 600 7.5px var(--rm-font-sans);
-	letter-spacing: 0.16em;
-	text-transform: uppercase;
+	font: 600 11px var(--rm-font-sans);
 }
 
 .pt-name {
@@ -136,9 +134,7 @@
 	flex: none;
 	width: 42px;
 	color: var(--rm-ink-2);
-	font: 600 7.5px/16px var(--rm-font-sans);
-	letter-spacing: 0.16em;
-	text-transform: uppercase;
+	font: 600 11px/16px var(--rm-font-sans);
 }
 
 .pt-fill {
@@ -154,7 +150,8 @@
 /* The reply: the machine's voice. */
 .pt-reply {
 	color: var(--rm-ink);
-	font: 11.5px/1.45 var(--rm-font-mono);
+	font: 11.5px/1.45 var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 }
 
 .pt-fill.can {
@@ -162,7 +159,7 @@
 }
 
 .pt-fill.can:hover {
-	background: #f5f4ee;
+	background: #f3f4f6;
 }
 
 .pt-fill.dim {
@@ -223,7 +220,8 @@
 .pt-chip-n {
 	display: grid;
 	place-items: center;
-	font: 600 10px var(--rm-font-mono);
+	font: 600 10px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 	background: var(--rm-bar);
 }
 
@@ -348,7 +346,6 @@ img.pt-th.sm {
 	margin: 10px 0 4px;
 	font-size: 1em;
 	font-weight: 700;
-	text-transform: uppercase;
 }
 
 .pt-md a {
@@ -360,7 +357,8 @@ img.pt-th.sm {
 .pt-md code {
 	padding: 0 3px;
 	background: var(--rm-bar);
-	font: 0.95em var(--rm-font-mono);
+	font: 0.95em var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 }
 
 .pt-md pre {
@@ -427,7 +425,8 @@ img.pt-th.sm {
 	padding: 0 1px;
 	background: var(--rm-sheet);
 	color: var(--rm-ink-3);
-	font: 7px/8px var(--rm-font-mono);
+	font: 7px/8px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 }
 
 .pt-atts {
@@ -473,7 +472,8 @@ img.pt-th.sm {
 	padding: 0 2px;
 	background: var(--rm-ink);
 	color: var(--rm-sheet);
-	font: 700 7px var(--rm-font-mono);
+	font: 700 7px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 }
 
 .pt-fchip-name {
@@ -505,7 +505,8 @@ img.pt-th.sm {
 	place-items: center;
 	width: 100%;
 	height: 100%;
-	font: 700 9px var(--rm-font-mono);
+	font: 700 9px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 	color: var(--rm-ink-2);
 }
 
@@ -626,8 +627,8 @@ img.pt-th.sm {
 	gap: 6px;
 	align-items: center;
 	color: var(--rm-blue);
-	font: 600 11px var(--rm-font-mono);
-	text-transform: uppercase;
+	font: 600 11px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 }
 
 .pt-flash svg {
@@ -727,7 +728,7 @@ img.pt-th.sm {
 	display: grid;
 	place-items: center;
 	border: 1px dashed var(--rm-ink);
-	background: rgb(251 250 246 / 0.92);
+	background: rgb(249 249 250 / 0.92);
 	color: var(--rm-ink);
 	font: italic 15px var(--rm-font-serif);
 	pointer-events: none;
@@ -760,9 +761,7 @@ img.pt-th.sm {
 	gap: 5px;
 	margin-bottom: 2px;
 	color: var(--rm-ink);
-	font: 600 8px var(--rm-font-sans);
-	letter-spacing: 0.16em;
-	text-transform: uppercase;
+	font: 600 11px var(--rm-font-sans);
 }
 
 .pt-lock {
@@ -806,9 +805,7 @@ img.pt-th.sm {
 	align-items: center;
 	gap: 7px;
 	color: var(--rm-red);
-	font: 600 8px/14px var(--rm-font-sans);
-	letter-spacing: 0.16em;
-	text-transform: uppercase;
+	font: 600 11px/14px var(--rm-font-sans);
 }
 
 /* the red lamp: waiting on you */
@@ -834,7 +831,8 @@ img.pt-th.sm {
 .pt-q-n {
 	margin-left: auto;
 	color: var(--rm-ink-3);
-	font: 10px var(--rm-font-mono);
+	font: 10px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 	letter-spacing: 0;
 }
 
@@ -854,7 +852,8 @@ img.pt-th.sm {
 .pt-q-note code {
 	padding: 0 3px;
 	background: var(--rm-bar);
-	font: 11.5px var(--rm-font-mono);
+	font: 11.5px var(--rm-font-sans);
+	font-variant-numeric: tabular-nums;
 }
 
 .pt-q-opts {
@@ -876,7 +875,7 @@ img.pt-th.sm {
 }
 
 .pt .pt-q-opt:not(.on):hover:not(:disabled) {
-	background: #f5f4ee;
+	background: #f3f4f6;
 }
 
 .pt .pt-q-opt.on {
@@ -995,7 +994,7 @@ img.pt-th.sm {
 	padding: 0;
 	background: var(--rm-sheet);
 	border: 1px solid var(--rm-ink);
-	box-shadow: 3px 3px 0 rgb(21 21 21 / 0.12);
+	box-shadow: 3px 3px 0 rgb(22 24 27 / 0.12);
 	font-size: 12.5px;
 	line-height: 1.45;
 }

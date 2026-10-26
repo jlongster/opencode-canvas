@@ -100,7 +100,7 @@ function NameEditor({ presence, onDone }: { presence: Presence; onDone: () => vo
 }
 
 /** A person's colour, deepened toward ink so white initials read on it (squares, as the manual sets them). */
-const shade = (color: string) => `color-mix(in srgb, ${color} 72%, #151515)`
+const shade = (color: string) => `color-mix(in srgb, ${color} 72%, #16181b)`
 
 /** A coloured frame around the screen while following someone. */
 export function FollowIndicator({ presence }: { presence: Presence }) {

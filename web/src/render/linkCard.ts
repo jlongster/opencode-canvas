@@ -1,4 +1,5 @@
 import type { Item } from '../../../shared/types'
+import { THEME } from '../theme'
 
 /**
  * The link card a page item without a screenshot shows: drawn here, in the browser (nothing fetches
@@ -7,7 +8,6 @@ import type { Item } from '../../../shared/types'
  */
 const SCALE = 2
 const FONT = 'Archivo, system-ui, -apple-system, "Segoe UI", sans-serif'
-const MONO = '"Courier Prime", ui-monospace, Menlo, Consolas, monospace'
 
 /** Where the "Open" pill sits on the card, as fractions of its width and height (PageBadges puts a button there). */
 export function linkCardOpenBox(width: number, height: number) {
@@ -53,17 +53,17 @@ function drawCard(width: number, height: number, title: string, url: string): st
 	const cy = height / 2
 
 	// a sheet of paper, its address ruled off along the top
-	c.fillStyle = '#fbfaf6'
+	c.fillStyle = THEME.frame
 	c.fillRect(0, 0, width, height)
-	c.fillStyle = '#e9e6de'
+	c.fillStyle = THEME.raised
 	c.fillRect(0, 0, width, 34 * u)
-	c.fillStyle = '#151515'
+	c.fillStyle = THEME.ink
 	c.fillRect(0, 34 * u, width, Math.max(1, u))
 
 	// globe, in ink
 	const gy = cy - 78 * u
 	const r = 22 * u
-	c.strokeStyle = '#151515'
+	c.strokeStyle = THEME.ink
 	c.lineWidth = 1.6 * u
 	c.beginPath()
 	c.arc(cx, gy, r, 0, Math.PI * 2)
@@ -77,16 +77,16 @@ function drawCard(width: number, height: number, title: string, url: string): st
 	c.textAlign = 'center'
 	c.textBaseline = 'middle'
 	const maxW = width - 96 * u
-	c.fillStyle = '#151515'
+	c.fillStyle = THEME.ink
 	c.font = `600 ${30 * u}px ${FONT}`
 	c.fillText(fit(c, title, maxW), cx, cy + 4 * u)
-	c.fillStyle = '#8a877f'
-	c.font = `${15 * u}px ${MONO}`
+	c.fillStyle = THEME.ink3
+	c.font = `${15 * u}px ${FONT}`
 	c.fillText(fit(c, url, maxW), cx, cy + 46 * u)
 	c.textAlign = 'left'
-	c.fillStyle = '#4f4d48'
-	c.font = `${14 * u}px ${MONO}`
-	c.fillText(fit(c, hostOf(url).toUpperCase(), width - 32 * u), 16 * u, 17 * u)
+	c.fillStyle = THEME.ink2
+	c.font = `500 ${14 * u}px ${FONT}`
+	c.fillText(fit(c, hostOf(url), width - 32 * u), 16 * u, 17 * u)
 	c.textAlign = 'center'
 
 	// "Open" (a real button sits on it, see PageBadges)
@@ -95,12 +95,12 @@ function drawCard(width: number, height: number, title: string, url: string): st
 	const py = box.y * height
 	const pw = box.w * width
 	const ph = box.h * height
-	c.fillStyle = '#fbfaf6'
+	c.fillStyle = THEME.frame
 	c.fillRect(px, py, pw, ph)
-	c.strokeStyle = '#151515'
+	c.strokeStyle = THEME.ink
 	c.lineWidth = 1.5 * u
 	c.strokeRect(px, py, pw, ph)
-	c.fillStyle = '#151515'
+	c.fillStyle = THEME.ink
 	c.font = `600 ${16 * u}px ${FONT}`
 	c.fillText('Open ↗', cx, py + ph / 2 + 0.5 * u)
 

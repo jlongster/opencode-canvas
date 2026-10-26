@@ -49,22 +49,22 @@ const ACCENT: RGBA = [0.34, 0.56, 1, 1]
 const SECTION_FILL: RGBA = hexToRgba(THEME.frame)
 const SECTION_STROKE: RGBA = hexToRgba(THEME.rule2)
 /** a subagent's drawer, unfolded in its parent's sheet */
-const DRAWER_FILL: RGBA = hexToRgba('#f3f1ea')
+const DRAWER_FILL: RGBA = hexToRgba(THEME.raised)
 /** the running sheet's spine */
 const BLUE: RGBA = hexToRgba(THEME.blue)
 /** the canvas's plus-marks */
-const PLUS: RGBA = hexToRgba('#c9c5b9')
+const PLUS: RGBA = hexToRgba(THEME.plus)
 /** an item's edge */
 const ITEM_EDGE: RGBA = [0, 0, 0, 0.12]
 /** under an item until its picture's ready: the sheet, dithered (loading) or pinstriped (queued) */
 const PLACEHOLDER: RGBA = hexToRgba(THEME.frame)
-const DITHER_INK: RGBA = [21 / 255, 21 / 255, 21 / 255, 0.28]
-const PINSTRIPE_INK: RGBA = hexToRgba('#bdb8ac')
+const DITHER_INK: RGBA = withAlpha(INK, 0.28)
+const PINSTRIPE_INK: RGBA = hexToRgba(THEME.pinstripe)
 const NONE: RGBA = [0, 0, 0, 0]
 /** A frame picked up by its title: opaque (so nothing shows through it), over a hard offset shadow */
 const LIFTED_FILL: RGBA = hexToRgba(THEME.frame)
 const LIFTED_STROKE: RGBA = hexToRgba(THEME.ink)
-const SHADOW: RGBA = [21 / 255, 21 / 255, 21 / 255, 0.14]
+const SHADOW: RGBA = withAlpha(INK, 0.14)
 
 export interface RendererOptions {
 	/** Hide editing controls (view-only links) */

@@ -137,6 +137,21 @@
 	}
 }
 
+/* too narrow for its words (far out): running or asking is just a square of its colour */
+@container (max-width: 150px) {
+	.sh-state.st-run,
+	.sh-state.st-ask {
+		width: 12px;
+		height: 12px;
+		padding: 0;
+		font-size: 0;
+	}
+
+	.sh-state .clk {
+		display: none;
+	}
+}
+
 .sh-act {
 	flex: none;
 	display: none;

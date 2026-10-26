@@ -500,7 +500,7 @@ function StatusLine({ editor }: { editor: Editor }) {
 			)}
 			{selected > 0 && (
 				<button className="status-selected" title="Zoom to the selection (Shift+2)" onPointerDown={(e) => e.stopPropagation()} onClick={() => editor.zoomToSelection()}>
-					{selected} SELECTED
+					{selected} selected
 				</button>
 			)}
 		</div>

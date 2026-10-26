@@ -1,6 +1,6 @@
 /**
  * A session's running tool call as one line of its frame's printout: a verb and a short argument,
- * "READ src/App.tsx", "EDIT server/busy.ts +42 −18", "BASH bun test", "TASK spawn 1990s early".
+ * "Read src/App.tsx", "Edit server/busy.ts +42 −18", "Bash bun test", "Task spawn 1990s early".
  */
 const ARG_MAX = 72
 
@@ -21,15 +21,15 @@ export function summariseTool(name: string, input: Record<string, unknown> | und
 	const file = relative(str(input?.filePath ?? input?.file_path ?? input?.path ?? input?.file), directory)
 	switch (name.toLowerCase()) {
 		case 'read':
-			return file ? `READ ${short(file)}` : 'READ'
+			return file ? `Read ${short(file)}` : 'Read'
 		case 'write':
-			return file ? `WRITE ${short(file)}${input?.content ? ` +${lines(str(input.content))}` : ''}` : 'WRITE'
+			return file ? `Write ${short(file)}${input?.content ? ` +${lines(str(input.content))}` : ''}` : 'Write'
 		case 'edit':
 		case 'multiedit': {
 			const added = lines(str(input?.newString ?? input?.new_string))
 			const removed = lines(str(input?.oldString ?? input?.old_string))
 			const counts = added || removed ? ` +${added} −${removed}` : ''
-			return file ? `EDIT ${short(file)}${counts}` : 'EDIT'
+			return file ? `Edit ${short(file)}${counts}` : 'Edit'
 		}
 		case 'patch':
 		case 'apply_patch': {
@@ -37,48 +37,48 @@ export function summariseTool(name: string, input: Record<string, unknown> | und
 			const target = file || /\*\*\* (?:Update|Add|Delete) File: (.+)/.exec(text)?.[1] || ''
 			const added = text.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).length
 			const removed = text.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---')).length
-			return `EDIT${target ? ` ${short(relative(target, directory))}` : ''}${added || removed ? ` +${added} −${removed}` : ''}`
+			return `Edit${target ? ` ${short(relative(target, directory))}` : ''}${added || removed ? ` +${added} −${removed}` : ''}`
 		}
 		case 'bash':
 		case 'shell': {
 			const cmd = short(str(input?.command))
-			return cmd ? `BASH ${cmd}` : 'BASH'
+			return cmd ? `Bash ${cmd}` : 'Bash'
 		}
 		case 'grep':
 		case 'codesearch': {
 			const q = short(str(input?.pattern ?? input?.query))
-			return q ? `GREP ${q}` : 'GREP'
+			return q ? `Grep ${q}` : 'Grep'
 		}
 		case 'glob': {
 			const q = short(str(input?.pattern))
-			return q ? `GLOB ${q}` : 'GLOB'
+			return q ? `Glob ${q}` : 'Glob'
 		}
 		case 'list':
 		case 'ls':
-			return file ? `LIST ${short(file)}` : 'LIST'
+			return file ? `List ${short(file)}` : 'List'
 		case 'task':
 		case 'subagent': {
 			const what = short(str(input?.description ?? input?.prompt))
-			return what ? `TASK spawn ${what}` : 'TASK spawn'
+			return what ? `Task spawn ${what}` : 'Task spawn'
 		}
 		case 'webfetch': {
 			const u = short(str(input?.url))
-			return u ? `FETCH ${u}` : 'FETCH'
+			return u ? `Fetch ${u}` : 'Fetch'
 		}
 		case 'websearch': {
 			const q = short(str(input?.query))
-			return q ? `SEARCH ${q}` : 'SEARCH'
+			return q ? `Search ${q}` : 'Search'
 		}
 		case 'todowrite':
 		case 'todoread':
-			return 'PLAN'
+			return 'Plan'
 		case 'question':
-			return 'ASK'
+			return 'Ask'
 		case '':
-			return 'WORK'
+			return 'Work'
 		default: {
 			const arg = short(file || str(input?.url ?? input?.query ?? input?.title ?? ''))
-			return `${name.toUpperCase()}${arg ? ` ${arg}` : ''}`
+			return `${name.charAt(0).toUpperCase() + name.slice(1)}${arg ? ` ${arg}` : ''}`
 		}
 	}
 }

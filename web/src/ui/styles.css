@@ -1196,9 +1196,7 @@ body,
 }
 
 .view-only-badge strong {
-	font: 600 8px var(--rm-font-sans);
-	letter-spacing: 0.16em;
-	text-transform: uppercase;
+	font: 600 10px var(--rm-font-sans);
 }
 
 .view-only-badge small {

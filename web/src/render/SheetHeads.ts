@@ -3,6 +3,7 @@ import type { Session, SessionActivity } from '../../../shared/types'
 import type { Editor, FrameStatus } from '../editor/Editor'
 import { Box } from '../editor/geometry'
 import { LAYOUT, SHEET, type SectionLayout } from '../editor/layout'
+import { THEME } from '../theme'
 import { clock } from './segments'
 import './sheet.css'
 
@@ -34,10 +35,10 @@ const EYE_ICON =
 	'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>'
 const CLOSE_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>'
 
-const INK = '#151515'
-const SHEET_FILL = '#FBFAF6'
-const RED = '#C2381F'
-const DRAWER_FILL = '#F3F1EA'
+const INK = THEME.ink
+const SHEET_FILL = THEME.frame
+const RED = THEME.red
+const DRAWER_FILL = THEME.raised
 /** zoomed out this far past where heads stop shrinking, they turn to ink (A-s3) */
 const FAR = 0.7
 /** design px: a head is at least this wide (on screen, in design px) for its buttons to show */
